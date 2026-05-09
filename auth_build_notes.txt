@@ -1,0 +1,93 @@
+Auth & RBAC Build Notes
+=======================
+Build date: 2026
+
+BUILD STATUS: SUCCESS ✓
+
+All changes compiled and built without errors.
+
+─── What was built ───────────────────────────────────────────
+
+1. server/index.ts
+   - Added `express-session` and `memorystore` imports
+   - Added session middleware BEFORE registerRoutes:
+     * MemoryStore for session persistence
+     * 30-day cookie lifetime
+     * SESSION_SECRET env var (fallback: "deli-secret-2026")
+   - Extended SessionData interface: staffId?: number
+
+2. server/routes.ts
+   - Added `randomUUID` import from 'crypto'
+   - Added auth constants: AUTH_PASSWORD, MASTER_PASSWORD (with env var overrides)
+   - Added `requireMaster` middleware for master-password-protected routes
+   - New endpoints:
+     * POST /api/auth/login — validates password, finds staff, creates session
+     * POST /api/auth/logout — destroys session + clears staff_sessions in Supabase
+     * GET /api/auth/me — restores session from req.session.staffId
+     * GET /api/staff — list all staff (master password required)
+     * POST /api/staff — create staff member (master password required)
+     * PATCH /api/staff/:id — update staff (master password required)
+     * DELETE /api/staff/:id/sessions — kick staff (master password required)
+     * GET /api/access-levels — list access levels (master password required)
+     * POST /api/access-levels — create access level (master password required)
+     * PATCH /api/access-levels/:id — update access level (master password required)
+     * DELETE /api/access-levels/:id — delete if no staff assigned (master password required)
+     * GET /api/staff/active-sessions — active sessions with last_seen_at (master password required)
+
+3. client/src/context/AuthContext.tsx (new file)
+   - AuthProvider context with staff state
+   - Restores session on mount via GET /api/auth/me
+   - login() — POST /api/auth/login
+   - logout() — POST /api/auth/logout, clears staff state
+   - hasAccess(slug) — checks pagesJson, Admin access level always returns true
+
+4. client/src/pages/Login.tsx (new file)
+   - Full-screen login page with #256984 background
+   - Shows logo-white.png at top
+   - Name + password inputs, Log in button
+   - Error display on invalid credentials
+
+5. client/src/App.tsx (modified)
+   - Wrapped in <AuthProvider>
+   - Shows loading spinner while isLoading
+   - Shows <Login /> when staff is null
+   - AuthenticatedApp component handles route access control:
+     * Redirects to first allowed page if user tries to access unauthorized page
+
+6. client/src/components/AppLayout.tsx (modified)
+   - Imports useAuth from AuthContext
+   - Filters navItems using hasAccess(slug)
+   - Shows logged-in staff name at bottom of sidebar
+   - Logout button calls logout() from AuthContext
+   - Nav items reordered to match task spec
+
+7. client/src/pages/Settings.tsx (modified)
+   - Added masterUnlocked state (default: false)
+   - MasterPasswordGate component: password prompt, resets on navigate
+   - Added Staff & Access tab (only visible when masterUnlocked)
+   - StaffManagement section: table of staff with edit/toggle/kick actions
+   - AccessLevelsManagement section: list with page checkboxes for editing
+   - Uses masterRequest() helper function for master-password API calls
+     (since apiRequest doesn't support custom headers natively)
+
+─── Environment / Passwords ──────────────────────────────────
+
+Staff login password: "Greenhorns2016!" (AUTH_PASSWORD env var)
+Admin/master password: "Burnfletch123!" (MASTER_PASSWORD env var)
+Session secret: "deli-secret-2026" (SESSION_SECRET env var)
+
+─── Supabase tables confirmed ────────────────────────────────
+
+- access_levels: 3 rows (Production, Manager, Admin)
+- staff: 6 rows (CBD Kitchen, OP iPad, OP Computer, Scott, Ian, LJ)
+- staff_sessions: empty (no active sessions at build time)
+
+─── Known limitations ────────────────────────────────────────
+
+- Sessions stored in MemoryStore (in-process memory). Sessions will
+  be lost on server restart. For production, consider using a
+  persistent session store backed by Supabase/Redis.
+- The master password gate in Settings is a UX gate only — it is
+  checked client-side. API routes are protected by the x-master-password
+  header server-side, which is the actual security boundary.
+- No TypeScript compilation errors. Build: SUCCESS.

@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import type { Server } from "http";
+import { randomUUID } from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -4794,6 +4795,277 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       res.json({ match: matched });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // AUTH ROUTES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const AUTH_PASSWORD = process.env.AUTH_PASSWORD || "Greenhorns2016!";
+  const MASTER_PASSWORD = process.env.MASTER_PASSWORD || "Burnfletch123!";
+
+  function requireMaster(req: any, res: any, next: any) {
+    const header = req.headers["x-master-password"];
+    if (header !== MASTER_PASSWORD) {
+      return res.status(401).json({ ok: false, error: "Master password required" });
+    }
+    next();
+  }
+
+  // POST /api/auth/login
+  app.post("/api/auth/login", async (req: any, res: any) => {
+    try {
+      const { name, password } = req.body || {};
+      if (!name || !password) return res.status(400).json({ ok: false, error: "Name and password required" });
+      if (password !== AUTH_PASSWORD) return res.status(401).json({ ok: false, error: "Invalid name or password" });
+
+      // Find staff by name (case-insensitive)
+      const { data: staffList } = await supabase
+        .from("staff")
+        .select("id, name, access_level_id, is_active")
+        .ilike("name", name)
+        .eq("is_active", true)
+        .limit(1);
+
+      const staffMember = staffList?.[0];
+      if (!staffMember) return res.status(401).json({ ok: false, error: "Invalid name or password" });
+
+      // Get access level
+      const { data: accessLevel } = await supabase
+        .from("access_levels")
+        .select("id, name, pages_json")
+        .eq("id", staffMember.access_level_id)
+        .single();
+
+      if (!accessLevel) return res.status(500).json({ ok: false, error: "Access level not found" });
+
+      // Create session token
+      const token = randomUUID();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+      await supabase.from("staff_sessions").insert({
+        staff_id: staffMember.id,
+        token,
+        created_at: now.toISOString(),
+        last_seen_at: now.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      });
+
+      // Store in server-side session
+      req.session.staffId = staffMember.id;
+
+      const pagesJson: string[] = JSON.parse(accessLevel.pages_json || "[]");
+
+      return res.json({
+        ok: true,
+        staff: {
+          id: staffMember.id,
+          name: staffMember.name,
+          accessLevel: {
+            id: accessLevel.id,
+            name: accessLevel.name,
+            pagesJson,
+          },
+        },
+      });
+    } catch (err: any) {
+      console.error("Login error:", err);
+      return res.status(500).json({ ok: false, error: "Server error" });
+    }
+  });
+
+  // POST /api/auth/logout
+  app.post("/api/auth/logout", async (req: any, res: any) => {
+    try {
+      const staffId = req.session?.staffId;
+      if (staffId) {
+        // Delete all sessions for this staff member from this browser session
+        await supabase.from("staff_sessions").delete().eq("staff_id", staffId);
+      }
+      req.session.destroy(() => {});
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.json({ ok: true });
+    }
+  });
+
+  // GET /api/auth/me
+  app.get("/api/auth/me", async (req: any, res: any) => {
+    try {
+      const staffId = req.session?.staffId;
+      if (!staffId) return res.json({ ok: false });
+
+      const { data: staffMember } = await supabase
+        .from("staff")
+        .select("id, name, access_level_id, is_active")
+        .eq("id", staffId)
+        .eq("is_active", true)
+        .single();
+
+      if (!staffMember) return res.json({ ok: false });
+
+      const { data: accessLevel } = await supabase
+        .from("access_levels")
+        .select("id, name, pages_json")
+        .eq("id", staffMember.access_level_id)
+        .single();
+
+      if (!accessLevel) return res.json({ ok: false });
+
+      // Update last_seen_at
+      await supabase
+        .from("staff_sessions")
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq("staff_id", staffId);
+
+      const pagesJson: string[] = JSON.parse(accessLevel.pages_json || "[]");
+
+      return res.json({
+        ok: true,
+        staff: {
+          id: staffMember.id,
+          name: staffMember.name,
+          accessLevel: {
+            id: accessLevel.id,
+            name: accessLevel.name,
+            pagesJson,
+          },
+        },
+      });
+    } catch (err: any) {
+      return res.json({ ok: false });
+    }
+  });
+
+  // GET /api/staff
+  app.get("/api/staff", requireMaster, async (req: any, res: any) => {
+    try {
+      const { data: staffList } = await supabase
+        .from("staff")
+        .select("id, name, access_level_id, is_active, created_at, access_levels(id, name)")
+        .order("name");
+      return res.json(staffList || []);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/staff
+  app.post("/api/staff", requireMaster, async (req: any, res: any) => {
+    try {
+      const { name, accessLevelId } = req.body || {};
+      if (!name || !accessLevelId) return res.status(400).json({ error: "Name and accessLevelId required" });
+      const { data, error } = await supabase
+        .from("staff")
+        .insert({ name, access_level_id: accessLevelId, is_active: true, created_at: new Date().toISOString() })
+        .select()
+        .single();
+      if (error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/staff/:id
+  app.patch("/api/staff/:id", requireMaster, async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name, accessLevelId, isActive } = req.body || {};
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (accessLevelId !== undefined) updates.access_level_id = accessLevelId;
+      if (isActive !== undefined) updates.is_active = isActive;
+      const { data, error } = await supabase.from("staff").update(updates).eq("id", id).select().single();
+      if (error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/staff/:id/sessions
+  app.delete("/api/staff/:id/sessions", requireMaster, async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      await supabase.from("staff_sessions").delete().eq("staff_id", id);
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/access-levels
+  app.get("/api/access-levels", requireMaster, async (req: any, res: any) => {
+    try {
+      const { data } = await supabase.from("access_levels").select("*").order("sort_order");
+      return res.json(data || []);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/access-levels
+  app.post("/api/access-levels", requireMaster, async (req: any, res: any) => {
+    try {
+      const { name, pagesJson, sortOrder } = req.body || {};
+      const { data, error } = await supabase
+        .from("access_levels")
+        .insert({ name, pages_json: JSON.stringify(pagesJson || []), sort_order: sortOrder || 0 })
+        .select()
+        .single();
+      if (error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/access-levels/:id
+  app.patch("/api/access-levels/:id", requireMaster, async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name, pagesJson } = req.body || {};
+      const updates: any = {};
+      if (name !== undefined) updates.name = name;
+      if (pagesJson !== undefined) updates.pages_json = JSON.stringify(pagesJson);
+      const { data, error } = await supabase.from("access_levels").update(updates).eq("id", id).select().single();
+      if (error) return res.status(400).json({ error: error.message });
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/access-levels/:id
+  app.delete("/api/access-levels/:id", requireMaster, async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      // Check if any staff are assigned
+      const { data: staffWithLevel } = await supabase.from("staff").select("id").eq("access_level_id", id);
+      if (staffWithLevel && staffWithLevel.length > 0) {
+        return res.status(400).json({ error: "Cannot delete: staff members are assigned to this access level" });
+      }
+      await supabase.from("access_levels").delete().eq("id", id);
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/staff/active-sessions
+  app.get("/api/staff/active-sessions", requireMaster, async (req: any, res: any) => {
+    try {
+      const { data } = await supabase
+        .from("staff_sessions")
+        .select("id, staff_id, last_seen_at, expires_at, staff(name)")
+        .gt("expires_at", new Date().toISOString())
+        .order("last_seen_at", { ascending: false });
+      return res.json(data || []);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
     }
   });
 }

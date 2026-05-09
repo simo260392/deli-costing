@@ -1,10 +1,11 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "@/components/ThemeProvider";
+import { useAuth } from "@/context/AuthContext";
 import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  ClipboardList, BarChart3
+  ClipboardList, BarChart3, LogOut, User
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -12,18 +13,18 @@ import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/recipes", label: "Recipes", icon: UtensilsCrossed },
-  { href: "/sub-recipes", label: "Sub-Recipes", icon: BookOpen },
-  { href: "/products", label: "Products", icon: Store },
-  { href: "/ingredients", label: "Ingredients", icon: Package },
-  { href: "/suppliers", label: "Suppliers", icon: Truck },
-  { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw },
-  { href: "/custom-pricing", label: "Custom Pricing", icon: Calculator },
-  { href: "/prep", label: "Production", icon: ChefHat },
-  { href: "/prep-reports", label: "Production Reports", icon: BarChart3 },
-  { href: "/recipe-book", label: "Product Info PDF", icon: BookMarked },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/", label: "Dashboard", icon: LayoutDashboard, slug: "dashboard" },
+  { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
+  { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
+  { href: "/products", label: "Products", icon: Store, slug: "products" },
+  { href: "/recipe-book", label: "Product Info PDF", icon: BookMarked, slug: "recipe-book" },
+  { href: "/ingredients", label: "Ingredients", icon: Package, slug: "ingredients" },
+  { href: "/suppliers", label: "Suppliers", icon: Truck, slug: "suppliers" },
+  { href: "/sub-recipes", label: "Sub-Recipes", icon: BookOpen, slug: "sub-recipes" },
+  { href: "/recipes", label: "Recipes", icon: UtensilsCrossed, slug: "recipes" },
+  { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw, slug: "xero-imports" },
+  { href: "/custom-pricing", label: "Custom Pricing", icon: Calculator, slug: "custom-pricing" },
+  { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
 ];
 
 function Logo() {
@@ -42,6 +43,7 @@ function Logo() {
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { theme, toggle } = useTheme();
+  const { staff, logout, hasAccess } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const { data: xeroCountData } = useQuery({
@@ -54,12 +56,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isActive = (href: string) =>
     href === "/" ? location === "/" || location === "" : location === href || location.startsWith(href + "/");
 
+  // Filter nav items by access
+  const visibleNavItems = navItems.filter(({ slug }) => hasAccess(slug));
+
   const sidebar = (
     <nav className="flex flex-col h-full">
       <Logo />
       <div className="flex-1 overflow-y-auto py-3 px-3">
         <ul className="space-y-0.5">
-          {navItems.map(({ href, label, icon: Icon }) => (
+          {visibleNavItems.map(({ href, label, icon: Icon, slug }) => (
             <li key={href}>
               <Link
                 href={href}
@@ -89,10 +94,28 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           ))}
         </ul>
       </div>
-      <div className="border-t border-border px-4 py-3">
+
+      {/* Bottom bar: staff name + logout + theme toggle */}
+      <div className="border-t border-border px-3 py-3 space-y-1">
+        {staff && (
+          <div className="flex items-center gap-2 px-2 py-1.5 rounded-md">
+            <User size={14} className="text-muted-foreground shrink-0" />
+            <span className="text-xs text-foreground font-medium truncate flex-1" data-testid="text-staff-name">
+              {staff.name}
+            </span>
+            <button
+              onClick={logout}
+              title="Log out"
+              data-testid="button-logout"
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        )}
         <button
           onClick={toggle}
-          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
           data-testid="button-theme-toggle"
           aria-label="Toggle theme"
         >

@@ -1,8 +1,19 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import session from "express-session";
+import MemoryStore from "memorystore";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+
+const SessionStore = MemoryStore(session);
+
+// Extend session type
+declare module "express-session" {
+  interface SessionData {
+    staffId?: number;
+  }
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -23,6 +34,21 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Session middleware — must be before registerRoutes
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "deli-secret-2026",
+    resave: false,
+    saveUninitialized: false,
+    store: new SessionStore({ checkPeriod: 86400000 }), // prune expired entries every 24h
+    cookie: {
+      secure: false, // works over http in sandbox
+      httpOnly: true,
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    },
+  })
+);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
