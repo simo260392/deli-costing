@@ -19,6 +19,7 @@ import CustomPricing from "@/pages/CustomPricing";
 import RecipeBook from "@/pages/RecipeBook";
 import Prep from "@/pages/Prep";
 import PrepReports from "@/pages/PrepReports";
+import WholesalePackaging from "@/pages/WholesalePackaging";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -35,6 +36,7 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "xero-imports", path: "/xero-imports" },
   { slug: "custom-pricing", path: "/custom-pricing" },
   { slug: "settings", path: "/settings" },
+  { slug: "wholesale", path: "/wholesale" },
 ];
 
 function pathToSlug(path: string): string {
@@ -90,6 +92,7 @@ function AuthenticatedApp() {
         <Route path="/prep" component={Prep} />
         <Route path="/prep-reports" component={PrepReports} />
         <Route path="/recipe-book" component={RecipeBook} />
+        <Route path="/wholesale" component={WholesalePackaging} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

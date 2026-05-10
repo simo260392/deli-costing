@@ -1,0 +1,95 @@
+Wholesale Packaging Preferences — Build Notes
+==============================================
+Build date: 2025
+
+## What was built
+
+### Backend (server/routes.ts)
+Three new routes added near the end of registerRoutes (before the closing brace),
+after the existing flex/auth routes, reusing the existing FLEX_BASE and FLEX_HEADERS
+constants already defined in scope:
+
+1. GET /api/wholesale/customers
+   - Fetches wholesale customers from Flex API (customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78)
+   - Merges with existing records from Supabase wholesale_packaging_prefs table
+   - Returns alphabetically sorted array with all pref fields as camelCase
+   - Falls back to 500 if Flex API fails
+
+2. GET /api/wholesale/active-customers
+   - Fetches orders from last 90 days for the same customer group
+   - Returns array of unique customer UUIDs
+   - Returns empty array [] on any failure (non-breaking)
+
+3. POST /api/wholesale/prefs
+   - Accepts: flexCustomerId, flexCustomerNumber, companyName, paper, wrapStyle,
+     allItemsGreaseproof, barcodeLabels, specialNotes
+   - Resolves staff name from req.session.staffId → Supabase staff table
+   - Upserts into wholesale_packaging_prefs on flex_customer_id conflict
+   - Returns saved record as camelCase
+
+### Frontend (client/src/pages/WholesalePackaging.tsx)
+Full-featured page with:
+- Page header with Package icon, title, and subtitle
+- Sticky search bar (debounced 150ms) + "Active in last 90 days" toggle (default ON)
+- Accordion-style customer rows showing:
+  - Customer number chip (#XXXX)
+  - Company name
+  - "Set" (green) / "Not set" (grey) status badge
+  - Amber dot indicator for unsaved changes
+  - Chevron that rotates when open
+- Expanded row form:
+  - 2-column responsive grid (stacks on mobile)
+  - Paper: Branded / Plain White (RadioGroup)
+  - Wrap Style: Open / Burrito (RadioGroup)
+  - All Items in Greaseproof: Yes/No (RadioGroup, boolean values)
+  - Barcode Labels: Yes/No (RadioGroup, boolean values)
+  - Special Notes textarea (3 rows)
+  - Live auto-generated copy line (monospace) with Clipboard copy button
+  - Save button (disabled until dirty) + "Saved DD Mon by Name" timestamp
+- Loading state: 6 skeleton rows
+- Empty state: centered icon + "No matching customers" message
+- Error: toast notification
+- beforeunload warning if any rows are dirty
+
+### Route registration (client/src/App.tsx)
+- Imported WholesalePackaging page
+- Added slug "wholesale" to PAGE_SLUGS mapping
+- Added <Route path="/wholesale" component={WholesalePackaging} />
+
+### Navigation (client/src/components/AppLayout.tsx)
+- Added nav item: { href: "/wholesale", label: "Wholesale Packaging", icon: Package, slug: "wholesale" }
+- Placed after "Products" in nav order
+
+## Build result
+✓ Build succeeded — no TypeScript or build errors
+- Client: 707.75 kB (gzip: 198.97 kB) — chunk size warning only (pre-existing, not introduced by this change)
+- Server: 1.5mb — no errors
+
+## Remaining action needed (not done in this build)
+Access level updates — "wholesale" slug needs to be added to pages_json for:
+- Manager (access_level id=2): add "wholesale" to pages_json array
+- Admin (access_level id=3): add "wholesale" to pages_json array
+
+This can be done via Supabase SQL:
+  UPDATE access_levels
+  SET pages_json = pages_json || '["wholesale"]'::jsonb
+  WHERE id IN (2, 3);
+
+Or via the existing /api/access-levels PATCH endpoint if available.
+
+## Supabase table required
+The wholesale_packaging_prefs table must exist in Supabase with this schema:
+  CREATE TABLE wholesale_packaging_prefs (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    flex_customer_id text UNIQUE NOT NULL,
+    flex_customer_number integer,
+    company_name text,
+    paper text,           -- 'branded' | 'plain_white'
+    wrap_style text,      -- 'open' | 'burrito'
+    all_items_greaseproof boolean,
+    barcode_labels boolean,
+    special_notes text,
+    updated_at timestamptz,
+    updated_by text
+  );
+If this table doesn't exist yet, it needs to be created before the routes will work.

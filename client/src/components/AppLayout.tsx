@@ -17,6 +17,7 @@ const navItems = [
   { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
   { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
   { href: "/products", label: "Products", icon: Store, slug: "products" },
+  { href: "/wholesale", label: "Wholesale Packaging", icon: Package, slug: "wholesale" },
   { href: "/recipe-book", label: "Product Info PDF", icon: BookMarked, slug: "recipe-book" },
   { href: "/ingredients", label: "Ingredients", icon: Package, slug: "ingredients" },
   { href: "/suppliers", label: "Suppliers", icon: Truck, slug: "suppliers" },

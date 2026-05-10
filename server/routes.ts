@@ -1603,6 +1603,12 @@ Return ONLY the JSON object, no explanation.`;
 
   const FLEX_BASE = "https://the-deli.com.au";
   const FLEX_TOKEN = "d8ecc189f96774038e36112c5ed9f2bc557c3320";
+  const FLEX_HEADERS = {
+    'Authorization': `Bearer ${FLEX_TOKEN}`,
+    'X-API-KEY': FLEX_TOKEN,
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  };
 
   // GET /api/flex-products — list all synced products
   app.get("/api/flex-products", async (req, res) => {
@@ -1842,7 +1848,7 @@ Return ONLY the JSON object, no explanation.`;
       // so we echo back exactly what's there — Flex's PUT wipes categories
       // if they don't match, so we must use the live state, not our cached copy.
       const flexGetResp = await fetch(`${flexBase}/api/v1/products/${flexUuid}`, {
-        headers: { Authorization: `Bearer ${flexToken}` },
+        headers: { ...FLEX_HEADERS, Authorization: `Bearer ${flexToken}` },
       });
       if (!flexGetResp.ok) throw new Error(`Failed to fetch product from Flex: ${flexGetResp.status}`);
       const flexLive = await flexGetResp.json();
@@ -1978,7 +1984,7 @@ Return ONLY the JSON object, no explanation.`;
 
       while (nextUrl) {
         const response = await fetch(nextUrl, {
-          headers: { Authorization: `Bearer ${FLEX_TOKEN}`, 'Accept': 'application/json' }
+          headers: FLEX_HEADERS
         });
 
         if (!response.ok) {
@@ -2061,7 +2067,7 @@ Return ONLY the JSON object, no explanation.`;
       while (hasMore) {
         const url = `https://the-deli.com.au/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(from)}&delivery_datetime_to=${encodeURIComponent(to)}`;
         const resp = await fetch(url, {
-          headers: { Authorization: `Bearer ${FLEX_TOKEN}`, Accept: "application/json" },
+          headers: FLEX_HEADERS,
         });
         if (!resp.ok) {
           const err = await resp.text();
@@ -5064,6 +5070,135 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         .gt("expires_at", new Date().toISOString())
         .order("last_seen_at", { ascending: false });
       return res.json(data || []);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Wholesale Packaging Preferences ──────────────────────────────────────────
+
+  // GET /api/wholesale/customers — all wholesale customers merged with saved prefs
+  app.get("/api/wholesale/customers", async (req: any, res: any) => {
+    try {
+      const flexRes = await fetch(
+        `${FLEX_BASE}/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200`,
+        { headers: FLEX_HEADERS }
+      );
+      if (!flexRes.ok) {
+        return res.status(500).json({ error: `Flex API error: ${flexRes.status}` });
+      }
+      const flexData = await flexRes.json();
+      // Flex returns paginated shape: { total_items, items: [...] }
+      // Each customer: uuid (UUID), id (integer = customer number), company (company name)
+      let flexCustomers: any[] = flexData.items || flexData.data || flexData.customers || [];
+      // Handle pagination if more than 200 customers
+      let nextPage = flexData.next_page || null;
+      while (nextPage) {
+        const nextRes = await fetch(nextPage, { headers: FLEX_HEADERS });
+        if (!nextRes.ok) break;
+        const nextData = await nextRes.json();
+        flexCustomers = flexCustomers.concat(nextData.items || []);
+        nextPage = nextData.next_page || null;
+      }
+      // Filter to only active customers with a company name
+      flexCustomers = flexCustomers.filter((c: any) => c.status === 'active' && (c.company || c.first_name));
+
+      // Fetch all saved prefs
+      const { data: prefs } = await supabase.from("wholesale_packaging_prefs").select("*");
+      const prefsMap = new Map<string, any>();
+      for (const p of (prefs || [])) {
+        prefsMap.set(p.flex_customer_id, p);
+      }
+
+      const merged = flexCustomers.map((c: any) => {
+        // uuid = UUID identifier, id = integer customer number, company = company name
+        const pref = prefsMap.get(c.uuid) || {};
+        const displayName = c.company || `${c.first_name || ''} ${c.last_name || ''}`.trim();
+        return {
+          flexCustomerId: c.uuid,
+          flexCustomerNumber: c.id ?? null,
+          companyName: displayName,
+          paper: pref.paper ?? null,
+          wrapStyle: pref.wrap_style ?? null,
+          allItemsGreaseproof: pref.all_items_greaseproof ?? null,
+          barcodeLabels: pref.barcode_labels ?? null,
+          specialNotes: pref.special_notes ?? null,
+          updatedAt: pref.updated_at ?? null,
+          updatedBy: pref.updated_by ?? null,
+        };
+      });
+
+      merged.sort((a: any, b: any) => (a.companyName || "").localeCompare(b.companyName || ""));
+      return res.json(merged);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/wholesale/active-customers — customer IDs with orders in last 90 days
+  app.get("/api/wholesale/active-customers", async (req: any, res: any) => {
+    try {
+      const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      const flexRes = await fetch(
+        `${FLEX_BASE}/api/v1/orders?per_page=200&page=1&created_after=${encodeURIComponent(ninetyDaysAgo)}&customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78`,
+        { headers: FLEX_HEADERS }
+      );
+      if (!flexRes.ok) return res.json([]);
+      const flexData = await flexRes.json();
+      const orders: any[] = flexData.items || flexData.data || flexData.orders || [];
+      // customer UUID is in customer_uuid or customer?.uuid on each order
+      const ids = [...new Set(orders.map((o: any) => o.customer_uuid || o.customer?.uuid || o.customer_id || o.customer?.id).filter(Boolean))];
+      return res.json(ids);
+    } catch {
+      return res.json([]);
+    }
+  });
+
+  // POST /api/wholesale/prefs — upsert packaging prefs for a customer
+  app.post("/api/wholesale/prefs", async (req: any, res: any) => {
+    try {
+      const { flexCustomerId, flexCustomerNumber, companyName, paper, wrapStyle, allItemsGreaseproof, barcodeLabels, specialNotes } = req.body;
+      if (!flexCustomerId) return res.status(400).json({ error: "flexCustomerId required" });
+
+      // Get staff name from session
+      let updatedBy: string | null = null;
+      if (req.session?.staffId) {
+        const { data: staffRow } = await supabase.from("staff").select("name").eq("id", req.session.staffId).single();
+        updatedBy = staffRow?.name ?? null;
+      }
+
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("wholesale_packaging_prefs")
+        .upsert({
+          flex_customer_id: flexCustomerId,
+          flex_customer_number: flexCustomerNumber ?? null,
+          company_name: companyName ?? null,
+          paper: paper ?? null,
+          wrap_style: wrapStyle ?? null,
+          all_items_greaseproof: allItemsGreaseproof ?? null,
+          barcode_labels: barcodeLabels ?? null,
+          special_notes: specialNotes ?? null,
+          updated_at: now,
+          updated_by: updatedBy,
+        }, { onConflict: "flex_customer_id" })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return res.json({
+        flexCustomerId: data.flex_customer_id,
+        flexCustomerNumber: data.flex_customer_number,
+        companyName: data.company_name,
+        paper: data.paper,
+        wrapStyle: data.wrap_style,
+        allItemsGreaseproof: data.all_items_greaseproof,
+        barcodeLabels: data.barcode_labels,
+        specialNotes: data.special_notes,
+        updatedAt: data.updated_at,
+        updatedBy: data.updated_by,
+      });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
