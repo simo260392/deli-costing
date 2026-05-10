@@ -5080,31 +5080,19 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // ─── Wholesale Packaging Preferences ──────────────────────────────────────────
 
-  // GET /api/wholesale/customers — all wholesale customers merged with saved prefs
+  // GET /api/wholesale/customers — read from Supabase flex_customers cache, merged with saved prefs
   app.get("/api/wholesale/customers", async (req: any, res: any) => {
     try {
-      const flexRes = await fetch(
-        `${FLEX_BASE}/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200`,
-        { headers: FLEX_HEADERS }
-      );
-      if (!flexRes.ok) {
-        return res.status(500).json({ error: `Flex API error: ${flexRes.status}` });
+      // Read all customers from Supabase cache (populated via /api/wholesale/sync-customers)
+      const { data: cachedCustomers, error: custError } = await supabase
+        .from("flex_customers")
+        .select("uuid, customer_number, company_name, status, first_name, last_name")
+        .eq("status", "active");
+
+      if (custError) throw custError;
+      if (!cachedCustomers || cachedCustomers.length === 0) {
+        return res.status(503).json({ error: "Customer list not yet synced. Please use the Sync Customers button." });
       }
-      const flexData = await flexRes.json();
-      // Flex returns paginated shape: { total_items, items: [...] }
-      // Each customer: uuid (UUID), id (integer = customer number), company (company name)
-      let flexCustomers: any[] = flexData.items || flexData.data || flexData.customers || [];
-      // Handle pagination if more than 200 customers
-      let nextPage = flexData.next_page || null;
-      while (nextPage) {
-        const nextRes = await fetch(nextPage, { headers: FLEX_HEADERS });
-        if (!nextRes.ok) break;
-        const nextData = await nextRes.json();
-        flexCustomers = flexCustomers.concat(nextData.items || []);
-        nextPage = nextData.next_page || null;
-      }
-      // Filter to only active customers with a company name
-      flexCustomers = flexCustomers.filter((c: any) => c.status === 'active' && (c.company || c.first_name));
 
       // Fetch all saved prefs
       const { data: prefs } = await supabase.from("wholesale_packaging_prefs").select("*");
@@ -5113,13 +5101,12 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         prefsMap.set(p.flex_customer_id, p);
       }
 
-      const merged = flexCustomers.map((c: any) => {
-        // uuid = UUID identifier, id = integer customer number, company = company name
+      const merged = cachedCustomers.map((c: any) => {
         const pref = prefsMap.get(c.uuid) || {};
-        const displayName = c.company || `${c.first_name || ''} ${c.last_name || ''}`.trim();
+        const displayName = c.company_name || `${c.first_name || ''} ${c.last_name || ''}`.trim();
         return {
           flexCustomerId: c.uuid,
-          flexCustomerNumber: c.id ?? null,
+          flexCustomerNumber: c.customer_number ?? null,
           companyName: displayName,
           paper: pref.paper ?? null,
           wrapStyle: pref.wrap_style ?? null,
@@ -5138,9 +5125,48 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
-  // GET /api/wholesale/active-customers — customer IDs with orders in last 90 days
+  // POST /api/wholesale/sync-customers — fetch all customers from Flex and cache in Supabase
+  app.post("/api/wholesale/sync-customers", async (req: any, res: any) => {
+    try {
+      let allCustomers: any[] = [];
+      let nextUrl: string | null = `${FLEX_BASE}/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200&page=1`;
+      while (nextUrl) {
+        const flexRes = await fetch(nextUrl, { headers: FLEX_HEADERS });
+        if (!flexRes.ok) throw new Error(`Flex API error: ${flexRes.status}`);
+        const flexData = await flexRes.json();
+        const items: any[] = flexData.items || [];
+        allCustomers = allCustomers.concat(items);
+        nextUrl = flexData.next_page || null;
+      }
+      // Upsert into flex_customers in batches of 200
+      let synced = 0;
+      const batchSize = 200;
+      for (let i = 0; i < allCustomers.length; i += batchSize) {
+        const batch = allCustomers.slice(i, i + batchSize).map((c: any) => ({
+          uuid: c.uuid,
+          customer_number: c.id ?? null,
+          company_name: c.company || `${c.first_name || ''} ${c.last_name || ''}`.trim(),
+          status: c.status || 'active',
+          email: c.email || '',
+          first_name: c.first_name || '',
+          last_name: c.last_name || '',
+          synced_at: new Date().toISOString(),
+        }));
+        const { error } = await supabase.from("flex_customers").upsert(batch, { onConflict: "uuid" });
+        if (error) throw error;
+        synced += batch.length;
+      }
+      return res.json({ ok: true, synced });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // GET /api/wholesale/active-customers — return UUIDs of customers from Supabase order_states in last 90 days
+  // Falls back to empty array if Flex is unreachable
   app.get("/api/wholesale/active-customers", async (req: any, res: any) => {
     try {
+      // Try Flex first
       const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       const flexRes = await fetch(
         `${FLEX_BASE}/api/v1/orders?per_page=200&page=1&created_after=${encodeURIComponent(ninetyDaysAgo)}&customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78`,
@@ -5149,7 +5175,6 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (!flexRes.ok) return res.json([]);
       const flexData = await flexRes.json();
       const orders: any[] = flexData.items || flexData.data || flexData.orders || [];
-      // customer UUID is in customer_uuid or customer?.uuid on each order
       const ids = [...new Set(orders.map((o: any) => o.customer_uuid || o.customer?.uuid || o.customer_id || o.customer?.id).filter(Boolean))];
       return res.json(ids);
     } catch {
