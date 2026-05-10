@@ -33,18 +33,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [staff, setStaff] = useState<StaffMember | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // On mount: restore session via GET /api/auth/me
-  useEffect(() => {
-    apiRequest("GET", "/api/auth/me")
+  // Fetch session from server and update state
+  const refreshSession = useCallback(() => {
+    return apiRequest("GET", "/api/auth/me")
       .then((r) => r.json())
       .then((data) => {
         if (data.ok && data.staff) {
           setStaff(data.staff);
+        } else {
+          setStaff(null);
         }
       })
-      .catch(() => {})
-      .finally(() => setIsLoading(false));
+      .catch(() => {});
   }, []);
+
+  // On mount: restore session, then poll every 30s so access level changes apply automatically
+  useEffect(() => {
+    refreshSession().finally(() => setIsLoading(false));
+    const interval = setInterval(refreshSession, 30_000);
+    return () => clearInterval(interval);
+  }, [refreshSession]);
 
   const login = useCallback(async (name: string, password: string): Promise<{ ok: boolean; error?: string }> => {
     try {
