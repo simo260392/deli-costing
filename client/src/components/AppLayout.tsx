@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  ClipboardList, BarChart3, LogOut, User
+  ClipboardList, BarChart3, LogOut, User, Archive
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -17,7 +17,7 @@ const navItems = [
   { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
   { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
   { href: "/products", label: "Products", icon: Store, slug: "products" },
-  { href: "/wholesale", label: "Wholesale Packaging", icon: Package, slug: "wholesale" },
+  { href: "/wholesale", label: "Wholesale Packaging", icon: Archive, slug: "wholesale" },
   { href: "/recipe-book", label: "Product Info PDF", icon: BookMarked, slug: "recipe-book" },
   { href: "/ingredients", label: "Ingredients", icon: Package, slug: "ingredients" },
   { href: "/suppliers", label: "Suppliers", icon: Truck, slug: "suppliers" },
