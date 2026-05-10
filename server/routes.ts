@@ -1607,7 +1607,10 @@ Return ONLY the JSON object, no explanation.`;
     'Authorization': `Bearer ${FLEX_TOKEN}`,
     'X-API-KEY': FLEX_TOKEN,
     'Accept': 'application/json',
+    'Content-Type': 'application/json',
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Referer': 'https://the-deli.com.au/',
+    'Origin': 'https://the-deli.com.au',
   };
 
   // GET /api/flex-products — list all synced products
