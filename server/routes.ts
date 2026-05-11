@@ -5137,12 +5137,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   app.post("/api/wholesale/sync-customers", async (req: any, res: any) => {
     try {
       let allCustomers: any[] = [];
-      let nextCustPath: string | null = `/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200&page=1`;
+      // Note: Flex API ignores customer_group_id filter — fetch all and filter by group_uuid client-side
+      const WHOLESALE_GROUP_UUID = '13f392c3-fa06-417e-870a-47912a3afc78';
+      let nextCustPath: string | null = `/api/v1/customers?per_page=200&page=1`;
       while (nextCustPath) {
         const flexRes = await flexFetch(nextCustPath);
         if (!flexRes.ok) throw new Error(`Flex API error: ${flexRes.status}`);
         const flexData = await flexRes.json();
-        const items: any[] = flexData.items || [];
+        const items: any[] = (flexData.items || []).filter((c: any) => c.group_uuid === WHOLESALE_GROUP_UUID);
         allCustomers = allCustomers.concat(items);
         if (flexData.next_page) {
           try { nextCustPath = new URL(flexData.next_page).pathname + new URL(flexData.next_page).search; } catch { nextCustPath = null; }
