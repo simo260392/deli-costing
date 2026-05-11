@@ -801,9 +801,12 @@ function DetailsTab({ product, onBarcodesUpdate }: { product: FlexProduct; onBar
 
 // ─── Pricing Tab ───────────────────────────────────────────────────────────────────
 
-function PricingRow({ v, onWebsitePriceSaved }: { v: SizeVariant; onWebsitePriceSaved: () => void }) {
+function PricingRow({ v, fcTarget, onWebsitePriceSaved }: { v: SizeVariant; fcTarget: number; onWebsitePriceSaved: () => void }) {
   const [editing, setEditing] = useState(false);
-  const [wpInput, setWpInput] = useState(v.websitePrice != null ? String(v.websitePrice) : '');
+  // Default input to override if set, else flex sell price
+  const [wpInput, setWpInput] = useState(
+    v.websitePrice != null ? String(v.websitePrice) : v.sellPrice != null ? String(v.sellPrice) : ''
+  );
   const { toast } = useToast();
 
   const wpMutation = useMutation({
@@ -813,19 +816,27 @@ function PricingRow({ v, onWebsitePriceSaved }: { v: SizeVariant; onWebsitePrice
     onError: (e: any) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
-  const rrp = v.sellPrice ?? null;
-  const exGst = rrp !== null ? rrp / 1.1 : null;
+  // Effective website price: manual override > Flex sell price
+  const effectiveWp = v.websitePrice ?? v.sellPrice ?? null;
+  const isFlexDefault = v.websitePrice == null && v.sellPrice != null;
+  const wpExGst = effectiveWp !== null ? effectiveWp / 1.1 : null;
+
   const cost = v.totalCost > 0 ? v.totalCost : null;
-  const gp = exGst !== null && cost !== null ? exGst - cost : null;
-  const gpPct = exGst && exGst > 0 && gp !== null ? (gp / exGst) * 100 : null;
-  const fcPct = exGst && exGst > 0 && cost !== null ? (cost / exGst) * 100 : null;
+
+  // RRP back-calculated from cost at target FC% (inc GST)
+  const rrp = cost !== null && fcTarget > 0 ? (cost / (fcTarget / 100)) * 1.1 : null;
+
+  // GP and FC% based on effective website price
+  const gp = wpExGst !== null && cost !== null ? wpExGst - cost : null;
+  const gpPct = wpExGst && wpExGst > 0 && gp !== null ? (gp / wpExGst) * 100 : null;
+  const fcPct = wpExGst && wpExGst > 0 && cost !== null ? (cost / wpExGst) * 100 : null;
   const gpColor = gpPct === null ? '' : gpPct >= 65 ? 'text-green-600' : gpPct >= 50 ? 'text-amber-600' : 'text-red-600';
   const label = v.attributesSummary || '(Individual / no size)';
 
   return (
     <tr className="border-b last:border-0 hover:bg-muted/30">
       <td className="py-2 pr-2 text-xs font-medium max-w-[150px] truncate" title={label}>{label}</td>
-      {/* Website Price — editable */}
+      {/* Website Price — editable override, defaults to Flex sell price */}
       <td className="py-2 px-2 text-right tabular-nums text-xs">
         {editing ? (
           <div className="flex items-center gap-1 justify-end">
@@ -847,14 +858,23 @@ function PricingRow({ v, onWebsitePriceSaved }: { v: SizeVariant; onWebsitePrice
           </div>
         ) : (
           <button
-            onClick={() => { setWpInput(v.websitePrice != null ? String(v.websitePrice) : ''); setEditing(true); }}
+            onClick={() => {
+              setWpInput(v.websitePrice != null ? String(v.websitePrice) : v.sellPrice != null ? String(v.sellPrice) : '');
+              setEditing(true);
+            }}
             className="tabular-nums hover:text-[#256984] hover:underline cursor-pointer"
           >
-            {v.websitePrice != null ? `$${v.websitePrice.toFixed(2)}` : <span className="text-muted-foreground text-xs">— add</span>}
+            {effectiveWp != null ? (
+              <span className={isFlexDefault ? 'text-muted-foreground' : ''}>
+                ${effectiveWp.toFixed(2)}{isFlexDefault && <span className="ml-0.5 text-[10px]">↗</span>}
+              </span>
+            ) : (
+              <span className="text-muted-foreground text-xs">— add</span>
+            )}
           </button>
         )}
       </td>
-      {/* RRP from Flex */}
+      {/* RRP — back-calculated from cost at target FC% */}
       <td className="py-2 px-2 text-right tabular-nums text-xs">
         {rrp !== null ? `$${rrp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
       </td>
@@ -886,6 +906,12 @@ function PricingTab({ productUuid }: { productUuid: string }) {
         .then(r => r.json()),
     enabled: !!productUuid,
   });
+
+  const { data: settingsData } = useQuery<Record<string, string>>({
+    queryKey: ["/api/settings"],
+    queryFn: () => apiRequest("GET", "/api/settings").then(r => r.json()),
+  });
+  const fcTarget = parseFloat(settingsData?.target_food_cost_percent || "25");
 
   if (isLoading) return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
@@ -938,12 +964,12 @@ function PricingTab({ productUuid }: { productUuid: string }) {
           </thead>
           <tbody>
             {sorted.map(v => (
-              <PricingRow key={v.id} v={v} onWebsitePriceSaved={refetch} />
+              <PricingRow key={v.id} v={v} fcTarget={fcTarget} onWebsitePriceSaved={refetch} />
             ))}
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-muted-foreground">RRP from Flex order history (GST-inclusive). GP% and FC% based on ex-GST sell price. Click Website Price to edit.</p>
+      <p className="text-xs text-muted-foreground">Website Price defaults to Flex sell price (↗); click to override. RRP is back-calculated at {fcTarget}% food cost target (inc GST). GP% and FC% are actuals based on website price. Change the FC% target in Settings.</p>
     </div>
   );
 }
