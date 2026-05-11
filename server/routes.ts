@@ -5087,7 +5087,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const { data: cachedCustomers, error: custError } = await supabase
         .from("flex_customers")
         .select("uuid, customer_number, company_name, status, first_name, last_name")
-        .eq("status", "active");
+        .eq("status", "active")
+        .eq("is_wholesale", true);
 
       if (custError) throw custError;
       if (!cachedCustomers || cachedCustomers.length === 0) {
@@ -5150,6 +5151,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           email: c.email || '',
           first_name: c.first_name || '',
           last_name: c.last_name || '',
+          is_wholesale: true,
           synced_at: new Date().toISOString(),
         }));
         const { error } = await supabase.from("flex_customers").upsert(batch, { onConflict: "uuid" });
