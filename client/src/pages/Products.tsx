@@ -74,6 +74,7 @@ type SizeVariant = {
   attributesJson: string;
   componentsJson: string;
   totalCost: number;
+  sellPrice: number | null;
   lastSeenAt: string;
 };
 
@@ -244,6 +245,12 @@ function SizeVariantRow({
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
   const hasComponents = components.length > 0;
 
+  // Margin calculations — sell price is GST-inclusive from Flex, strip 10% GST
+  const sellPriceExGst = variant.sellPrice ? variant.sellPrice / 1.1 : null;
+  const grossProfit = sellPriceExGst !== null ? sellPriceExGst - totalCost : null;
+  const gpPercent = sellPriceExGst && sellPriceExGst > 0 ? (grossProfit! / sellPriceExGst) * 100 : null;
+  const fcPercent = sellPriceExGst && sellPriceExGst > 0 ? (totalCost / sellPriceExGst) * 100 : null;
+
   return (
     <div className="border rounded-lg bg-background">
       {/* Row header */}
@@ -256,15 +263,27 @@ function SizeVariantRow({
           <p className="text-sm font-medium truncate">{displayAttrs}</p>
           <p className="text-xs text-muted-foreground font-mono">{variant.sku}</p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-3 shrink-0 text-xs">
+          {sellPriceExGst !== null && (
+            <span className="text-muted-foreground">Sell ${sellPriceExGst.toFixed(2)}</span>
+          )}
           {hasComponents ? (
-            <span className="text-xs font-medium text-[#256984]">
-              {components.length} component{components.length !== 1 ? 's' : ''} · ${totalCost.toFixed(2)}
+            <span className="font-medium text-[#256984]">
+              Cost ${totalCost.toFixed(2)}
             </span>
           ) : (
-            <span className="text-xs text-muted-foreground">No components set</span>
+            <span className="text-muted-foreground">No components set</span>
           )}
-          {dirty && <span className="text-xs text-amber-600 font-medium">Unsaved</span>}
+          {gpPercent !== null && (
+            <span className={cn(
+              "font-semibold px-1.5 py-0.5 rounded",
+              gpPercent >= 65 ? "bg-green-100 text-green-700" :
+              gpPercent >= 50 ? "bg-amber-100 text-amber-700" :
+              "bg-red-100 text-red-700"
+            )}>
+              GP {gpPercent.toFixed(0)}%
+            </span>
+          )}
           {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </div>
       </button>
@@ -775,6 +794,109 @@ function DetailsTab({ product, onBarcodesUpdate }: { product: FlexProduct; onBar
   );
 }
 
+// ─── Pricing Tab ───────────────────────────────────────────────────────────────────
+
+function PricingTab({ productUuid }: { productUuid: string }) {
+  const { data: variants, isLoading } = useQuery<SizeVariant[]>({
+    queryKey: ["/api/product-size-variants", productUuid],
+    queryFn: () =>
+      apiRequest("GET", `/api/product-size-variants?product_uuid=${encodeURIComponent(productUuid)}`)
+        .then(r => r.json()),
+    enabled: !!productUuid,
+  });
+
+  if (isLoading) return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+      <Loader2 size={14} className="animate-spin" /> Loading pricing…
+    </div>
+  );
+
+  if (!variants || variants.length === 0) return (
+    <div className="rounded-md bg-muted/40 p-4 text-sm text-muted-foreground">
+      No size variants found. Sizes and prices are auto-populated from order history.
+    </div>
+  );
+
+  const hasCosts = variants.some(v => v.totalCost > 0);
+  const hasPrices = variants.some(v => v.sellPrice !== null);
+
+  // Sort: individual first, then by person count
+  const sorted = [...variants].sort((a, b) => {
+    const score = (s: string) => {
+      const l = s.toLowerCase();
+      if (l.includes('individual')) return 0;
+      const m = l.match(/(\d+)\s*(person|pax|sandwiches|muffins)/i) || l.match(/[-–]\s*(\d+)/i) || l.match(/(\d+)/i);
+      return m ? parseInt(m[1], 10) : 9999;
+    };
+    return score(a.attributesSummary) - score(b.attributesSummary);
+  });
+
+  return (
+    <div className="space-y-3">
+      {(!hasPrices || !hasCosts) && (
+        <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-700">
+          {!hasPrices && !hasCosts
+            ? "Prices are pulled from Flex order history. Set up components in the Sizes tab to calculate costs and margins."
+            : !hasPrices
+            ? "Sell prices will appear once a sync runs — they’re pulled from Flex order history."
+            : "Set up components in the Sizes tab to calculate costs and margins."}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left text-xs font-semibold text-muted-foreground py-2 pr-3">Size</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">RRP (inc GST)</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Ex-GST</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Cost</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">GP $</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 pl-2">GP%</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 pl-2">FC%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(v => {
+              const rrp = v.sellPrice ?? null;
+              const exGst = rrp !== null ? rrp / 1.1 : null;
+              const cost = v.totalCost || null;
+              const gp = exGst !== null && cost !== null ? exGst - cost : null;
+              const gpPct = exGst && exGst > 0 && gp !== null ? (gp / exGst) * 100 : null;
+              const fcPct = exGst && exGst > 0 && cost !== null ? (cost / exGst) * 100 : null;
+              const gpColor = gpPct === null ? '' : gpPct >= 65 ? 'text-green-600' : gpPct >= 50 ? 'text-amber-600' : 'text-red-600';
+              const label = v.attributesSummary || '(Individual / no size)';
+              return (
+                <tr key={v.id} className="border-b last:border-0 hover:bg-muted/30">
+                  <td className="py-2.5 pr-3 text-xs font-medium max-w-[160px] truncate" title={label}>{label}</td>
+                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
+                    {rrp !== null ? `$${rrp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
+                    {exGst !== null ? `$${exGst.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
+                    {cost ? `$${cost.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className={cn("py-2.5 px-2 text-right tabular-nums text-xs font-medium", gpColor)}>
+                    {gp !== null ? `$${gp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className={cn("py-2.5 pl-2 text-right tabular-nums text-xs font-semibold", gpColor)}>
+                    {gpPct !== null ? `${gpPct.toFixed(1)}%` : <span className="text-muted-foreground font-normal">—</span>}
+                  </td>
+                  <td className="py-2.5 pl-2 text-right tabular-nums text-xs">
+                    {fcPct !== null ? `${fcPct.toFixed(1)}%` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-muted-foreground">Prices pulled from Flex order history. RRP is GST-inclusive. GP% = (Ex-GST − Cost) ÷ Ex-GST. FC% = Cost ÷ Ex-GST.</p>
+    </div>
+  );
+}
+
 // ─── Sizes Tab ──────────────────────────────────────────────────────────────────────
 
 function SizesTab({
@@ -983,6 +1105,7 @@ function ProductCard({
             <Tabs defaultValue="sizes">
               <TabsList className="mb-4 h-8">
                 <TabsTrigger value="sizes" className="text-xs h-7">Sizes</TabsTrigger>
+                <TabsTrigger value="pricing" className="text-xs h-7">Pricing</TabsTrigger>
                 <TabsTrigger value="costing" className="text-xs h-7">Costing</TabsTrigger>
                 <TabsTrigger value="dietaries" className="text-xs h-7">Dietaries</TabsTrigger>
                 <TabsTrigger value="details" className="text-xs h-7">Details</TabsTrigger>
@@ -995,6 +1118,10 @@ function ProductCard({
                   subRecipes={subRecipes}
                   ingredients={ingredients}
                 />
+              </TabsContent>
+
+              <TabsContent value="pricing">
+                <PricingTab productUuid={product.flexUuid} />
               </TabsContent>
 
               <TabsContent value="costing">

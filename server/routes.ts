@@ -2081,6 +2081,7 @@ Return ONLY the JSON object, no explanation.`;
         attributesJson: r.attributes_json,
         componentsJson: r.components_json,
         totalCost: r.total_cost,
+        sellPrice: r.sell_price,
         lastSeenAt: r.last_seen_at,
         createdAt: r.created_at,
       })) || []);
@@ -2131,6 +2132,8 @@ Return ONLY the JSON object, no explanation.`;
               value: typeof a.value === 'string' ? normaliseAttrs(a.value) : a.value,
             })));
             const key = `${item.product_uuid}|${normSummary}`;
+            // price_incl_tax is GST-inclusive — store as-is, display ex-GST in frontend
+            const priceInclTax = item.price_incl_tax ? Number(item.price_incl_tax) : null;
             if (!seen.has(key)) {
               seen.set(key, {
                 product_uuid: item.product_uuid || '',
@@ -2140,8 +2143,12 @@ Return ONLY the JSON object, no explanation.`;
                 attributes_json: normAttrs,
                 components_json: '[]',
                 total_cost: 0,
+                sell_price: priceInclTax,
                 last_seen_at: new Date().toISOString(),
               });
+            } else if (priceInclTax !== null) {
+              // Always update to most recently seen price
+              seen.get(key).sell_price = priceInclTax;
             }
           }
         }
