@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import {
   RefreshCw, AlertTriangle, CheckCircle2, Package2, ExternalLink,
-  Trash2, Plus, ChevronDown, ChevronUp, Loader2, Store, CloudOff, Upload
+  Trash2, Plus, ChevronDown, ChevronUp, Loader2, Store, CloudOff, Upload, Layers
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +63,18 @@ type ComponentLine = {
   quantity: number;
   costPerUnit: number;
   unit?: string;
+};
+
+type SizeVariant = {
+  id: number;
+  productUuid: string;
+  productName: string;
+  sku: string;
+  attributesSummary: string;
+  attributesJson: string;
+  componentsJson: string;
+  totalCost: number;
+  lastSeenAt: string;
 };
 
 type PackagingLine = {
@@ -162,6 +174,209 @@ function dietaryMismatch(flexJson: string, computedJson: string): boolean {
   const flexTracked = TRACK.filter(d => flex.has(d));
   const compTracked = TRACK.filter(d => computed.has(d));
   return flexTracked.sort().join(',') !== compTracked.sort().join(',');
+}
+
+// ─── Size Variant Editor ─────────────────────────────────────────────────────
+
+function SizeVariantRow({
+  variant,
+  recipes,
+  subRecipes,
+  ingredients,
+}: {
+  variant: SizeVariant;
+  recipes: Recipe[];
+  subRecipes: SubRecipe[];
+  ingredients: Ingredient[];
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [components, setComponents] = useState<ComponentLine[]>(() => {
+    try { return JSON.parse(variant.componentsJson || "[]"); } catch { return []; }
+  });
+  const [dirty, setDirty] = useState(false);
+
+  // Add component
+  const [addType, setAddType] = useState<'recipe' | 'sub_recipe' | 'ingredient'>('recipe');
+  const [addId, setAddId] = useState<number | null>(null);
+  const [addQty, setAddQty] = useState("1");
+
+  const saveMutation = useMutation({
+    mutationFn: (comps: ComponentLine[]) =>
+      apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps }).then(r => r.json()),
+    onSuccess: () => { setDirty(false); toast({ title: "Saved", description: variant.attributesSummary || variant.productName }); },
+    onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
+  });
+
+  const totalCost = components.reduce((s, c) => s + (c.costPerUnit || 0) * (c.quantity || 0), 0);
+
+  const addOptions = addType === 'recipe'
+    ? recipes.map(r => ({ value: String(r.id), label: r.name, meta: r }))
+    : addType === 'sub_recipe'
+    ? subRecipes.map(r => ({ value: String(r.id), label: r.name, meta: r }))
+    : ingredients.map(i => ({ value: String(i.id), label: `${i.name} (${i.category})`, meta: i }));
+
+  function handleAdd() {
+    if (!addId) return;
+    const qty = parseFloat(addQty) || 1;
+    let item: ComponentLine | null = null;
+    if (addType === 'recipe') {
+      const r = recipes.find(x => x.id === addId);
+      if (!r) return;
+      item = { type: 'recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
+    } else if (addType === 'sub_recipe') {
+      const r = subRecipes.find(x => x.id === addId);
+      if (!r) return;
+      item = { type: 'sub_recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
+    } else {
+      const ing = ingredients.find(x => x.id === addId);
+      if (!ing) return;
+      item = { type: 'ingredient', id: ing.id, name: ing.name, quantity: qty, costPerUnit: ing.bestCostPerUnit ?? ing.costPerUnit ?? 0, unit: ing.unit };
+    }
+    const updated = [...components, item];
+    setComponents(updated);
+    setDirty(true);
+    setAddId(null);
+    setAddQty("1");
+  }
+
+  const displayAttrs = variant.attributesSummary || "(No size / individual)";
+  const hasComponents = components.length > 0;
+
+  return (
+    <div className="border rounded-lg bg-background">
+      {/* Row header */}
+      <button
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/40 transition-colors rounded-lg"
+        onClick={() => setOpen(o => !o)}
+      >
+        <Layers size={14} className="text-muted-foreground shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium truncate">{displayAttrs}</p>
+          <p className="text-xs text-muted-foreground font-mono">{variant.sku}</p>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {hasComponents ? (
+            <span className="text-xs font-medium text-[#256984]">
+              {components.length} component{components.length !== 1 ? 's' : ''} · ${totalCost.toFixed(2)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">No components set</span>
+          )}
+          {dirty && <span className="text-xs text-amber-600 font-medium">Unsaved</span>}
+          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </div>
+      </button>
+
+      {/* Expanded editor */}
+      {open && (
+        <div className="border-t px-4 pb-4 pt-3 space-y-4">
+
+          {/* Component list */}
+          {components.length > 0 && (
+            <div className="space-y-1.5">
+              {components.map((c, i) => (
+                <div key={i} className="flex items-center gap-2 py-1.5 px-3 rounded-md bg-muted/50">
+                  <span className={cn(
+                    "text-xs px-1.5 py-0.5 rounded font-medium",
+                    c.type === 'recipe' && "bg-blue-100 text-blue-700",
+                    c.type === 'sub_recipe' && "bg-purple-100 text-purple-700",
+                    c.type === 'ingredient' && "bg-green-100 text-green-700",
+                  )}>
+                    {c.type === 'recipe' ? 'Recipe' : c.type === 'sub_recipe' ? 'Sub-recipe' : 'Ingredient'}
+                  </span>
+                  <span className="flex-1 text-sm truncate">{c.name}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    ×{c.quantity} {c.unit || ''}
+                  </span>
+                  <span className="text-xs font-medium tabular-nums">
+                    ${((c.costPerUnit || 0) * (c.quantity || 0)).toFixed(2)}
+                  </span>
+                  <button
+                    className="text-muted-foreground hover:text-red-500 transition-colors"
+                    onClick={() => { const u = components.filter((_, j) => j !== i); setComponents(u); setDirty(true); }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+              <div className="flex justify-between items-center pt-1 px-3">
+                <span className="text-xs text-muted-foreground">Total cost</span>
+                <span className="text-sm font-bold tabular-nums">${totalCost.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Add component row */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Add component</p>
+            <div className="flex gap-2 flex-wrap">
+              {(['recipe', 'sub_recipe', 'ingredient'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => { setAddType(t); setAddId(null); }}
+                  className={cn(
+                    "text-xs px-3 py-1 rounded-full border font-medium transition-colors",
+                    addType === t
+                      ? "bg-[#256984] text-white border-[#256984]"
+                      : "bg-background text-muted-foreground border-border hover:border-[#256984]"
+                  )}
+                >
+                  {t === 'recipe' ? 'Recipe' : t === 'sub_recipe' ? 'Sub-recipe' : 'Ingredient / Packaging'}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <SearchableSelect
+                  options={addOptions}
+                  value={addId ? String(addId) : ""}
+                  onChange={v => setAddId(v ? Number(v) : null)}
+                  placeholder={`Search ${addType === 'recipe' ? 'recipes' : addType === 'sub_recipe' ? 'sub-recipes' : 'ingredients'}…`}
+                />
+              </div>
+              <div className="w-20">
+                <Input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={addQty}
+                  onChange={e => setAddQty(e.target.value)}
+                  placeholder="Qty"
+                  className="h-9 text-sm"
+                />
+              </div>
+              <Button size="sm" onClick={handleAdd} disabled={!addId} className="h-9">
+                <Plus size={14} className="mr-1" /> Add
+              </Button>
+            </div>
+          </div>
+
+          {/* Save */}
+          {dirty && (
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => { setComponents(() => { try { return JSON.parse(variant.componentsJson || "[]"); } catch { return []; } }); setDirty(false); }}
+              >
+                Discard
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => saveMutation.mutate(components)}
+                disabled={saveMutation.isPending}
+                style={{ backgroundColor: '#256984' }}
+                className="text-white"
+              >
+                {saveMutation.isPending ? <><Loader2 size={12} className="mr-1 animate-spin" />Saving…</> : 'Save components'}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Costing Editor ──────────────────────────────────────────────────────────
@@ -572,6 +787,57 @@ function DetailsTab({ product, onBarcodesUpdate }: { product: FlexProduct; onBar
   );
 }
 
+// ─── Sizes Tab ──────────────────────────────────────────────────────────────────────
+
+function SizesTab({
+  productUuid,
+  recipes,
+  subRecipes,
+  ingredients,
+}: {
+  productUuid: string;
+  recipes: Recipe[];
+  subRecipes: SubRecipe[];
+  ingredients: Ingredient[];
+}) {
+  const { data: variants, isLoading } = useQuery<SizeVariant[]>({
+    queryKey: ["/api/product-size-variants", productUuid],
+    queryFn: () =>
+      apiRequest("GET", `/api/product-size-variants?product_uuid=${encodeURIComponent(productUuid)}`)
+        .then(r => r.json()),
+    enabled: !!productUuid,
+  });
+
+  if (isLoading) return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+      <Loader2 size={14} className="animate-spin" /> Loading sizes…
+    </div>
+  );
+
+  if (!variants || variants.length === 0) return (
+    <div className="rounded-md bg-muted/40 p-4 text-sm text-muted-foreground">
+      No size variants found for this product. Sizes are auto-populated from order history.
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground mb-3">
+        {variants.length} size variant{variants.length !== 1 ? 's' : ''} — click a size to set its components (recipes, sub-recipes, packaging).
+      </p>
+      {variants.map(v => (
+        <SizeVariantRow
+          key={v.id}
+          variant={v}
+          recipes={recipes}
+          subRecipes={subRecipes}
+          ingredients={ingredients}
+        />
+      ))}
+    </div>
+  );
+}
+
 function ProductCard({
   product,
   recipes,
@@ -713,12 +979,22 @@ function ProductCard({
       {expanded && (
         <CardContent className="pt-0 px-4 pb-4">
           <div className="border-t pt-4 mt-1">
-            <Tabs defaultValue="costing">
+            <Tabs defaultValue="sizes">
               <TabsList className="mb-4 h-8">
+                <TabsTrigger value="sizes" className="text-xs h-7">Sizes</TabsTrigger>
                 <TabsTrigger value="costing" className="text-xs h-7">Costing</TabsTrigger>
                 <TabsTrigger value="dietaries" className="text-xs h-7">Dietaries</TabsTrigger>
                 <TabsTrigger value="details" className="text-xs h-7">Details</TabsTrigger>
               </TabsList>
+
+              <TabsContent value="sizes">
+                <SizesTab
+                  productUuid={product.flexUuid}
+                  recipes={recipes}
+                  subRecipes={subRecipes}
+                  ingredients={ingredients}
+                />
+              </TabsContent>
 
               <TabsContent value="costing">
                 {costingLoading ? (

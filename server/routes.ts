@@ -2062,6 +2062,102 @@ Return ONLY the JSON object, no explanation.`;
     }
   });
 
+  // ─── Product Size Variants ──────────────────────────────────────────────────
+
+  // GET /api/product-size-variants — all variants, optionally filtered by product_uuid
+  app.get("/api/product-size-variants", async (req: any, res: any) => {
+    try {
+      const productUuid = req.query.product_uuid as string | undefined;
+      let query = supabase.from("product_size_variants").select("*").order("product_name").order("attributes_summary");
+      if (productUuid) query = query.eq("product_uuid", productUuid);
+      const { data, error } = await query;
+      if (error) throw error;
+      return res.json(data?.map((r: any) => ({
+        id: r.id,
+        productUuid: r.product_uuid,
+        productName: r.product_name,
+        sku: r.sku,
+        attributesSummary: r.attributes_summary,
+        attributesJson: r.attributes_json,
+        componentsJson: r.components_json,
+        totalCost: r.total_cost,
+        lastSeenAt: r.last_seen_at,
+        createdAt: r.created_at,
+      })) || []);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/product-size-variants/:id — save components for a variant
+  app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { components } = req.body as { components: any[] };
+      // Compute total cost from components
+      const totalCost = components.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
+      const { error } = await supabase
+        .from("product_size_variants")
+        .update({ components_json: JSON.stringify(components), total_cost: totalCost })
+        .eq("id", id);
+      if (error) throw error;
+      return res.json({ ok: true, totalCost });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/product-size-variants/sync — scan recent orders and upsert any new variants
+  app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
+    try {
+      const daysBack = Number(req.query.days || 90);
+      const fromDt = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+      const toDt = new Date().toISOString();
+      const seen = new Map<string, any>(); // key: uuid|attrs_summary
+      let page = 1;
+      while (true) {
+        const r = await flexFetch(`/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
+        if (!r.ok) break;
+        const data = await r.json();
+        const orders: any[] = data.items || [];
+        if (!orders.length) break;
+        for (const order of orders) {
+          for (const item of (order.items || [])) {
+            const key = `${item.product_uuid}|${item.attributes_summary || ''}`;
+            if (!seen.has(key)) {
+              seen.set(key, {
+                product_uuid: item.product_uuid || '',
+                product_name: item.name,
+                sku: item.sku,
+                attributes_summary: item.attributes_summary || '',
+                attributes_json: JSON.stringify(item.attributes || []),
+                components_json: '[]',
+                total_cost: 0,
+                last_seen_at: new Date().toISOString(),
+              });
+            }
+          }
+        }
+        if (!data.next_page) break;
+        page++;
+      }
+      // Upsert all in batches of 100
+      const rows = [...seen.values()];
+      let synced = 0;
+      for (let i = 0; i < rows.length; i += 100) {
+        const { error } = await supabase.from("product_size_variants").upsert(
+          rows.slice(i, i + 100),
+          { onConflict: "product_uuid,attributes_summary", ignoreDuplicates: false }
+        );
+        if (error) throw error;
+        synced += Math.min(100, rows.length - i);
+      }
+      return res.json({ ok: true, synced, total: rows.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET /api/flex-orders?date=YYYY-MM-DD[&raw=true]
   // raw=false (default): consolidated product map
   // raw=true: full per-order detail for the Prep page Orders tab
