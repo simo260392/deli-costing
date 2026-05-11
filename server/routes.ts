@@ -2115,27 +2115,32 @@ Return ONLY the JSON object, no explanation.`;
     }
   });
 
-  // POST /api/product-size-variants/sync — pull retail prices from Flex product catalogue
-  // Prices come from the Flex product options (catalogue), NOT from order history.
-  // This ensures retail pricing is used, not wholesale order prices.
+  // POST /api/product-size-variants/sync — hybrid price sync
+  // Strategy:
+  //   1. Simple products (type=simple, no options): use Flex catalogue price directly — always retail
+  //   2. Combo/platter products: use retail order history (exclude wholesale customer group orders)
+  //      Flex doesn't expose per-option prices via API, so we use orders — but filter out wholesale.
   app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
     try {
-      // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
+      const WHOLESALE_GROUP_UUID = '13f392c3-fa06-417e-870a-47912a3afc78';
+      const daysBack = Number(req.query.days || 90);
+      const toRfc3339 = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const fromDt = toRfc3339(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
+      const toDt = toRfc3339(new Date());
       const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
 
-      // Get all distinct product UUIDs from our variants table
+      // Fetch all existing variants
       const { data: existing, error: fetchErr } = await supabase
         .from('product_size_variants')
         .select('id, product_uuid, sku, attributes_summary, sell_price');
       if (fetchErr) throw fetchErr;
-
       const allVariants = existing || [];
 
-      // Build set of unique product UUIDs to fetch from Flex
+      // --- Step 1: Catalogue prices for simple products (Flex product.price) ---
+      // key: product_uuid → { sku, price, type }
       const productUuids = [...new Set(allVariants.map((v: any) => v.product_uuid).filter(Boolean))];
-
-      // key: sku|normalised_attributes_summary → catalogue price (GST-inclusive)
-      const cataloguePriceMap = new Map<string, number>();
+      const cataloguePriceMap = new Map<string, number>(); // key: sku|attrs
+      const simpleProductSkus = new Set<string>(); // SKUs of simple products — use catalogue price
 
       for (const uuid of productUuids) {
         try {
@@ -2143,88 +2148,68 @@ Return ONLY the JSON object, no explanation.`;
           if (!r.ok) continue;
           const product = await r.json();
           if (!product || product.status === 'error') continue;
-
           const sku = product.sku || '';
           const basePrice = Number(product.price) || 0;
+          const type = product.type || 'simple';
+          if (basePrice <= 0) continue;
 
-          // Simple products (no options): base price applies to all variants with this SKU
-          const options: any[] = product.product_options || [];
-          if (options.length === 0) {
-            // No options — single size, map by SKU with empty attrs
-            cataloguePriceMap.set(`${sku}|`, basePrice);
-            cataloguePriceMap.set(`${sku}|Order Size: Individual`, basePrice);
-            continue;
-          }
-
-          // For products with options, build all combinations and their prices.
-          // Flex product_options is an array of option groups.
-          // Each group has option_items with { name, price_modifier, price } fields.
-          // The total price for a combination = base price + sum of price modifiers.
-          // We match by building an attributes_summary string from the selected option names.
-
-          // Build map: option group label → list of { name, modifier }
-          type OptionItem = { name: string; modifier: number; absolutePrice: number | null };
-          type OptionGroup = { label: string; items: OptionItem[] };
-          const groups: OptionGroup[] = options.map((g: any) => ({
-            label: g.label || g.name || '',
-            items: (g.option_items || g.items || []).map((item: any) => ({
-              name: item.label || item.name || '',
-              modifier: Number(item.price_modifier || 0),
-              absolutePrice: item.price != null ? Number(item.price) : null,
-            })),
-          })).filter((g: OptionGroup) => g.items.length > 0);
-
-          if (groups.length === 0) {
-            cataloguePriceMap.set(`${sku}|`, basePrice);
-            continue;
-          }
-
-          // Generate all combinations of one item from each group
-          function cartesian(groups: OptionGroup[]): Array<Array<{ groupLabel: string; item: OptionItem }>> {
-            return groups.reduce<Array<Array<{ groupLabel: string; item: OptionItem }>>>((acc, group) => {
-              const result: Array<Array<{ groupLabel: string; item: OptionItem }>> = [];
-              for (const existing of acc) {
-                for (const item of group.items) {
-                  result.push([...existing, { groupLabel: group.label, item }]);
-                }
-              }
-              return result;
-            }, [[]]);
-          }
-
-          const combinations = cartesian(groups);
-          for (const combo of combinations) {
-            // Build attributes_summary string matching Flex order format: "Group: Value | Group: Value"
-            const attrStr = normaliseAttrs(
-              combo.map(c => `${c.groupLabel}: ${c.item.name}`).join(' | ')
-            );
-            // Price: if any item has an absolute price, use the last one; otherwise base + sum of modifiers
-            let totalPrice = basePrice;
-            let hasAbsolute = false;
-            for (const c of combo) {
-              if (c.item.absolutePrice !== null) {
-                totalPrice = c.item.absolutePrice;
-                hasAbsolute = true;
-              } else if (!hasAbsolute) {
-                totalPrice += c.item.modifier;
-              }
-            }
-            if (totalPrice > 0) {
-              cataloguePriceMap.set(`${sku}|${attrStr}`, totalPrice);
+          if (type === 'simple') {
+            // Simple product: one size, use catalogue price for all its variants
+            simpleProductSkus.add(sku);
+            // Map all possible attribute_summary patterns for this SKU
+            const variants = allVariants.filter((v: any) => v.product_uuid === uuid);
+            for (const v of variants) {
+              cataloguePriceMap.set(`${sku}|${normaliseAttrs(v.attributes_summary || '')}`, basePrice);
             }
           }
+          // Combo products: handled via retail order history below
         } catch {
-          // Skip products that fail — don't abort the whole sync
           continue;
         }
       }
 
-      // Update sell_price for all variants where we found a catalogue price
+      // --- Step 2: Retail order prices for combo/platter products ---
+      // Only use orders from NON-wholesale customers
+      // key: sku|attrs → highest-seen retail price (retail orders charge more than wholesale)
+      const orderPriceMap = new Map<string, number>();
+
+      let page = 1;
+      while (true) {
+        const r = await flexFetch(`/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
+        if (!r.ok) break;
+        const data = await r.json();
+        const orders: any[] = data.items || [];
+        if (!orders.length) break;
+
+        for (const order of orders) {
+          // Skip wholesale orders
+          const customerGroups: any[] = order.customer_groups || order.customer?.customer_groups || [];
+          const isWholesale = customerGroups.some((g: any) => g.uuid === WHOLESALE_GROUP_UUID || g.id === WHOLESALE_GROUP_UUID);
+          if (isWholesale) continue;
+
+          for (const item of (order.items || [])) {
+            if (!item.sku || item.price_incl_tax == null) continue;
+            if (simpleProductSkus.has(item.sku)) continue; // Already covered by catalogue price
+            const normSummary = normaliseAttrs(item.attributes_summary || '');
+            const key = `${item.sku}|${normSummary}`;
+            const price = Number(item.price_incl_tax);
+            // Keep highest price seen — retail orders charge more than wholesale
+            if (!orderPriceMap.has(key) || price > orderPriceMap.get(key)!) {
+              orderPriceMap.set(key, price);
+            }
+          }
+        }
+        if (!data.next_page) break;
+        page++;
+      }
+
+      // --- Step 3: Apply prices to variants ---
       let priceUpdates = 0;
       for (const row of allVariants) {
         const normAttrs = normaliseAttrs(row.attributes_summary || '');
         const key = `${row.sku}|${normAttrs}`;
-        const price = cataloguePriceMap.get(key);
+        // Catalogue price takes priority for simple products; order price for combos
+        const price = cataloguePriceMap.get(key) ?? orderPriceMap.get(key);
         if (price !== undefined && Number(price) !== Number(row.sell_price)) {
           await supabase.from('product_size_variants')
             .update({ sell_price: price, last_seen_at: new Date().toISOString() })
@@ -2233,7 +2218,14 @@ Return ONLY the JSON object, no explanation.`;
         }
       }
 
-      return res.json({ ok: true, synced: priceUpdates, priceUpdates, ordersScanned: cataloguePriceMap.size, productsChecked: productUuids.length });
+      return res.json({
+        ok: true,
+        synced: priceUpdates,
+        priceUpdates,
+        simpleProductsFromCatalogue: cataloguePriceMap.size,
+        comboProductsFromOrders: orderPriceMap.size,
+        productsChecked: productUuids.length,
+      });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
