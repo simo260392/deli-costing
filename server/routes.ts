@@ -1613,6 +1613,21 @@ Return ONLY the JSON object, no explanation.`;
     'Origin': 'https://the-deli.com.au',
   };
 
+  // Proxy Flex API calls through Supabase Edge Function to bypass Cloudflare block on Railway IPs
+  const FLEX_PROXY_URL = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
+  const FLEX_PROXY_SECRET = "deli-flex-proxy-2026";
+  async function flexFetch(path: string, options: { method?: string; body?: string } = {}): Promise<Response> {
+    const url = `${FLEX_PROXY_URL}?path=${encodeURIComponent(path)}`;
+    return fetch(url, {
+      method: options.method || "GET",
+      headers: {
+        "x-proxy-secret": FLEX_PROXY_SECRET,
+        "Content-Type": "application/json",
+      },
+      body: options.body,
+    });
+  }
+
   // GET /api/flex-products — list all synced products
   app.get("/api/flex-products", async (req, res) => {
     try {
@@ -1850,9 +1865,7 @@ Return ONLY the JSON object, no explanation.`;
       // ALWAYS fetch live categories from Flex immediately before PUT
       // so we echo back exactly what's there — Flex's PUT wipes categories
       // if they don't match, so we must use the live state, not our cached copy.
-      const flexGetResp = await fetch(`${flexBase}/api/v1/products/${flexUuid}`, {
-        headers: { ...FLEX_HEADERS, Authorization: `Bearer ${flexToken}` },
-      });
+      const flexGetResp = await flexFetch(`/api/v1/products/${flexUuid}`);
       if (!flexGetResp.ok) throw new Error(`Failed to fetch product from Flex: ${flexGetResp.status}`);
       const flexLive = await flexGetResp.json();
 
@@ -1889,12 +1902,8 @@ Return ONLY the JSON object, no explanation.`;
       if (flexLive.minimum_order_quantity != null) putBody.minimum_order_quantity = flexLive.minimum_order_quantity;
       if (flexLive.kitchen_department?.uuid) putBody.kitchen_department = flexLive.kitchen_department.uuid;
 
-      const putResp = await fetch(`${flexBase}/api/v1/products/${flexUuid}`, {
+      const putResp = await flexFetch(`/api/v1/products/${flexUuid}`, {
         method: "PUT",
-        headers: {
-          Authorization: `Bearer ${flexToken}`,
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(putBody),
       });
 
@@ -1977,7 +1986,7 @@ Return ONLY the JSON object, no explanation.`;
   // POST /api/flex-products/sync — fetch all products from Flex API and upsert
   app.post("/api/flex-products/sync", async (req, res) => {
     try {
-      let nextUrl: string | null = `${FLEX_BASE}/api/v1/products?per_page=100&page=1`;
+      let nextPath: string | null = `/api/v1/products?per_page=100&page=1`;
       let totalSynced = 0;
 
       const allergenMap: Record<string, string> = {
@@ -1985,10 +1994,8 @@ Return ONLY the JSON object, no explanation.`;
         'CS': 'Seafood', 'CX': 'Seeds', 'CY': 'Soy', 'CU': 'Sulphites',
       };
 
-      while (nextUrl) {
-        const response = await fetch(nextUrl, {
-          headers: FLEX_HEADERS
-        });
+      while (nextPath) {
+        const response = await flexFetch(nextPath);
 
         if (!response.ok) {
           const text = await response.text();
@@ -2042,8 +2049,10 @@ Return ONLY the JSON object, no explanation.`;
           totalSynced++;
         }
 
-        // next_page is either a full URL string or null/falsy
-        nextUrl = body.next_page || null;
+        // next_page is a full URL — extract just the path+query for flexFetch
+        if (body.next_page) {
+          try { nextPath = new URL(body.next_page).pathname + new URL(body.next_page).search; } catch { nextPath = null; }
+        } else { nextPath = null; }
       }
 
       res.json({ ok: true, synced: totalSynced });
@@ -2068,10 +2077,8 @@ Return ONLY the JSON object, no explanation.`;
       let hasMore = true;
 
       while (hasMore) {
-        const url = `https://the-deli.com.au/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(from)}&delivery_datetime_to=${encodeURIComponent(to)}`;
-        const resp = await fetch(url, {
-          headers: FLEX_HEADERS,
-        });
+        const flexPath = `/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(from)}&delivery_datetime_to=${encodeURIComponent(to)}`;
+        const resp = await flexFetch(flexPath);
         if (!resp.ok) {
           const err = await resp.text();
           return res.status(resp.status).json({ error: err });
@@ -5130,14 +5137,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   app.post("/api/wholesale/sync-customers", async (req: any, res: any) => {
     try {
       let allCustomers: any[] = [];
-      let nextUrl: string | null = `${FLEX_BASE}/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200&page=1`;
-      while (nextUrl) {
-        const flexRes = await fetch(nextUrl, { headers: FLEX_HEADERS });
+      let nextCustPath: string | null = `/api/v1/customers?customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78&per_page=200&page=1`;
+      while (nextCustPath) {
+        const flexRes = await flexFetch(nextCustPath);
         if (!flexRes.ok) throw new Error(`Flex API error: ${flexRes.status}`);
         const flexData = await flexRes.json();
         const items: any[] = flexData.items || [];
         allCustomers = allCustomers.concat(items);
-        nextUrl = flexData.next_page || null;
+        if (flexData.next_page) {
+          try { nextCustPath = new URL(flexData.next_page).pathname + new URL(flexData.next_page).search; } catch { nextCustPath = null; }
+        } else { nextCustPath = null; }
       }
       // Upsert into flex_customers in batches of 200
       let synced = 0;
@@ -5170,10 +5179,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     try {
       // Try Flex first
       const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      const flexRes = await fetch(
-        `${FLEX_BASE}/api/v1/orders?per_page=200&page=1&created_after=${encodeURIComponent(ninetyDaysAgo)}&customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78`,
-        { headers: FLEX_HEADERS }
-      );
+      const flexRes = await flexFetch(`/api/v1/orders?per_page=200&page=1&created_after=${encodeURIComponent(ninetyDaysAgo)}&customer_group_id=13f392c3-fa06-417e-870a-47912a3afc78`);
       if (!flexRes.ok) return res.json([]);
       const flexData = await flexRes.json();
       const orders: any[] = flexData.items || flexData.data || flexData.orders || [];
