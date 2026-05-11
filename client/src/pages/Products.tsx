@@ -331,7 +331,7 @@ function SizeVariantRow({
                 <SearchableSelect
                   options={addOptions}
                   value={addId ? String(addId) : ""}
-                  onChange={v => setAddId(v ? Number(v) : null)}
+                  onValueChange={v => setAddId(v ? Number(v) : null)}
                   placeholder={`Search ${addType === 'recipe' ? 'recipes' : addType === 'sub_recipe' ? 'sub-recipes' : 'ingredients'}…`}
                 />
               </div>
@@ -812,7 +812,7 @@ function SizesTab({
   const sortedVariants = variants ? [...variants].sort((a, b) => {
     const sizeScore = (s: string) => {
       const lower = s.toLowerCase();
-      if (lower.includes('individual')) return 1;
+      if (lower.includes('individual')) return 0;
       const m = lower.match(/(\d+)\s*(person|pax|sandwiches|muffins|piece|pcs)/i)
         || lower.match(/[-–]\s*(\d+)\s*(person|pax)?/i)
         || lower.match(/(\d+)/i);
