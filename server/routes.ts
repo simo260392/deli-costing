@@ -2082,6 +2082,7 @@ Return ONLY the JSON object, no explanation.`;
         componentsJson: r.components_json,
         totalCost: r.total_cost,
         sellPrice: r.sell_price,
+        websitePrice: r.website_price,
         lastSeenAt: r.last_seen_at,
         createdAt: r.created_at,
       })) || []);
@@ -2090,34 +2091,25 @@ Return ONLY the JSON object, no explanation.`;
     }
   });
 
-  // PATCH /api/product-size-variants/:id — save components for a variant
+  // PATCH /api/product-size-variants/:id — save components or website_price for a variant
   app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
     try {
       const { id } = req.params;
-      const { components } = req.body as { components: any[] };
-      // Compute total cost from components
-      const totalCost = components.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
+      const { components, websitePrice } = req.body as { components?: any[]; websitePrice?: number | null };
+      const updates: Record<string, any> = {};
+      if (components !== undefined) {
+        updates.components_json = JSON.stringify(components);
+        updates.total_cost = components.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
+      }
+      if (websitePrice !== undefined) {
+        updates.website_price = websitePrice;
+      }
       const { error } = await supabase
         .from("product_size_variants")
-        .update({ components_json: JSON.stringify(components), total_cost: totalCost })
+        .update(updates)
         .eq("id", id);
       if (error) throw error;
-      return res.json({ ok: true, totalCost });
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message });
-    }
-  });
-
-  // GET /api/product-size-variants/debug-flex — temporary: see raw Flex response for date range
-  app.get("/api/product-size-variants/debug-flex", async (req: any, res: any) => {
-    try {
-      const toRfc3339 = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-      const fromDt = toRfc3339(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
-      const toDt = toRfc3339(new Date());
-      const path = `/api/v1/orders?per_page=5&page=1&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`;
-      const r = await flexFetch(path);
-      const text = await r.text();
-      return res.json({ status: r.status, ok: r.ok, fromDt, toDt, path, body: text.slice(0, 2000) });
+      return res.json({ ok: true, totalCost: updates.total_cost });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }

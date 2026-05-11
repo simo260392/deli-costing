@@ -75,6 +75,7 @@ type SizeVariant = {
   componentsJson: string;
   totalCost: number;
   sellPrice: number | null;
+  websitePrice: number | null;
   lastSeenAt: string;
 };
 
@@ -205,7 +206,11 @@ function SizeVariantRow({
   const saveMutation = useMutation({
     mutationFn: (comps: ComponentLine[]) =>
       apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps }).then(r => r.json()),
-    onSuccess: () => { setDirty(false); },
+    onSuccess: () => {
+      setDirty(false);
+      // Invalidate so PricingTab auto-refreshes with new totalCost
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants", variant.productUuid] });
+    },
     onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
@@ -796,8 +801,85 @@ function DetailsTab({ product, onBarcodesUpdate }: { product: FlexProduct; onBar
 
 // ─── Pricing Tab ───────────────────────────────────────────────────────────────────
 
+function PricingRow({ v, onWebsitePriceSaved }: { v: SizeVariant; onWebsitePriceSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [wpInput, setWpInput] = useState(v.websitePrice != null ? String(v.websitePrice) : '');
+  const { toast } = useToast();
+
+  const wpMutation = useMutation({
+    mutationFn: (price: number | null) =>
+      apiRequest('PATCH', `/api/product-size-variants/${v.id}`, { websitePrice: price }).then(r => r.json()),
+    onSuccess: () => { setEditing(false); onWebsitePriceSaved(); },
+    onError: (e: any) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const rrp = v.sellPrice ?? null;
+  const exGst = rrp !== null ? rrp / 1.1 : null;
+  const cost = v.totalCost > 0 ? v.totalCost : null;
+  const gp = exGst !== null && cost !== null ? exGst - cost : null;
+  const gpPct = exGst && exGst > 0 && gp !== null ? (gp / exGst) * 100 : null;
+  const fcPct = exGst && exGst > 0 && cost !== null ? (cost / exGst) * 100 : null;
+  const gpColor = gpPct === null ? '' : gpPct >= 65 ? 'text-green-600' : gpPct >= 50 ? 'text-amber-600' : 'text-red-600';
+  const label = v.attributesSummary || '(Individual / no size)';
+
+  return (
+    <tr className="border-b last:border-0 hover:bg-muted/30">
+      <td className="py-2 pr-2 text-xs font-medium max-w-[150px] truncate" title={label}>{label}</td>
+      {/* Website Price — editable */}
+      <td className="py-2 px-2 text-right tabular-nums text-xs">
+        {editing ? (
+          <div className="flex items-center gap-1 justify-end">
+            <span className="text-muted-foreground">$</span>
+            <input
+              type="number" step="0.01" min="0"
+              value={wpInput}
+              onChange={e => setWpInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') wpMutation.mutate(wpInput ? parseFloat(wpInput) : null);
+                if (e.key === 'Escape') setEditing(false);
+              }}
+              className="w-16 border rounded px-1 py-0.5 text-xs text-right"
+              autoFocus
+            />
+            <button onClick={() => wpMutation.mutate(wpInput ? parseFloat(wpInput) : null)} className="text-[#256984] hover:opacity-70">
+              <Check size={12} />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => { setWpInput(v.websitePrice != null ? String(v.websitePrice) : ''); setEditing(true); }}
+            className="tabular-nums hover:text-[#256984] hover:underline cursor-pointer"
+          >
+            {v.websitePrice != null ? `$${v.websitePrice.toFixed(2)}` : <span className="text-muted-foreground text-xs">— add</span>}
+          </button>
+        )}
+      </td>
+      {/* RRP from Flex */}
+      <td className="py-2 px-2 text-right tabular-nums text-xs">
+        {rrp !== null ? `$${rrp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+      </td>
+      {/* Cost */}
+      <td className="py-2 px-2 text-right tabular-nums text-xs">
+        {cost ? `$${cost.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+      </td>
+      {/* GP$ */}
+      <td className={cn('py-2 px-2 text-right tabular-nums text-xs font-medium', gpColor)}>
+        {gp !== null ? `$${gp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
+      </td>
+      {/* GP% */}
+      <td className={cn('py-2 px-2 text-right tabular-nums text-xs font-semibold', gpColor)}>
+        {gpPct !== null ? `${gpPct.toFixed(1)}%` : <span className="text-muted-foreground font-normal">—</span>}
+      </td>
+      {/* FC% */}
+      <td className="py-2 pl-2 text-right tabular-nums text-xs">
+        {fcPct !== null ? `${fcPct.toFixed(1)}%` : <span className="text-muted-foreground">—</span>}
+      </td>
+    </tr>
+  );
+}
+
 function PricingTab({ productUuid }: { productUuid: string }) {
-  const { data: variants, isLoading } = useQuery<SizeVariant[]>({
+  const { data: variants, isLoading, refetch } = useQuery<SizeVariant[]>({
     queryKey: ["/api/product-size-variants", productUuid],
     queryFn: () =>
       apiRequest("GET", `/api/product-size-variants?product_uuid=${encodeURIComponent(productUuid)}`)
@@ -820,7 +902,6 @@ function PricingTab({ productUuid }: { productUuid: string }) {
   const hasCosts = variants.some(v => v.totalCost > 0);
   const hasPrices = variants.some(v => v.sellPrice !== null);
 
-  // Sort: individual first, then by person count
   const sorted = [...variants].sort((a, b) => {
     const score = (s: string) => {
       const l = s.toLowerCase();
@@ -836,63 +917,33 @@ function PricingTab({ productUuid }: { productUuid: string }) {
       {(!hasPrices || !hasCosts) && (
         <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-700">
           {!hasPrices && !hasCosts
-            ? "Prices are pulled from Flex order history. Set up components in the Sizes tab to calculate costs and margins."
+            ? 'Set up components in the Sizes tab to see costs. Flex sell prices sync automatically.'
             : !hasPrices
-            ? "Sell prices will appear once a sync runs — they’re pulled from Flex order history."
-            : "Set up components in the Sizes tab to calculate costs and margins."}
+            ? "Flex sell prices will appear after the next sync."
+            : 'Set up components in the Sizes tab to see cost and margin calculations.'}
         </div>
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b">
-              <th className="text-left text-xs font-semibold text-muted-foreground py-2 pr-3">Size</th>
+              <th className="text-left text-xs font-semibold text-muted-foreground py-2 pr-2">Size</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Website Price</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">RRP (inc GST)</th>
-              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Ex-GST</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Cost</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">GP $</th>
-              <th className="text-right text-xs font-semibold text-muted-foreground py-2 pl-2">GP%</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">GP%</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 pl-2">FC%</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map(v => {
-              const rrp = v.sellPrice ?? null;
-              const exGst = rrp !== null ? rrp / 1.1 : null;
-              const cost = v.totalCost || null;
-              const gp = exGst !== null && cost !== null ? exGst - cost : null;
-              const gpPct = exGst && exGst > 0 && gp !== null ? (gp / exGst) * 100 : null;
-              const fcPct = exGst && exGst > 0 && cost !== null ? (cost / exGst) * 100 : null;
-              const gpColor = gpPct === null ? '' : gpPct >= 65 ? 'text-green-600' : gpPct >= 50 ? 'text-amber-600' : 'text-red-600';
-              const label = v.attributesSummary || '(Individual / no size)';
-              return (
-                <tr key={v.id} className="border-b last:border-0 hover:bg-muted/30">
-                  <td className="py-2.5 pr-3 text-xs font-medium max-w-[160px] truncate" title={label}>{label}</td>
-                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
-                    {rrp !== null ? `$${rrp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
-                    {exGst !== null ? `$${exGst.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="py-2.5 px-2 text-right tabular-nums text-xs">
-                    {cost ? `$${cost.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className={cn("py-2.5 px-2 text-right tabular-nums text-xs font-medium", gpColor)}>
-                    {gp !== null ? `$${gp.toFixed(2)}` : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className={cn("py-2.5 pl-2 text-right tabular-nums text-xs font-semibold", gpColor)}>
-                    {gpPct !== null ? `${gpPct.toFixed(1)}%` : <span className="text-muted-foreground font-normal">—</span>}
-                  </td>
-                  <td className="py-2.5 pl-2 text-right tabular-nums text-xs">
-                    {fcPct !== null ? `${fcPct.toFixed(1)}%` : <span className="text-muted-foreground">—</span>}
-                  </td>
-                </tr>
-              );
-            })}
+            {sorted.map(v => (
+              <PricingRow key={v.id} v={v} onWebsitePriceSaved={refetch} />
+            ))}
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-muted-foreground">Prices pulled from Flex order history. RRP is GST-inclusive. GP% = (Ex-GST − Cost) ÷ Ex-GST. FC% = Cost ÷ Ex-GST.</p>
+      <p className="text-xs text-muted-foreground">RRP from Flex order history (GST-inclusive). GP% and FC% based on ex-GST sell price. Click Website Price to edit.</p>
     </div>
   );
 }
@@ -1106,7 +1157,6 @@ function ProductCard({
               <TabsList className="mb-4 h-8">
                 <TabsTrigger value="sizes" className="text-xs h-7">Sizes</TabsTrigger>
                 <TabsTrigger value="pricing" className="text-xs h-7">Pricing</TabsTrigger>
-                <TabsTrigger value="costing" className="text-xs h-7">Costing</TabsTrigger>
                 <TabsTrigger value="dietaries" className="text-xs h-7">Dietaries</TabsTrigger>
                 <TabsTrigger value="details" className="text-xs h-7">Details</TabsTrigger>
               </TabsList>
@@ -1122,25 +1172,6 @@ function ProductCard({
 
               <TabsContent value="pricing">
                 <PricingTab productUuid={product.flexUuid} />
-              </TabsContent>
-
-              <TabsContent value="costing">
-                {costingLoading ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
-                    <Loader2 size={14} className="animate-spin" /> Loading costing…
-                  </div>
-                ) : (
-                  <CostingEditor
-                    product={product}
-                    costing={costing ?? null}
-                    recipes={recipes}
-                    subRecipes={subRecipes}
-                    ingredients={ingredients}
-                    settings={settings}
-                    onSave={data => saveMutation.mutate(data)}
-                    isSaving={saveMutation.isPending}
-                  />
-                )}
               </TabsContent>
 
               <TabsContent value="dietaries">
