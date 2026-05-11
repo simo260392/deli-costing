@@ -2111,12 +2111,8 @@ Return ONLY the JSON object, no explanation.`;
   // GET /api/product-size-variants/debug-flex — temporary: see raw Flex response for date range
   app.get("/api/product-size-variants/debug-flex", async (req: any, res: any) => {
     try {
-      const toAwst = (d: Date) => {
-        const awst = new Date(d.getTime() + 8 * 60 * 60 * 1000);
-        return awst.toISOString().replace('Z', '+08:00');
-      };
-      const fromDt = toAwst(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
-      const toDt = toAwst(new Date());
+      const fromDt = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const toDt = new Date().toISOString();
       const path = `/api/v1/orders?per_page=5&page=1&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`;
       const r = await flexFetch(path);
       const text = await r.text();
@@ -2130,13 +2126,9 @@ Return ONLY the JSON object, no explanation.`;
   app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
     try {
       const daysBack = Number(req.query.days || 90);
-      // Use AWST +08:00 format — Flex ignores UTC 'Z' datetimes in range queries
-      const toAwst = (d: Date) => {
-        const awst = new Date(d.getTime() + 8 * 60 * 60 * 1000);
-        return awst.toISOString().replace('Z', '+08:00');
-      };
-      const fromDt = toAwst(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
-      const toDt = toAwst(new Date());
+      // Flex range filter requires RFC3339 UTC format (e.g. 2020-01-01T00:00:00Z)
+      const fromDt = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+      const toDt = new Date().toISOString();
       // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
       const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
 
