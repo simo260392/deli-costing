@@ -2108,6 +2108,24 @@ Return ONLY the JSON object, no explanation.`;
     }
   });
 
+  // GET /api/product-size-variants/debug-flex — temporary: see raw Flex response for date range
+  app.get("/api/product-size-variants/debug-flex", async (req: any, res: any) => {
+    try {
+      const toAwst = (d: Date) => {
+        const awst = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+        return awst.toISOString().replace('Z', '+08:00');
+      };
+      const fromDt = toAwst(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+      const toDt = toAwst(new Date());
+      const path = `/api/v1/orders?per_page=5&page=1&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`;
+      const r = await flexFetch(path);
+      const text = await r.text();
+      return res.json({ status: r.status, ok: r.ok, fromDt, toDt, path, body: text.slice(0, 2000) });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // POST /api/product-size-variants/sync — scan recent orders and upsert any new variants
   app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
     try {
