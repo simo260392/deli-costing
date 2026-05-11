@@ -2111,8 +2111,9 @@ Return ONLY the JSON object, no explanation.`;
   // GET /api/product-size-variants/debug-flex — temporary: see raw Flex response for date range
   app.get("/api/product-size-variants/debug-flex", async (req: any, res: any) => {
     try {
-      const fromDt = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const toDt = new Date().toISOString();
+      const toRfc3339 = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const fromDt = toRfc3339(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+      const toDt = toRfc3339(new Date());
       const path = `/api/v1/orders?per_page=5&page=1&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`;
       const r = await flexFetch(path);
       const text = await r.text();
@@ -2126,9 +2127,10 @@ Return ONLY the JSON object, no explanation.`;
   app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
     try {
       const daysBack = Number(req.query.days || 90);
-      // Flex range filter requires RFC3339 UTC format (e.g. 2020-01-01T00:00:00Z)
-      const fromDt = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-      const toDt = new Date().toISOString();
+      // Flex range filter requires RFC3339 UTC without milliseconds e.g. 2020-01-01T00:00:00Z
+      const toRfc3339 = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const fromDt = toRfc3339(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
+      const toDt = toRfc3339(new Date());
       // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
       const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
 
