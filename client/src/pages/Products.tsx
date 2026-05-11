@@ -198,9 +198,8 @@ function SizeVariantRow({
   });
   const [dirty, setDirty] = useState(false);
 
-  // Add component
-  const [addType, setAddType] = useState<'recipe' | 'sub_recipe' | 'ingredient'>('recipe');
-  const [addId, setAddId] = useState<number | null>(null);
+  // Add component — unified search for recipes/sub-recipes/ingredients, separate packaging
+  const [addId, setAddId] = useState<string>(""); // prefixed: "recipe:1", "sub_recipe:2", "ingredient:3"
   const [addQty, setAddQty] = useState("1");
 
   const saveMutation = useMutation({
@@ -216,33 +215,38 @@ function SizeVariantRow({
 
   const totalCost = components.reduce((s, c) => s + (c.costPerUnit || 0) * (c.quantity || 0), 0);
 
-  const addOptions = addType === 'recipe'
-    ? recipes.map(r => ({ value: String(r.id), label: r.name, meta: r }))
-    : addType === 'sub_recipe'
-    ? subRecipes.map(r => ({ value: String(r.id), label: r.name, meta: r }))
-    : ingredients.map(i => ({ value: String(i.id), label: `${i.name} (${i.category})`, meta: i }));
+  // Combined options: recipes + sub-recipes + non-packaging ingredients, grouped
+  const addOptions = useMemo(() => [
+    ...recipes.map(r => ({ value: `recipe:${r.id}`, label: r.name, group: "Recipes" })),
+    ...subRecipes.map(r => ({ value: `sub_recipe:${r.id}`, label: r.name, group: "Sub-Recipes" })),
+    ...ingredients
+      .filter(i => !i.category?.toLowerCase().includes('packag'))
+      .map(i => ({ value: `ingredient:${i.id}`, label: i.name, group: "Ingredients" })),
+  ], [recipes, subRecipes, ingredients]);
 
   function handleAdd() {
     if (!addId) return;
     const qty = parseFloat(addQty) || 1;
+    const [type, rawId] = addId.split(':');
+    const id = Number(rawId);
     let item: ComponentLine | null = null;
-    if (addType === 'recipe') {
-      const r = recipes.find(x => x.id === addId);
+    if (type === 'recipe') {
+      const r = recipes.find(x => x.id === id);
       if (!r) return;
       item = { type: 'recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
-    } else if (addType === 'sub_recipe') {
-      const r = subRecipes.find(x => x.id === addId);
+    } else if (type === 'sub_recipe') {
+      const r = subRecipes.find(x => x.id === id);
       if (!r) return;
       item = { type: 'sub_recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
     } else {
-      const ing = ingredients.find(x => x.id === addId);
+      const ing = ingredients.find(x => x.id === id);
       if (!ing) return;
       item = { type: 'ingredient', id: ing.id, name: ing.name, quantity: qty, costPerUnit: ing.bestCostPerUnit ?? ing.costPerUnit ?? 0, unit: ing.unit };
     }
     const updated = [...components, item];
     setComponents(updated);
     setDirty(false);
-    setAddId(null);
+    setAddId("");
     setAddQty("1");
     saveMutation.mutate(updated);
   }
@@ -332,32 +336,16 @@ function SizeVariantRow({
             </div>
           )}
 
-          {/* Add component row */}
+          {/* Add component row — unified search */}
           <div className="space-y-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Add component</p>
-            <div className="flex gap-2 flex-wrap">
-              {(['recipe', 'sub_recipe', 'ingredient'] as const).map(t => (
-                <button
-                  key={t}
-                  onClick={() => { setAddType(t); setAddId(null); }}
-                  className={cn(
-                    "text-xs px-3 py-1 rounded-full border font-medium transition-colors",
-                    addType === t
-                      ? "bg-[#256984] text-white border-[#256984]"
-                      : "bg-background text-muted-foreground border-border hover:border-[#256984]"
-                  )}
-                >
-                  {t === 'recipe' ? 'Recipe' : t === 'sub_recipe' ? 'Sub-recipe' : 'Ingredient / Packaging'}
-                </button>
-              ))}
-            </div>
             <div className="flex gap-2 items-end">
               <div className="flex-1">
                 <SearchableSelect
                   options={addOptions}
-                  value={addId ? String(addId) : ""}
-                  onValueChange={v => setAddId(v ? Number(v) : null)}
-                  placeholder={`Search ${addType === 'recipe' ? 'recipes' : addType === 'sub_recipe' ? 'sub-recipes' : 'ingredients'}…`}
+                  value={addId}
+                  onValueChange={v => setAddId(v || "")}
+                  placeholder="Search recipes, sub-recipes & ingredients…"
                 />
               </div>
               <div className="w-20">
