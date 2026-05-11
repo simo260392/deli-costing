@@ -2155,18 +2155,51 @@ Return ONLY the JSON object, no explanation.`;
         if (!data.next_page) break;
         page++;
       }
-      // Upsert all in batches of 100
+      // For each variant: if it already exists just update sell_price + last_seen_at,
+      // otherwise insert as new. This preserves components_json on existing rows.
       const rows = [...seen.values()];
       let synced = 0;
-      for (let i = 0; i < rows.length; i += 100) {
-        const { error } = await supabase.from("product_size_variants").upsert(
-          rows.slice(i, i + 100),
-          { onConflict: "product_uuid,attributes_summary", ignoreDuplicates: false }
-        );
-        if (error) throw error;
-        synced += Math.min(100, rows.length - i);
+
+      // Fetch existing (product_uuid, attributes_summary) pairs to decide insert vs update
+      const { data: existing } = await supabase
+        .from('product_size_variants')
+        .select('id, product_uuid, attributes_summary, sell_price');
+      const existingMap = new Map<string, { id: number; sell_price: number | null }>(
+        (existing || []).map((r: any) => [`${r.product_uuid}|${r.attributes_summary}`, { id: r.id, sell_price: r.sell_price }])
+      );
+
+      const toInsert: any[] = [];
+      const toUpdate: Array<{ id: number; sell_price: number | null }> = [];
+
+      for (const row of rows) {
+        const key = `${row.product_uuid}|${row.attributes_summary}`;
+        const ex = existingMap.get(key);
+        if (ex) {
+          // Only update if price has changed or was null
+          if (row.sell_price !== null && ex.sell_price !== row.sell_price) {
+            toUpdate.push({ id: ex.id, sell_price: row.sell_price });
+          }
+        } else {
+          toInsert.push(row);
+        }
       }
-      return res.json({ ok: true, synced, total: rows.length });
+
+      // Insert new variants
+      for (let i = 0; i < toInsert.length; i += 100) {
+        const { error } = await supabase.from('product_size_variants').insert(toInsert.slice(i, i + 100));
+        if (error) throw error;
+        synced += Math.min(100, toInsert.length - i);
+      }
+
+      // Update sell_price on existing variants
+      for (const u of toUpdate) {
+        await supabase.from('product_size_variants')
+          .update({ sell_price: u.sell_price, last_seen_at: new Date().toISOString() })
+          .eq('id', u.id);
+        synced++;
+      }
+
+      return res.json({ ok: true, synced, newVariants: toInsert.length, priceUpdates: toUpdate.length, total: rows.length });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
