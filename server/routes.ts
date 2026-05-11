@@ -2119,9 +2119,11 @@ Return ONLY the JSON object, no explanation.`;
       };
       const fromDt = toAwst(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
       const toDt = toAwst(new Date());
-      const seen = new Map<string, any>(); // key: uuid|attrs_summary
       // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
       const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
+
+      // key: sku|normalised_attributes_summary → most recent price seen
+      const priceMap = new Map<string, number>();
       let page = 1;
       while (true) {
         const r = await flexFetch(`/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
@@ -2131,80 +2133,36 @@ Return ONLY the JSON object, no explanation.`;
         if (!orders.length) break;
         for (const order of orders) {
           for (const item of (order.items || [])) {
+            if (!item.sku || item.price_incl_tax == null) continue;
             const normSummary = normaliseAttrs(item.attributes_summary || '');
-            const normAttrs = JSON.stringify((item.attributes || []).map((a: any) => ({
-              ...a,
-              value: typeof a.value === 'string' ? normaliseAttrs(a.value) : a.value,
-            })));
-            const key = `${item.product_uuid}|${normSummary}`;
-            // price_incl_tax is GST-inclusive — store as-is, display ex-GST in frontend
-            const priceInclTax = item.price_incl_tax ? Number(item.price_incl_tax) : null;
-            if (!seen.has(key)) {
-              seen.set(key, {
-                product_uuid: item.product_uuid || '',
-                product_name: item.name,
-                sku: item.sku,
-                attributes_summary: normSummary,
-                attributes_json: normAttrs,
-                components_json: '[]',
-                total_cost: 0,
-                sell_price: priceInclTax,
-                last_seen_at: new Date().toISOString(),
-              });
-            } else if (priceInclTax !== null) {
-              // Always update to most recently seen price
-              seen.get(key).sell_price = priceInclTax;
-            }
+            const key = `${item.sku}|${normSummary}`;
+            // Always overwrite — last seen = most recent price
+            priceMap.set(key, Number(item.price_incl_tax));
           }
         }
         if (!data.next_page) break;
         page++;
       }
-      // For each variant: if it already exists just update sell_price + last_seen_at,
-      // otherwise insert as new. This preserves components_json on existing rows.
-      const rows = [...seen.values()];
-      let synced = 0;
 
-      // Fetch existing (product_uuid, attributes_summary) pairs to decide insert vs update
-      const { data: existing } = await supabase
+      // Now fetch all existing variants and update sell_price where SKU+attrs match
+      const { data: existing, error: fetchErr } = await supabase
         .from('product_size_variants')
-        .select('id, product_uuid, attributes_summary, sell_price');
-      const existingMap = new Map<string, { id: number; sell_price: number | null }>(
-        (existing || []).map((r: any) => [`${r.product_uuid}|${r.attributes_summary}`, { id: r.id, sell_price: r.sell_price }])
-      );
+        .select('id, sku, attributes_summary, sell_price');
+      if (fetchErr) throw fetchErr;
 
-      const toInsert: any[] = [];
-      const toUpdate: Array<{ id: number; sell_price: number | null }> = [];
-
-      for (const row of rows) {
-        const key = `${row.product_uuid}|${row.attributes_summary}`;
-        const ex = existingMap.get(key);
-        if (ex) {
-          // Only update if price has changed or was null
-          if (row.sell_price !== null && ex.sell_price !== row.sell_price) {
-            toUpdate.push({ id: ex.id, sell_price: row.sell_price });
-          }
-        } else {
-          toInsert.push(row);
+      let priceUpdates = 0;
+      for (const row of (existing || [])) {
+        const key = `${row.sku}|${row.attributes_summary}`;
+        const price = priceMap.get(key);
+        if (price !== undefined && price !== row.sell_price) {
+          await supabase.from('product_size_variants')
+            .update({ sell_price: price, last_seen_at: new Date().toISOString() })
+            .eq('id', row.id);
+          priceUpdates++;
         }
       }
 
-      // Insert new variants
-      for (let i = 0; i < toInsert.length; i += 100) {
-        const { error } = await supabase.from('product_size_variants').insert(toInsert.slice(i, i + 100));
-        if (error) throw error;
-        synced += Math.min(100, toInsert.length - i);
-      }
-
-      // Update sell_price on existing variants
-      for (const u of toUpdate) {
-        await supabase.from('product_size_variants')
-          .update({ sell_price: u.sell_price, last_seen_at: new Date().toISOString() })
-          .eq('id', u.id);
-        synced++;
-      }
-
-      return res.json({ ok: true, synced, newVariants: toInsert.length, priceUpdates: toUpdate.length, total: rows.length });
+      return res.json({ ok: true, synced: priceUpdates, priceUpdates, ordersScanned: priceMap.size });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
