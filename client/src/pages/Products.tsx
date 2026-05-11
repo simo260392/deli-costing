@@ -808,6 +808,19 @@ function SizesTab({
     enabled: !!productUuid,
   });
 
+  // Sort variants: Individual first (size 1), then by person/pax count ascending, unknown last
+  const sortedVariants = variants ? [...variants].sort((a, b) => {
+    const sizeScore = (s: string) => {
+      const lower = s.toLowerCase();
+      if (lower.includes('individual')) return 1;
+      const m = lower.match(/(\d+)\s*(person|pax|sandwiches|muffins|piece|pcs)/i)
+        || lower.match(/[-–]\s*(\d+)\s*(person|pax)?/i)
+        || lower.match(/(\d+)/i);
+      return m ? parseInt(m[1], 10) : 9999;
+    };
+    return sizeScore(a.attributesSummary) - sizeScore(b.attributesSummary);
+  }) : [];
+
   if (isLoading) return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
       <Loader2 size={14} className="animate-spin" /> Loading sizes…
@@ -825,7 +838,7 @@ function SizesTab({
       <p className="text-xs text-muted-foreground mb-3">
         {variants.length} size variant{variants.length !== 1 ? 's' : ''} — click a size to set its components (recipes, sub-recipes, packaging).
       </p>
-      {variants.map(v => (
+      {sortedVariants.map(v => (
         <SizeVariantRow
           key={v.id}
           variant={v}

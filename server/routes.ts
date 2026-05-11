@@ -2114,6 +2114,8 @@ Return ONLY the JSON object, no explanation.`;
       const fromDt = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
       const toDt = new Date().toISOString();
       const seen = new Map<string, any>(); // key: uuid|attrs_summary
+      // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
+      const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
       let page = 1;
       while (true) {
         const r = await flexFetch(`/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
@@ -2123,14 +2125,19 @@ Return ONLY the JSON object, no explanation.`;
         if (!orders.length) break;
         for (const order of orders) {
           for (const item of (order.items || [])) {
-            const key = `${item.product_uuid}|${item.attributes_summary || ''}`;
+            const normSummary = normaliseAttrs(item.attributes_summary || '');
+            const normAttrs = JSON.stringify((item.attributes || []).map((a: any) => ({
+              ...a,
+              value: typeof a.value === 'string' ? normaliseAttrs(a.value) : a.value,
+            })));
+            const key = `${item.product_uuid}|${normSummary}`;
             if (!seen.has(key)) {
               seen.set(key, {
                 product_uuid: item.product_uuid || '',
                 product_name: item.name,
                 sku: item.sku,
-                attributes_summary: item.attributes_summary || '',
-                attributes_json: JSON.stringify(item.attributes || []),
+                attributes_summary: normSummary,
+                attributes_json: normAttrs,
                 components_json: '[]',
                 total_cost: 0,
                 last_seen_at: new Date().toISOString(),
