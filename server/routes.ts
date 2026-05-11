@@ -2112,8 +2112,13 @@ Return ONLY the JSON object, no explanation.`;
   app.post("/api/product-size-variants/sync", async (req: any, res: any) => {
     try {
       const daysBack = Number(req.query.days || 90);
-      const fromDt = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-      const toDt = new Date().toISOString();
+      // Use AWST +08:00 format — Flex ignores UTC 'Z' datetimes in range queries
+      const toAwst = (d: Date) => {
+        const awst = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+        return awst.toISOString().replace('Z', '+08:00');
+      };
+      const fromDt = toAwst(new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000));
+      const toDt = toAwst(new Date());
       const seen = new Map<string, any>(); // key: uuid|attrs_summary
       // Normalise wording inconsistencies from Flex (e.g. "pax" → "person")
       const normaliseAttrs = (s: string) => s.replace(/ pax\b/gi, ' person');
