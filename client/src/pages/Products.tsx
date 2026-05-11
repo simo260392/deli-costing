@@ -204,7 +204,7 @@ function SizeVariantRow({
   const saveMutation = useMutation({
     mutationFn: (comps: ComponentLine[]) =>
       apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps }).then(r => r.json()),
-    onSuccess: () => { setDirty(false); toast({ title: "Saved", description: variant.attributesSummary || variant.productName }); },
+    onSuccess: () => { setDirty(false); },
     onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
@@ -235,9 +235,10 @@ function SizeVariantRow({
     }
     const updated = [...components, item];
     setComponents(updated);
-    setDirty(true);
+    setDirty(false);
     setAddId(null);
     setAddQty("1");
+    saveMutation.mutate(updated);
   }
 
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
@@ -294,7 +295,7 @@ function SizeVariantRow({
                   </span>
                   <button
                     className="text-muted-foreground hover:text-red-500 transition-colors"
-                    onClick={() => { const u = components.filter((_, j) => j !== i); setComponents(u); setDirty(true); }}
+                    onClick={() => { const u = components.filter((_, j) => j !== i); setComponents(u); setDirty(false); saveMutation.mutate(u); }}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -338,8 +339,8 @@ function SizeVariantRow({
               <div className="w-20">
                 <Input
                   type="number"
-                  min="0.01"
-                  step="0.01"
+                  min="1"
+                  step="1"
                   value={addQty}
                   onChange={e => setAddQty(e.target.value)}
                   placeholder="Qty"
@@ -352,25 +353,12 @@ function SizeVariantRow({
             </div>
           </div>
 
-          {/* Save */}
-          {dirty && (
-            <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => { setComponents(() => { try { return JSON.parse(variant.componentsJson || "[]"); } catch { return []; } }); setDirty(false); }}
-              >
-                Discard
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => saveMutation.mutate(components)}
-                disabled={saveMutation.isPending}
-                style={{ backgroundColor: '#256984' }}
-                className="text-white"
-              >
-                {saveMutation.isPending ? <><Loader2 size={12} className="mr-1 animate-spin" />Saving…</> : 'Save components'}
-              </Button>
+          {/* Saving indicator */}
+          {saveMutation.isPending && (
+            <div className="flex justify-end">
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Loader2 size={11} className="animate-spin" /> Saving…
+              </span>
             </div>
           )}
         </div>
