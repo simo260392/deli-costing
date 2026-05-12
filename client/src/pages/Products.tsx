@@ -73,6 +73,7 @@ type SizeVariant = {
   attributesSummary: string;
   attributesJson: string;
   componentsJson: string;
+  packagingJson: string;
   totalCost: number;
   sellPrice: number | null;
   websitePrice: number | null;
@@ -196,15 +197,21 @@ function SizeVariantRow({
   const [components, setComponents] = useState<ComponentLine[]>(() => {
     try { return JSON.parse(variant.componentsJson || "[]"); } catch { return []; }
   });
+  const [packaging, setPackaging] = useState<PackagingLine[]>(() => {
+    try { return JSON.parse(variant.packagingJson || "[]"); } catch { return []; }
+  });
   const [dirty, setDirty] = useState(false);
 
-  // Add component — unified search for recipes/sub-recipes/ingredients, separate packaging
+  // Add component — unified search for recipes/sub-recipes/ingredients
   const [addId, setAddId] = useState<string>(""); // prefixed: "recipe:1", "sub_recipe:2", "ingredient:3"
   const [addQty, setAddQty] = useState("1");
+  // Add packaging
+  const [addPkgId, setAddPkgId] = useState("");
+  const [addPkgQty, setAddPkgQty] = useState("1");
 
   const saveMutation = useMutation({
-    mutationFn: (comps: ComponentLine[]) =>
-      apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps }).then(r => r.json()),
+    mutationFn: ({ comps, pkgs }: { comps: ComponentLine[]; pkgs: PackagingLine[] }) =>
+      apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps, packaging: pkgs }).then(r => r.json()),
     onSuccess: () => {
       setDirty(false);
       // Invalidate so PricingTab auto-refreshes with new totalCost
@@ -213,7 +220,8 @@ function SizeVariantRow({
     onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
-  const totalCost = components.reduce((s, c) => s + (c.costPerUnit || 0) * (c.quantity || 0), 0);
+  const totalCost = components.reduce((s, c) => s + (c.costPerUnit || 0) * (c.quantity || 0), 0)
+    + packaging.reduce((s, p) => s + (p.costPerUnit || 0) * (p.quantity || 0), 0);
 
   // Combined options: recipes + sub-recipes + non-packaging ingredients, grouped
   const addOptions = useMemo(() => [
@@ -223,6 +231,14 @@ function SizeVariantRow({
       .filter(i => !i.category?.toLowerCase().includes('packag'))
       .map(i => ({ value: `ingredient:${i.id}`, label: i.name, group: "Ingredients" })),
   ], [recipes, subRecipes, ingredients]);
+
+  // Packaging options — only packaging category ingredients
+  const packagingOptions = useMemo(() =>
+    ingredients
+      .filter(i => i.category?.toLowerCase().includes('packag'))
+      .map(i => ({ value: String(i.id), label: i.name }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  [ingredients]);
 
   function handleAdd() {
     if (!addId) return;
@@ -248,7 +264,20 @@ function SizeVariantRow({
     setDirty(false);
     setAddId("");
     setAddQty("1");
-    saveMutation.mutate(updated);
+    saveMutation.mutate({ comps: updated, pkgs: packaging });
+  }
+
+  function handleAddPackaging() {
+    if (!addPkgId) return;
+    const ing = ingredients.find(i => i.id === Number(addPkgId));
+    if (!ing) return;
+    const qty = parseFloat(addPkgQty) || 1;
+    const unitCost = Number(ing.bestCostPerUnit ?? ing.costPerUnit) || 0;
+    const updated = [...packaging, { ingredientId: ing.id, name: ing.name, quantity: qty, unit: ing.unit, costPerUnit: unitCost }];
+    setPackaging(updated);
+    setAddPkgId("");
+    setAddPkgQty("1");
+    saveMutation.mutate({ comps: components, pkgs: updated });
   }
 
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
@@ -325,7 +354,7 @@ function SizeVariantRow({
                   </span>
                   <button
                     className="text-muted-foreground hover:text-red-500 transition-colors"
-                    onClick={() => { const u = components.filter((_, j) => j !== i); setComponents(u); setDirty(false); saveMutation.mutate(u); }}
+                    onClick={() => { const u = components.filter((_, j) => j !== i); setComponents(u); setDirty(false); saveMutation.mutate({ comps: u, pkgs: packaging }); }}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -362,6 +391,62 @@ function SizeVariantRow({
                 />
               </div>
               <Button size="sm" onClick={handleAdd} disabled={!addId} className="h-9">
+                <Plus size={14} className="mr-1" /> Add
+              </Button>
+            </div>
+          </div>
+
+          {/* Packaging */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Packaging</p>
+            {packaging.length > 0 && (
+              <div className="space-y-1">
+                {packaging.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    <span className="flex-1 truncate">{p.name}</span>
+                    <Input
+                      type="number" min="1" step="1" value={p.quantity}
+                      onChange={e => {
+                        const updated = packaging.map((x, idx) => idx === i ? { ...x, quantity: parseFloat(e.target.value) || 1 } : x);
+                        setPackaging(updated);
+                        saveMutation.mutate({ comps: components, pkgs: updated });
+                      }}
+                      className="h-8 w-16 text-sm text-center"
+                    />
+                    <span className="text-xs text-muted-foreground w-16 text-right tabular-nums">
+                      ${((p.costPerUnit || 0) * (p.quantity || 0)).toFixed(2)}
+                    </span>
+                    <button
+                      onClick={() => {
+                        const updated = packaging.filter((_, idx) => idx !== i);
+                        setPackaging(updated);
+                        saveMutation.mutate({ comps: components, pkgs: updated });
+                      }}
+                      className="text-destructive hover:opacity-70"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <SearchableSelect
+                  options={packagingOptions}
+                  value={addPkgId}
+                  onValueChange={v => setAddPkgId(v || "")}
+                  placeholder="Add packaging…"
+                />
+              </div>
+              <div className="w-20">
+                <Input
+                  type="number" min="1" step="1" value={addPkgQty}
+                  onChange={e => setAddPkgQty(e.target.value)}
+                  placeholder="Qty" className="h-9 text-sm"
+                />
+              </div>
+              <Button size="sm" onClick={handleAddPackaging} disabled={!addPkgId} className="h-9">
                 <Plus size={14} className="mr-1" /> Add
               </Button>
             </div>

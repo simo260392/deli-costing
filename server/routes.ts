@@ -2080,6 +2080,7 @@ Return ONLY the JSON object, no explanation.`;
         attributesSummary: r.attributes_summary,
         attributesJson: r.attributes_json,
         componentsJson: r.components_json,
+        packagingJson: r.packaging_json,
         totalCost: r.total_cost,
         sellPrice: r.sell_price,
         websitePrice: r.website_price,
@@ -2095,11 +2096,22 @@ Return ONLY the JSON object, no explanation.`;
   app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
     try {
       const { id } = req.params;
-      const { components, websitePrice } = req.body as { components?: any[]; websitePrice?: number | null };
+      const { components, packaging, websitePrice } = req.body as { components?: any[]; packaging?: any[]; websitePrice?: number | null };
       const updates: Record<string, any> = {};
       if (components !== undefined) {
         updates.components_json = JSON.stringify(components);
-        updates.total_cost = components.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
+      }
+      if (packaging !== undefined) {
+        updates.packaging_json = JSON.stringify(packaging);
+      }
+      // Recalculate total_cost whenever components or packaging changes
+      if (components !== undefined || packaging !== undefined) {
+        const comps = components ?? [];
+        // Need current packaging if only components sent, and vice versa — but we always send both
+        const pkgs = packaging ?? [];
+        const compCost = comps.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
+        const packCost = pkgs.reduce((sum: number, p: any) => sum + (Number(p.costPerUnit || 0) * Number(p.quantity || 0)), 0);
+        updates.total_cost = compCost + packCost;
       }
       if (websitePrice !== undefined) {
         updates.website_price = websitePrice;
