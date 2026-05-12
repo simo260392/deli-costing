@@ -2154,12 +2154,17 @@ Return ONLY the JSON object, no explanation.`;
           if (basePrice <= 0) continue;
 
           if (type === 'simple') {
-            // Simple product: one size, use catalogue price for all its variants
+            // Simple product: catalogue price applies to individual/no-size variants only.
+            // Platter variants of the same SKU have different prices — handled via retail orders.
             simpleProductSkus.add(sku);
-            // Map all possible attribute_summary patterns for this SKU
             const variants = allVariants.filter((v: any) => v.product_uuid === uuid);
             for (const v of variants) {
-              cataloguePriceMap.set(`${sku}|${normaliseAttrs(v.attributes_summary || '')}`, basePrice);
+              const attrs = normaliseAttrs(v.attributes_summary || '').toLowerCase();
+              const isIndividual = !attrs || attrs.includes('individual') || attrs.includes('single') || (!attrs.includes('platter') && !attrs.includes('person'));
+              if (isIndividual) {
+                cataloguePriceMap.set(`${sku}|${normaliseAttrs(v.attributes_summary || '')}`, basePrice);
+              }
+              // Platter variants will fall through to order-history pricing
             }
           }
           // Combo products: handled via retail order history below
@@ -2189,7 +2194,10 @@ Return ONLY the JSON object, no explanation.`;
 
           for (const item of (order.items || [])) {
             if (!item.sku || item.price_incl_tax == null) continue;
-            if (simpleProductSkus.has(item.sku)) continue; // Already covered by catalogue price
+            // Only skip simple products if this line item is an individual (not a platter)
+            const normAttrs = normaliseAttrs(item.attributes_summary || '').toLowerCase();
+            const isIndividual = !normAttrs || normAttrs.includes('individual') || normAttrs.includes('single') || (!normAttrs.includes('platter') && !normAttrs.includes('person'));
+            if (simpleProductSkus.has(item.sku) && isIndividual) continue; // Covered by catalogue price
             const normSummary = normaliseAttrs(item.attributes_summary || '');
             const key = `${item.sku}|${normSummary}`;
             const price = Number(item.price_incl_tax);

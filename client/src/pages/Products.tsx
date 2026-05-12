@@ -254,8 +254,10 @@ function SizeVariantRow({
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
   const hasComponents = components.length > 0;
 
-  // Margin calculations — sell price is GST-inclusive from Flex, strip 10% GST
-  const sellPriceExGst = variant.sellPrice ? variant.sellPrice / 1.1 : null;
+  // Margin calculations — sell price is GST-inclusive, show as-is
+  // Strip GST only for margin calculations (cost is ex-GST)
+  const sellPriceIncGst = variant.sellPrice ?? null;
+  const sellPriceExGst = sellPriceIncGst ? sellPriceIncGst / 1.1 : null;
   const grossProfit = sellPriceExGst !== null ? sellPriceExGst - totalCost : null;
   const gpPercent = sellPriceExGst && sellPriceExGst > 0 ? (grossProfit! / sellPriceExGst) * 100 : null;
   const fcPercent = sellPriceExGst && sellPriceExGst > 0 ? (totalCost / sellPriceExGst) * 100 : null;
@@ -273,8 +275,8 @@ function SizeVariantRow({
           <p className="text-xs text-muted-foreground font-mono">{variant.sku}</p>
         </div>
         <div className="flex items-center gap-3 shrink-0 text-xs">
-          {sellPriceExGst !== null && (
-            <span className="text-muted-foreground">Sell ${sellPriceExGst.toFixed(2)}</span>
+          {sellPriceIncGst !== null && (
+            <span className="text-muted-foreground">Sell ${sellPriceIncGst.toFixed(2)}</span>
           )}
           {hasComponents ? (
             <span className="font-medium text-[#256984]">
