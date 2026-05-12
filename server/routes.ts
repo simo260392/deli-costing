@@ -1817,9 +1817,6 @@ Return ONLY the JSON object, no explanation.`;
       const productId = Number(req.params.id);
       const product = await storage.getFlexProduct(productId);
       if (!product) return res.status(404).json({ error: "Product not found" });
-      const costing = await storage.getFlexProductCosting(productId);
-      if (!costing) return res.status(400).json({ error: "No costing found — compute dietaries first" });
-
       // Map of dietary/allergen code -> Flex UUID (fetched once from /api/v1/dietaries)
       const DIETARY_UUID_MAP: Record<string, string> = {
         CD: "17d24a71-0fd6-4666-8660-576d51104739",
@@ -1847,9 +1844,32 @@ Return ONLY the JSON object, no explanation.`;
         V:  "08f8b9e7-4ae5-4aef-a7c1-1c5f195e541f",
       };
 
-      // Combine computed dietaries + computed allergens into one set of codes
-      const computedDietaries: string[] = JSON.parse(costing.computedDietariesJson || "[]");
-      const computedAllergens: string[] = JSON.parse(costing.computedAllergensJson || "[]");
+      // Aggregate components from all size variants and compute dietaries/allergens
+      const flexUuidForVariants = product.flexUuid;
+      const { data: variants, error: variantsError } = await supabase
+        .from('product_size_variants')
+        .select('components_json')
+        .eq('product_uuid', flexUuidForVariants);
+      if (variantsError) throw variantsError;
+
+      const seen = new Set<string>();
+      const allComponents: any[] = [];
+      for (const v of (variants || [])) {
+        const comps: any[] = JSON.parse(v.components_json || '[]');
+        for (const c of comps) {
+          const key = `${c.type}:${c.id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            allComponents.push(c);
+          }
+        }
+      }
+
+      if (allComponents.length === 0) {
+        return res.status(400).json({ error: "No components found in size variants — add ingredients to sizes first" });
+      }
+
+      const { allergens: computedAllergens, dietaries: computedDietaries } = await computeFlexDietaries(allComponents);
       const allCodes = [...new Set([...computedDietaries, ...computedAllergens])];
 
       // Convert codes to Flex UUIDs, skipping any unknown codes
@@ -2246,6 +2266,44 @@ Return ONLY the JSON object, no explanation.`;
         comboProductsFromOrders: orderPriceMap.size,
         productsChecked: productUuids.length,
       });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/product-size-variants/dietaries?product_uuid=X
+  // Aggregate all components from all size variants for this product and compute dietaries/allergens
+  app.get("/api/product-size-variants/dietaries", async (req: any, res: any) => {
+    try {
+      const productUuid = req.query.product_uuid as string;
+      if (!productUuid) return res.status(400).json({ error: 'product_uuid required' });
+
+      const { data: variants, error } = await supabase
+        .from('product_size_variants')
+        .select('components_json')
+        .eq('product_uuid', productUuid);
+      if (error) throw error;
+
+      // Collect all unique components across all variants (deduplicate by type+id)
+      const seen = new Set<string>();
+      const allComponents: any[] = [];
+      for (const v of (variants || [])) {
+        const comps: any[] = JSON.parse(v.components_json || '[]');
+        for (const c of comps) {
+          const key = `${c.type}:${c.id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            allComponents.push(c);
+          }
+        }
+      }
+
+      if (allComponents.length === 0) {
+        return res.json({ allergens: [], dietaries: [], hasComponents: false });
+      }
+
+      const { allergens, dietaries } = await computeFlexDietaries(allComponents);
+      return res.json({ allergens, dietaries, hasComponents: true, componentCount: allComponents.length });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }

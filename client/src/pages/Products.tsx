@@ -788,7 +788,7 @@ function PushToFlexButton({
     return (
       <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground flex items-center gap-2">
         <Upload size={13} className="shrink-0" />
-        <span>Set up costing first to enable pushing dietaries to Flex.</span>
+        <span>Add components to sizes first to enable pushing dietaries to Flex.</span>
       </div>
     );
   }
@@ -1161,12 +1161,21 @@ function ProductCard({
   const allFlexCodes = parseDietaries(product.flexDietariesJson);
   const flexDietaries = allFlexCodes.filter(c => !ALLERGEN_CODES.has(c));
   const flexDietariesAllergens = allFlexCodes.filter(c => ALLERGEN_CODES.has(c));
-  const computedDietaries = costing ? parseDietaries(costing.computedDietariesJson).filter(c => !ALLERGEN_CODES.has(c)) : [];
   // Allergens: combine from flex_allergens_json + any allergen codes inside flex_dietaries_json
   const flexAllergens = [...new Set([...parseAllergens(product.flexAllergensJson), ...flexDietariesAllergens])];
-  const computedAllergens = costing ? parseAllergens(costing.computedAllergensJson) : [];
-  const hasCosting = !!costing;
-  const hasMismatch = hasCosting && dietaryMismatch(product.flexDietariesJson, costing!.computedDietariesJson);
+
+  // Computed dietaries/allergens from size variants (replaces old costing-based approach)
+  const { data: variantDietaries } = useQuery<{ allergens: string[]; dietaries: string[]; hasComponents: boolean }>({
+    queryKey: ["/api/product-size-variants/dietaries", product.flexUuid],
+    queryFn: () => apiRequest("GET", `/api/product-size-variants/dietaries?product_uuid=${encodeURIComponent(product.flexUuid)}`).then(r => r.json()),
+    enabled: !!product.flexUuid,
+  });
+  const computedDietaries = variantDietaries?.dietaries?.filter(c => !ALLERGEN_CODES.has(c)) ?? [];
+  const computedAllergens = variantDietaries?.allergens ?? [];
+  const hasCosting = variantDietaries?.hasComponents ?? false;
+  // Mismatch: compare computed dietaries against what's live on Flex
+  const computedAllJson = JSON.stringify([...computedDietaries, ...computedAllergens].sort());
+  const hasMismatch = hasCosting && dietaryMismatch(product.flexDietariesJson, computedAllJson);
   const categories: { uuid: string; name: string }[] = (() => {
     try { return JSON.parse(product.categoriesJson || "[]"); } catch { return []; }
   })();
@@ -1278,11 +1287,11 @@ function ProductCard({
               <TabsContent value="dietaries">
                 <div className="space-y-5 text-sm">
 
-                  {/* No costing — prompt to set one up */}
+                  {/* No components set on any size variant */}
                   {!hasCosting && (
                     <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-3">
                       <p className="text-xs text-amber-800 dark:text-amber-300 font-medium">
-                        No costing set up yet — go to the <strong>Costing</strong> tab and link a recipe, sub-recipe or ingredient to auto-compute dietaries and allergens.
+                        No components set yet — go to the <strong>Sizes</strong> tab and add recipes or ingredients to auto-compute dietaries and allergens.
                       </p>
                     </div>
                   )}
@@ -1301,10 +1310,10 @@ function ProductCard({
                           }
                         </div>
                       </div>
-                      {/* Computed dietaries — only show col when costing exists */}
+                      {/* Computed dietaries — only show col when variants have components */}
                       {hasCosting && (
                         <div>
-                          <Label className="text-xs text-muted-foreground mb-1.5 block">Computed from recipe</Label>
+                          <Label className="text-xs text-muted-foreground mb-1.5 block">Computed from sizes</Label>
                           <div className="flex flex-wrap gap-1.5">
                             {computedDietaries.length === 0
                               ? <span className="text-xs text-muted-foreground">None detected</span>
@@ -1341,10 +1350,10 @@ function ProductCard({
                           }
                         </div>
                       </div>
-                      {/* Computed allergens — only show col when costing exists */}
+                      {/* Computed allergens — only show col when variants have components */}
                       {hasCosting && (
                         <div>
-                          <Label className="text-xs text-muted-foreground mb-1.5 block">Computed from recipe</Label>
+                          <Label className="text-xs text-muted-foreground mb-1.5 block">Computed from sizes</Label>
                           <div className="flex flex-wrap gap-1.5">
                             {computedAllergens.length === 0
                               ? <span className="text-xs text-muted-foreground">None detected</span>
