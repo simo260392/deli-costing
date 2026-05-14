@@ -116,7 +116,7 @@ export default function Invoices() {
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => {
+              {(invoices ?? []).map((inv) => {
                 const lines = JSON.parse(inv.lineItemsJson || "[]");
                 return (
                   <tr key={inv.id} className="border-b border-border last:border-0 hover:bg-muted/30" data-testid={`row-invoice-${inv.id}`}>
@@ -178,7 +178,7 @@ export default function Invoices() {
                 <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Unknown / Not listed</SelectItem>
-                  {suppliers.map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                  {(suppliers ?? []).map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

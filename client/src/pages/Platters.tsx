@@ -157,7 +157,7 @@ export default function Platters() {
                     <p className="font-medium">No platters yet</p>
                     <button className="text-primary text-sm underline mt-1" onClick={() => { resetForm(); setOpen(true); }}>Create your first platter</button>
                   </td></tr>
-                ) : platters.map((p) => {
+                ) : (platters ?? []).map((p) => {
                   const hasIssue = p.rrp && p.totalCost > 0 && (p.totalCost / p.rrp) * 100 > targetFoodCost;
                   const margin = p.rrp ? ((p.rrp - p.totalCost) / p.rrp) * 100 : null;
                   return (
@@ -285,7 +285,7 @@ export default function Platters() {
                         <div className="flex-1">
                           <Select value={String(line.ingredientId)} onValueChange={(v) => setPkgLines(pkgLines.map((l) => l._key === line._key ? { ...l, ingredientId: parseInt(v) } : l))}>
                             <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                            <SelectContent>{ingredients.map((i) => <SelectItem key={i.id} value={String(i.id)}>{i.name}</SelectItem>)}</SelectContent>
+                            <SelectContent>{(ingredients ?? []).map((i) => <SelectItem key={i.id} value={String(i.id)}>{i.name}</SelectItem>)}</SelectContent>
                           </Select>
                         </div>
                         <div className="w-24">

@@ -285,7 +285,7 @@ export default function Recipes() {
   const handleDownloadCsv = () => {
     const header = "id,name,category,description,portion_size,labour_cost,rrp";
     const escape = (v: any) => { const s = String(v ?? ""); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; };
-    const rows = recipes.map((r) => [r.id, r.name, r.category, r.description ?? "", r.portionSize ?? "", r.labourCost ?? "", r.rrp ?? ""].map(escape).join(","));
+    const rows = (recipes ?? []).map((r) => [r.id, r.name, r.category, r.description ?? "", r.portionSize ?? "", r.labourCost ?? "", r.rrp ?? ""].map(escape).join(","));
     const csv = [header, ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);

@@ -225,8 +225,8 @@ function SizeVariantRow({
 
   // Combined options: recipes + sub-recipes + non-packaging ingredients, grouped
   const addOptions = useMemo(() => [
-    ...recipes.map(r => ({ value: `recipe:${r.id}`, label: r.name, group: "Recipes" })),
-    ...subRecipes.map(r => ({ value: `sub_recipe:${r.id}`, label: r.name, group: "Sub-Recipes" })),
+    ...(recipes ?? []).map(r => ({ value: `recipe:${r.id}`, label: r.name, group: "Recipes" })),
+    ...(subRecipes ?? []).map(r => ({ value: `sub_recipe:${r.id}`, label: r.name, group: "Sub-Recipes" })),
     ...ingredients
       .filter(i => !i.category?.toLowerCase().includes('packag'))
       .map(i => ({ value: `ingredient:${i.id}`, label: i.name, group: "Ingredients" })),
@@ -520,8 +520,8 @@ function CostingEditor({
       i => !i.category?.toLowerCase().includes('packag')
     );
     const opts = [
-      ...recipes.map(r => ({ value: `recipe:${r.id}`, label: r.name, group: "Recipes" })),
-      ...subRecipes.map(sr => ({ value: `sub_recipe:${sr.id}`, label: sr.name, group: "Sub-Recipes" })),
+      ...(recipes ?? []).map(r => ({ value: `recipe:${r.id}`, label: r.name, group: "Recipes" })),
+      ...(subRecipes ?? []).map(sr => ({ value: `sub_recipe:${sr.id}`, label: sr.name, group: "Sub-Recipes" })),
       ...nonPackagingIngredients.map(i => ({ value: `ingredient:${i.id}`, label: i.name, group: "Ingredients" })),
     ];
     return opts.sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));

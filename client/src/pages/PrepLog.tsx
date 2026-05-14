@@ -255,14 +255,14 @@ export default function PrepLog() {
                     setForm((f) => ({ ...f, itemId: v, unit: sr?.yieldUnit || f.unit }));
                   }}
                   placeholder="Search sub-recipes…"
-                  options={subRecipes.map((s) => ({ value: String(s.id), label: `${s.name} (${s.yieldUnit})` }))}
+                  options={(subRecipes ?? []).map((s) => ({ value: String(s.id), label: `${s.name} (${s.yieldUnit})` }))}
                 />
               ) : (
                 <SearchableSelect
                   value={form.itemId}
                   onValueChange={(v) => setForm((f) => ({ ...f, itemId: v }))}
                   placeholder="Search recipes…"
-                  options={recipes.map((r) => ({ value: String(r.id), label: r.name }))}
+                  options={(recipes ?? []).map((r) => ({ value: String(r.id), label: r.name }))}
                 />
               )}
             </div>

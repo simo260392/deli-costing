@@ -126,7 +126,7 @@ export default function Ingredients() {
   const handleDownloadCsv = () => {
     const header = "id,name,category,unit,best_cost_per_unit,avg_weight_per_unit,notes";
     const escape = (v: any) => { const s = String(v ?? ""); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; };
-    const rows = ingredients.map((i) => [i.id, i.name, i.category, i.unit, i.bestCostPerUnit ?? "", (i as any).avgWeightPerUnit ?? "", (i as any).notes ?? ""].map(escape).join(","));
+    const rows = (ingredients ?? []).map((i) => [i.id, i.name, i.category, i.unit, i.bestCostPerUnit ?? "", (i as any).avgWeightPerUnit ?? "", (i as any).notes ?? ""].map(escape).join(","));
     const csv = [header, ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -726,7 +726,7 @@ export default function Ingredients() {
                     </tr>
                   </thead>
                   <tbody>
-                    {supplierPrices.map((sp) => {
+                    {(supplierPrices ?? []).map((sp) => {
                       const isBest = priceIngredient?.bestSupplierId === sp.supplierId;
                       return (
                         <tr key={sp.id} className={cn("border-b border-border last:border-0", isBest ? "bg-primary/5" : "")}>
@@ -764,7 +764,7 @@ export default function Ingredients() {
                   <Label className="text-xs">Supplier *</Label>
                   <Select value={priceForm.supplierId} onValueChange={(v) => setPriceForm({ ...priceForm, supplierId: v })}>
                     <SelectTrigger><SelectValue placeholder="Select supplier" /></SelectTrigger>
-                    <SelectContent>{suppliers.map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
+                    <SelectContent>{(suppliers ?? []).map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1.5">

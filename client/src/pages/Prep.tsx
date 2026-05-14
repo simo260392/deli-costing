@@ -531,7 +531,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                 <span className="whitespace-pre-line">{order.notes}</span>
               </div>
             )}
-            {order.items.map(item => {
+            {(order.items ?? []).map(item => {
               const itemState = state.checkedItems[item.uuid];
               const checked = !!itemState?.checked;
               return (
@@ -1128,7 +1128,7 @@ export default function Prep() {
   const mergeNewOrders = async (newOrders: FlexOrder[], sessionId: number) => {
     try {
       const orderItems = newOrders.flatMap(o =>
-        o.items.map(i => ({
+        (o.items ?? []).map(i => ({
           type: "flex_product" as const,
           sku: i.sku,
           name: i.name,
@@ -1206,8 +1206,8 @@ export default function Prep() {
       // Only include unchecked items — items that haven't been ticked off yet
       const uncheckedOrders = flexOrders.map(o => {
         const oState = orderStates[o.id] ?? DEFAULT_ORDER_STATE;
-        const uncheckedItems = o.items.filter(i => !oState.checkedItems[i.uuid]?.checked);
-        return { ...o, items: uncheckedItems };
+        const uncheckedItems = (o.items ?? []).filter(i => !oState.checkedItems[i.uuid]?.checked);
+        return { ...o, items: uncheckedItems ?? [] };
       }).filter(o => o.items.length > 0);
 
       if (uncheckedOrders.length === 0) {

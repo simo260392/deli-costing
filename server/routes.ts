@@ -726,9 +726,14 @@ export function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.put("/api/suppliers/:id", async (req, res) => {
+    try {
     const s = await storage.updateSupplier(Number(req.params.id), req.body);
     if (!s) return res.status(404).json({ error: "Not found" });
     res.json(s);
+    } catch (e: any) {
+      console.error("[route error]", e);
+      if (!res.headersSent) res.status(500).json({ error: e.message || "Internal server error" });
+    }
   });
 
   app.delete("/api/suppliers/:id", async (req, res) => {
@@ -5512,6 +5517,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Global Express error handler ─────────────────────────────────────────
+  // Catches any error thrown (or passed to next()) from any route handler.
+  // Without this, unhandled async throws kill the response silently.
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    console.error("[Express global error]", err?.message || err);
+    if (!res.headersSent) {
+      res.status(err?.status || 500).json({ error: err?.message || "Internal server error" });
     }
   });
 }
