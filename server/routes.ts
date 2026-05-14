@@ -9,7 +9,25 @@ import PDFDocument from "pdfkit";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, supabase } from "./storage";
 
-const anthropic = new Anthropic();
+// Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
+let anthropic: Anthropic | null = null;
+try {
+  if (process.env.ANTHROPIC_API_KEY) {
+    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  } else {
+    console.warn("[AI] ANTHROPIC_API_KEY is not set — AI features will be disabled");
+  }
+} catch (e) {
+  console.error("[AI] Failed to init Anthropic client:", e);
+}
+
+function requireAI(res: any): anthropic is Anthropic {
+  if (!anthropic) {
+    res.status(503).json({ error: "AI features are not configured. Please set ANTHROPIC_API_KEY in Railway environment variables." });
+    return false;
+  }
+  return true;
+}
 
 const upload = multer({ dest: "uploads/" });
 const pdfUpload = multer({ dest: "uploads/pdf-cache/" });
@@ -915,7 +933,8 @@ Rules:
 
 Return ONLY a JSON array, e.g. ["Gluten","Dairy"] or [] for no allergens.`;
     try {
-      const msg = await anthropic.messages.create({
+      if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 200,
         messages: [{ role: "user", content: prompt }],
@@ -949,7 +968,8 @@ Return a JSON object where each key is the ingredient id (as a string) and the v
 Be conservative — only include allergens clearly present. Return ONLY valid JSON, no explanation.
 Example: {"1":["Dairy"],"2":["Gluten","Eggs"],"3":[]}`;
     try {
-      const msg = await anthropic.messages.create({
+      if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 4096,
         messages: [{ role: "user", content: prompt }],
@@ -1004,7 +1024,8 @@ Examples:
 - White Sugar → "White Sugar"
 - Bread → "Bread [Wheat Flour (Gluten), Water, Yeast, Salt, Improver (Ascorbic Acid (300))]"`;
     try {
-      const msg = await anthropic.messages.create({
+      if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 400,
         messages: [{ role: "user", content: prompt }],
@@ -1052,7 +1073,8 @@ ${lines}
 
 Return ONLY valid JSON, no explanation.`;
       try {
-        const msg = await anthropic.messages.create({
+        if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
           model: "claude_haiku_4_5",
           max_tokens: 2048,
           messages: [{ role: "user", content: prompt }],
@@ -1103,7 +1125,8 @@ Rules:
 - Only include allergens actually present in this branded product
 - Return ONLY a JSON array, e.g. ["Gluten","Soy"] or []`;
 
-      const allergenMsg = await anthropic.messages.create({
+    if (!requireAI(res)) return;
+      const allergenMsg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 200,
         messages: [{ role: "user", content: allergenPrompt }],
@@ -1134,7 +1157,7 @@ Examples:
 - Bega Tasty Cheese → "Tasty Cheese [Milk, Salt, Cultures, Enzyme (Non-Animal Rennet)], Anti-caking Agent (460)"
 - Coles Free Range Eggs → "Free Range Eggs"`;
 
-      const pealMsg = await anthropic.messages.create({
+      const pealMsg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 400,
         messages: [{ role: "user", content: pealPrompt }],
@@ -1219,7 +1242,8 @@ Return ONLY a JSON object with these exact keys (all numbers, no strings):
 Use typical Australian product values. If the product is a liquid, base it on per 100ml (same numeric values — treat ml = g for labelling purposes).
 Return ONLY the JSON object, no explanation.`;
 
-      const msg = await anthropic.messages.create({
+      if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
         model: "claude_haiku_4_5",
         max_tokens: 300,
         messages: [{ role: "user", content: prompt }],
@@ -1277,7 +1301,8 @@ Return ONLY the JSON object, no explanation.`;
           const name = ing.name.trim();
           const productDesc = brand ? `"${brand}" (known as "${name}")` : `"${name}"`;
           const prompt = `Nutritional values per 100g for Australian food product ${productDesc} (category: ${ing.category}). Return ONLY JSON: {"energy":<kJ>,"protein":<g>,"fatTotal":<g>,"fatSat":<g>,"carbs":<g>,"sugars":<g>,"sodium":<mg>}`;
-          const msg = await anthropic.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: prompt }] });
+          if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: prompt }] });
           const text = ((msg.content?.[0] as any)?.text || "").trim();
           const match = text.match(/\{[\s\S]*?\}/);
           if (match) {
@@ -2844,7 +2869,7 @@ Return ONLY a JSON object: { "brandName": "...", "found": true/false }
 - Include the product descriptor with the brand (e.g. "Fountain BBQ Sauce 2L", "Bega Tasty Cheese 2kg")
 - If no brand is identifiable, return { "brandName": "", "found": false }
 - Return ONLY JSON`;
-              const brandMsg = await anthropic.messages.create({
+              const brandMsg = await anthropic!.messages.create({
                 model: "claude_haiku_4_5",
                 max_tokens: 100,
                 messages: [{ role: "user", content: brandExtractPrompt }],
@@ -2877,14 +2902,14 @@ Return ONLY a JSON object: { "brandName": "...", "found": true/false }
 
               const allergenPrompt = `You are a food allergen expert for the Australian/NZ market.
 Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingForBrand?.category || ""}")\nUsing your knowledge of this specific branded product sold in Australia, identify which allergens it DEFINITELY contains.\nAllowed keys: ${ALLERGENS.join(", ")}\nBe precise — use the brand name. Return ONLY a JSON array, e.g. ["Gluten","Soy"] or []`;
-              const allergenMsg = await anthropic.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: allergenPrompt }] });
+              const allergenMsg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: allergenPrompt }] });
               const at = ((allergenMsg.content?.[0] as any)?.text || "").trim();
               const am = at.match(/\[[\s\S]*?\]/);
               const allergens: string[] = am ? (JSON.parse(am[0]) as string[]).filter((a: string) => ALLERGENS.includes(a)) : [];
               await storage.updateIngredient(resolvedIngredientId, { dietariesJson: JSON.stringify(allergens) });
 
               const pealPrompt = `You are a food labelling expert for FSANZ PEAL (Australia/NZ).\nProduct: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingForBrand?.category || ""}")\nKnown allergens: ${allergens.length > 0 ? allergens.join(", ") : "none"}\nGenerate the full FSANZ ingredient declaration for use inside a composite product's ingredient list. Use square brackets for sub-ingredients. Include additive code numbers. No "Contains:". No full stop. Return ONLY the declaration string.`;
-              const pealMsg = await anthropic.messages.create({ model: "claude_haiku_4_5", max_tokens: 400, messages: [{ role: "user", content: pealPrompt }] });
+              const pealMsg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 400, messages: [{ role: "user", content: pealPrompt }] });
               const pealLabel = ((pealMsg.content?.[0] as any)?.text || "").trim().replace(/^"|"$/g, "");
               await storage.updateIngredient(resolvedIngredientId, { pealLabel });
             } else if (userProvidedBrand && userProvidedBrand === existingBrand) {
@@ -5077,7 +5102,8 @@ If any stock item is clearly the same product as the order item (accounting for 
 If there is no reasonable match, respond with "null".
 Respond with ONLY the ID number or the word null. Nothing else.`;
 
-      const msg = await anthropic.messages.create({
+      if (!requireAI(res)) return;
+    const msg = await anthropic!.messages.create({
         model: "claude-haiku-4-5",
         max_tokens: 10,
         messages: [{ role: "user", content: prompt }],
