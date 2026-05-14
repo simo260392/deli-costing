@@ -198,8 +198,10 @@ export const storage: IStorage = {
     return toCamel(row) as Ingredient;
   },
   updateIngredient: async (id, data) => {
-    const { data: row, error } = await supabase.from("ingredients").update(toSnake(data)).eq("id", id).select().single();
-    if (error) return undefined;
+    // Strip read-only / derived fields that must not be written directly
+    const { id: _id, bestSupplierId: _bsi, ...rest } = data as any;
+    const { data: row, error } = await supabase.from("ingredients").update(toSnake(rest)).eq("id", id).select().single();
+    if (error) { console.error("updateIngredient error:", error); return undefined; }
     return toCamel(row) as Ingredient;
   },
   deleteIngredient: async (id) => {
