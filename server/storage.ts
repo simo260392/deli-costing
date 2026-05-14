@@ -198,10 +198,15 @@ export const storage: IStorage = {
     return toCamel(row) as Ingredient;
   },
   updateIngredient: async (id, data) => {
-    // Strip read-only / derived fields that must not be written directly
-    const { id: _id, bestSupplierId: _bsi, ...rest } = data as any;
-    const { data: row, error } = await supabase.from("ingredients").update(toSnake(rest)).eq("id", id).select().single();
-    if (error) { console.error("updateIngredient error:", error); return undefined; }
+    // Strip computed/joined fields that are not actual columns
+    const VALID_COLUMNS = new Set(["name","category","unit","best_cost_per_unit","best_supplier_id","notes","avg_weight_per_unit","dietaries_json","peal_label","brand_name","nutrition_json","barcode","shelf_life","storage_temp","categories_json"]);
+    const snaked = toSnake(data as any);
+    const filtered: any = {};
+    for (const key of Object.keys(snaked)) {
+      if (VALID_COLUMNS.has(key)) filtered[key] = snaked[key];
+    }
+    const { data: row, error } = await supabase.from("ingredients").update(filtered).eq("id", id).select().single();
+    if (error) { console.error("updateIngredient error:", error.code, error.message); return undefined; }
     return toCamel(row) as Ingredient;
   },
   deleteIngredient: async (id) => {
@@ -211,10 +216,13 @@ export const storage: IStorage = {
     const { data: prices } = await supabase.from("supplier_ingredients").select("*").eq("ingredient_id", ingredientId);
     if (!prices || prices.length === 0) return;
     const best = prices.reduce((a: any, b: any) => a.cost_per_unit < b.cost_per_unit ? a : b);
-    await supabase.from("ingredients").update({
+    const update: any = {
       best_cost_per_unit: best.cost_per_unit,
       best_supplier_id: best.supplier_id,
-    }).eq("id", ingredientId);
+    };
+    // If the cheapest supplier entry has a brand name, propagate it to the ingredient
+    if (best.brand_name) update.brand_name = best.brand_name;
+    await supabase.from("ingredients").update(update).eq("id", ingredientId);
   },
 
   // ── Supplier Ingredients ───────────────────────────────────────────────────

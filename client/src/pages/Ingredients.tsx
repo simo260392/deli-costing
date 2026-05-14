@@ -44,7 +44,7 @@ type Ingredient = {
 
 type SupplierPrice = {
   id: number; supplierId: number; ingredientId: number; costPerUnit: number;
-  packSize?: number; packCost?: number; invoiceDate?: string; invoiceRef?: string; supplierName: string;
+  packSize?: number; packCost?: number; invoiceDate?: string; invoiceRef?: string; supplierName: string; brandName?: string;
 };
 
 const emptyIng = { name: "", category: "Bread", unit: "kg", bestCostPerUnit: "", avgWeightPerUnit: "", notes: "", dietariesJson: "[]", pealLabel: "", brandName: "", barcode: "", shelfLife: "", storageTemp: "", categoriesJson: "[]" };
@@ -69,7 +69,7 @@ export default function Ingredients() {
   const csvRef = useRef<HTMLInputElement>(null);
   const [priceOpen, setPriceOpen] = useState(false);
   const [priceIngredient, setPriceIngredient] = useState<Ingredient | null>(null);
-  const [priceForm, setPriceForm] = useState({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "" });
+  const [priceForm, setPriceForm] = useState({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "" });
 
   const { data: ingredients = [], isLoading } = useQuery<Ingredient[]>({
     queryKey: ["/api/ingredients"],
@@ -186,7 +186,7 @@ export default function Ingredients() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-ingredients", priceIngredient?.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] });
-      setPriceForm({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "" });
+      setPriceForm({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "" });
       toast({ title: "Price added" });
     },
   });
@@ -730,9 +730,9 @@ export default function Ingredients() {
                       const isBest = priceIngredient?.bestSupplierId === sp.supplierId;
                       return (
                         <tr key={sp.id} className={cn("border-b border-border last:border-0", isBest ? "bg-primary/5" : "")}>
-                          <td className="px-3 py-2.5 font-medium flex items-center gap-1">
-                            {sp.supplierName}
-                            {isBest && <Check size={12} className="text-primary ml-1" />}
+                          <td className="px-3 py-2.5 font-medium">
+                            <div className="flex items-center gap-1">{sp.supplierName}{isBest && <Check size={12} className="text-primary ml-1" />}</div>
+                            {sp.brandName && <div className="text-xs text-muted-foreground">{sp.brandName}</div>}
                           </td>
                           <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-primary">${sp.costPerUnit.toFixed(4)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{sp.packSize ?? "—"}</td>
@@ -754,6 +754,11 @@ export default function Ingredients() {
             {/* Add new price */}
             <div className="border border-border rounded-lg p-4 space-y-3 bg-muted/20">
               <p className="text-sm font-semibold">Add / Update Price</p>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Brand Name (this supplier's product)</Label>
+                <Input value={priceForm.brandName} onChange={(e) => setPriceForm({ ...priceForm, brandName: e.target.value })} placeholder="e.g. Bulla Thickened Cream 5L" />
+                <p className="text-xs text-muted-foreground">If this is the cheapest supplier, this brand name will show on the ingredient and be used for AI allergen and nutrition lookups.</p>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Supplier *</Label>
@@ -797,6 +802,7 @@ export default function Ingredients() {
                   packCost: priceForm.packCost ? parseFloat(priceForm.packCost) : null,
                   invoiceDate: priceForm.invoiceDate || null,
                   invoiceRef: priceForm.invoiceRef || null,
+                  brandName: priceForm.brandName || null,
                 })}
                 data-testid="button-add-price">
                 <Plus size={14} className="mr-1" /> Add Price

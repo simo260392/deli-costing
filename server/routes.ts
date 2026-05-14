@@ -886,9 +886,10 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const ing = await storage.getIngredient(Number(req.params.id));
     if (!ing) return res.status(404).json({ error: "Not found" });
     const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
-    const prompt = `You are a food allergen expert. Given this ingredient name and category, return ONLY a JSON array of allergen keys that this ingredient DEFINITELY contains.
+    const brandCtx = (ing as any).brandName ? ` (Brand: "${(ing as any).brandName}")` : "";
+    const prompt = `You are a food allergen expert. Given this ingredient name, brand, and category, return ONLY a JSON array of allergen keys that this ingredient DEFINITELY contains.
 
-Ingredient: "${ing.name}"
+Ingredient: "${ing.name}"${brandCtx}
 Category: "${ing.category}"
 
 Allowed keys (only return keys from this list): ${ALLERGENS.join(", ")}
@@ -969,9 +970,11 @@ Example: {"1":["Dairy"],"2":["Gluten","Eggs"],"3":[]}`;
     const ing = await storage.getIngredient(Number(req.params.id));
     if (!ing) return res.status(404).json({ error: "Not found" });
     const allergens: string[] = (() => { try { return JSON.parse((ing as any).dietariesJson || "[]"); } catch { return []; } })();
+    const pealBrandCtx = (ing as any).brandName ? `
+Brand name: "${(ing as any).brandName}"` : "";
     const prompt = `You are a food labelling expert specialising in FSANZ Standard 1.2.3 Plain English Allergen Labelling (PEAL) for Australian and New Zealand food products.
 
-Ingredient name: "${ing.name}"
+Ingredient name: "${ing.name}"${pealBrandCtx}
 Category: "${ing.category}"
 Known allergens present: ${allergens.length > 0 ? allergens.join(", ") : "none"}
 
