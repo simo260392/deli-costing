@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  ClipboardList, BarChart3, LogOut, User, Archive
+  ClipboardList, BarChart3, LogOut, User, Archive, TrendingUp
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, slug: "dashboard" },
+  { href: "/wages", label: "Wages", icon: TrendingUp, slug: "wages" },
   { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
   { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
   { href: "/products", label: "Products", icon: Store, slug: "products" },

@@ -5553,6 +5553,258 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     console.error("[Express global error]", err?.message || err);
     if (!res.headersSent) {
       res.status(err?.status || 500).json({ error: err?.message || "Internal server error" });
+
+  // ─── Wages Dashboard ─────────────────────────────────────────────────────────
+  // GET /api/wages-dashboard?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // Fetches wages from Deputy, catering sales from Flex, delivery fee from Xero
+  // Returns structured data for the wages KPI dashboard
+  app.get("/api/wages-dashboard", asyncRoute(async (req, res) => {
+    const { from, to } = req.query as { from?: string; to?: string };
+    // Default to current ISO week (Mon–Sun)
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((dayOfWeek + 6) % 7));
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+
+    const fromDate = from || monday.toISOString().split("T")[0];
+    const toDate = to || sunday.toISOString().split("T")[0];
+
+    const result: any = {
+      period: { from: fromDate, to: toDate },
+      areas: {},
+      errors: [],
+      fetchedAt: new Date().toISOString(),
+    };
+
+    // ── Deputy: timesheets by OU ──────────────────────────────────────────────
+    const DEPUTY_TOKEN = await storage.getSetting("deputy_token") || "1b457a884168403374ccd759a42d1f14";
+    const DEPUTY_SUBDOMAIN = await storage.getSetting("deputy_subdomain") || "thedeli";
+    const deputyBase = `https://${DEPUTY_SUBDOMAIN}.au.deputy.com`;
+
+    // OU IDs and labels
+    const OUS: Record<number, string> = { 2: "cbd_store", 41: "drivers", 83: "production" };
+
+    try {
+      const fromMs = new Date(fromDate + "T00:00:00+08:00").getTime() / 1000;
+      const toMs = new Date(toDate + "T23:59:59+08:00").getTime() / 1000;
+
+      const deputyRes = await fetch(`${deputyBase}/api/v1/resource/Timesheet/QUERY`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${DEPUTY_TOKEN}`,
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: JSON.stringify({
+          search: {
+            s1: { field: "Date", type: "ge", data: Math.floor(fromMs) },
+            s2: { field: "Date", type: "le", data: Math.floor(toMs) },
+            s3: { field: "PayRuleApproved", type: "eq", data: 1 },
+          },
+          max: 500,
+        }),
+      });
+
+      if (!deputyRes.ok) {
+        const errText = await deputyRes.text();
+        result.errors.push(`Deputy API error ${deputyRes.status}: ${errText.slice(0, 200)}`);
+      } else {
+        const timesheets: any[] = await deputyRes.json();
+        // Aggregate by OU
+        for (const ts of timesheets) {
+          const ouId: number = ts.OperationalUnit;
+          const ouKey = OUS[ouId];
+          if (!ouKey) continue; // Skip Events (84) and unknown OUs
+          if (!result.areas[ouKey]) {
+            result.areas[ouKey] = { wages: 0, oncost: 0, hours: 0, shifts: 0 };
+          }
+          result.areas[ouKey].wages += ts.Cost || 0;
+          result.areas[ouKey].oncost += ts.OnCost || 0;
+          result.areas[ouKey].hours += (ts.TotalTime || 0) / 3600;
+          result.areas[ouKey].shifts += 1;
+        }
+        // Unapproved fallback: also query without PayRuleApproved filter to show pending
+        // (for display purposes — show "X approved + Y pending")
+        try {
+          const allRes = await fetch(`${deputyBase}/api/v1/resource/Timesheet/QUERY`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${DEPUTY_TOKEN}`,
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+            },
+            body: JSON.stringify({
+              search: {
+                s1: { field: "Date", type: "ge", data: Math.floor(fromMs) },
+                s2: { field: "Date", type: "le", data: Math.floor(toMs) },
+              },
+              max: 500,
+            }),
+          });
+          if (allRes.ok) {
+            const allTs: any[] = await allRes.json();
+            for (const ts of allTs) {
+              const ouId: number = ts.OperationalUnit;
+              const ouKey = OUS[ouId];
+              if (!ouKey) continue;
+              if (!result.areas[ouKey]) {
+                result.areas[ouKey] = { wages: 0, oncost: 0, hours: 0, shifts: 0, pendingWages: 0, pendingShifts: 0 };
+              }
+              if (!ts.PayRuleApproved) {
+                result.areas[ouKey].pendingWages = (result.areas[ouKey].pendingWages || 0) + (ts.Cost || 0);
+                result.areas[ouKey].pendingShifts = (result.areas[ouKey].pendingShifts || 0) + 1;
+              }
+            }
+          }
+        } catch (_) { /* ignore unapproved fetch errors */ }
+      }
+    } catch (e: any) {
+      result.errors.push(`Deputy fetch failed: ${e.message}`);
+    }
+
+    // ── Flex: catering sales (excl. wholesale) ───────────────────────────────
+    const FLEX_PROXY = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
+    const FLEX_SECRET = "deli-flex-proxy-2026";
+    const WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
+
+    try {
+      let totalCateringGross = 0;
+      let totalCateringExGst = 0;
+      let orderCount = 0;
+      let page = 1;
+      let hasMore = true;
+
+      while (hasMore) {
+        const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDate + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toDate + "T23:59:59Z")}`;
+        const flexRes = await fetch(`${FLEX_PROXY}?path=${encodeURIComponent(flexPath)}`, {
+          headers: { "x-proxy-secret": FLEX_SECRET },
+        });
+
+        if (!flexRes.ok) {
+          const errText = await flexRes.text();
+          result.errors.push(`Flex API error ${flexRes.status}: ${errText.slice(0, 200)}`);
+          hasMore = false;
+          break;
+        }
+
+        const flexData: any = await flexRes.json();
+        const items: any[] = flexData.items || flexData.orders || [];
+        if (items.length === 0) { hasMore = false; break; }
+
+        for (const order of items) {
+          // Exclude wholesale orders
+          const isWholesale = order.customer_groups?.some((g: any) =>
+            (g.id || g.uuid || g) === WHOLESALE_GROUP
+          ) || order.customer_group_id === WHOLESALE_GROUP;
+          if (isWholesale) continue;
+
+          const gt: number = parseFloat(order.grand_total || "0");
+          totalCateringGross += gt;
+          // ex GST = grand_total / 1.1
+          totalCateringExGst += gt / 1.1;
+          orderCount++;
+        }
+
+        const totalItems: number = flexData.total_items || flexData.total || 0;
+        hasMore = page * 200 < totalItems;
+        page++;
+      }
+
+      result.flex = {
+        cateringGross: totalCateringGross,
+        cateringExGst: totalCateringExGst,
+        orderCount,
+      };
+    } catch (e: any) {
+      result.errors.push(`Flex fetch failed: ${e.message}`);
+    }
+
+    // ── Xero: delivery fee (account 202) from settings cache ───────────────────
+    // Updated by /api/wages-dashboard/xero-sync called by cron or frontend trigger
+    try {
+      const xeroKey = `xero_delivery_fee_${fromDate}_${toDate}`;
+      const cachedFee = await storage.getSetting(xeroKey);
+      const cachedUpdated = await storage.getSetting(`${xeroKey}_updated`);
+      result.xero = {
+        deliveryFee: cachedFee != null ? parseFloat(cachedFee) : null,
+        lastUpdated: cachedUpdated || null,
+        cacheKey: xeroKey,
+      };
+    } catch (e: any) {
+      result.xero = { deliveryFee: null, lastUpdated: null, cacheKey: null };
+      result.errors.push(`Xero cache read failed: ${e.message}`);
+    }
+
+    res.json(result);
+  }));
+
+  // ─── Xero Delivery Fee Cache ─────────────────────────────────────────────────
+  // POST /api/wages-dashboard/xero-sync
+  // Called by Perplexity Computer cron (or manually) with Xero invoice data
+  // Body: { from: "YYYY-MM-DD", to: "YYYY-MM-DD", invoices: [...xeroInvoices] }
+  app.post("/api/wages-dashboard/xero-sync", asyncRoute(async (req, res) => {
+    const { from, to, invoices = [], deliveryFee: precomputed } = req.body as {
+      from: string;
+      to: string;
+      invoices?: any[];
+      deliveryFee?: number;
+    };
+
+    if (!from || !to) {
+      return res.status(400).json({ error: "from and to dates are required" });
+    }
+
+    let deliveryFee: number;
+    let lineCount = 0;
+
+    if (precomputed != null) {
+      deliveryFee = precomputed;
+    } else {
+      // Compute from invoice line items
+      deliveryFee = 0;
+      for (const inv of invoices) {
+        for (const li of inv.LineItems || []) {
+          if (li.AccountCode === "202") {
+            deliveryFee += li.LineAmount || 0;
+            lineCount++;
+          }
+        }
+      }
+    }
+
+    const cacheKey = `xero_delivery_fee_${from}_${to}`;
+    await storage.setSetting(cacheKey, deliveryFee.toFixed(2));
+    await storage.setSetting(`${cacheKey}_updated`, new Date().toISOString());
+
+    res.json({
+      ok: true,
+      deliveryFee,
+      lineCount,
+      invoiceCount: invoices.length,
+      cacheKey,
+      period: { from, to },
+    });
+  }));
+
+  // GET /api/wages-dashboard/xero?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // Returns cached Xero delivery fee
+  app.get("/api/wages-dashboard/xero", asyncRoute(async (req, res) => {
+    const { from, to } = req.query as { from?: string; to?: string };
+    if (!from || !to) return res.status(400).json({ error: "from and to required" });
+    const cacheKey = `xero_delivery_fee_${from}_${to}`;
+    const cached = await storage.getSetting(cacheKey);
+    const updated = await storage.getSetting(`${cacheKey}_updated`);
+    res.json({
+      deliveryFee: cached != null ? parseFloat(cached) : null,
+      lastUpdated: updated || null,
+      cacheKey,
+    });
+  }));
+
     }
   });
 }
@@ -5646,3 +5898,5 @@ async function explodePrepTasks(orders: any[], supabase: any): Promise<any[]> {
   const sortOrder = ["sub_recipe", "recipe", "flex_product"];
   return [...taskMap.values()].sort((a, b) => sortOrder.indexOf(a.itemType) - sortOrder.indexOf(b.itemType));
 }
+
+// WAGES DASHBOARD PLACEHOLDER — appended below registerRoutes
