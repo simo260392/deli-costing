@@ -705,6 +705,11 @@ async function computePlatterCosts(
 }
 
 export function registerRoutes(httpServer: Server, app: Express) {
+  // Helper to wrap async route handlers and forward errors to Express error handler
+  function asyncRoute(fn: (req: any, res: any, next: any) => Promise<any>) {
+    return (req: any, res: any, next: any) => fn(req, res, next).catch(next);
+  }
+
   const getMarkup = async () => parseFloat(await storage.getSetting("markup_percent") || "65");
   const getWholesaleMarkup = async () => parseFloat(await storage.getSetting("wholesale_markup_percent") || "45");
 
