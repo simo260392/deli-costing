@@ -5,6 +5,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import WagesDashboard from "@/pages/WagesDashboard";
 import {
   UtensilsCrossed, Package, Truck, TrendingUp,
   AlertTriangle, CheckCircle, ArrowRight, RefreshCw, FlaskConical, Sparkles
@@ -191,11 +192,15 @@ export default function Dashboard() {
   const loading = loadingSummary || loadingRecipes || loadingPlatters;
 
   return (
-    <div className="p-6 space-y-6 max-w-screen-xl">
+    <div className="space-y-0 max-w-screen-xl">
+      {/* Wages & Revenue section */}
+      <WagesDashboard embedded />
+
+      <div className="p-6 space-y-6">
       {/* Header */}
       <div>
         <h1 className="text-xl font-bold text-foreground" style={{ fontFamily: "'Cabinet Grotesk', sans-serif" }}>
-          Product Costing Dashboard
+          Product Costing
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
           Live costing & RRP across all menu items — target food cost: <strong>{pct(targetFoodCost)}</strong> · markup: <strong>{pct(markupPct)}</strong>
@@ -338,6 +343,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       )}
+      </div> {/* end product costing */}
     </div>
   );
 }

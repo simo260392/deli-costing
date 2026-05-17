@@ -301,7 +301,7 @@ function WeekPicker({
 // For now we show a "Connect" state for Xero until credentials are server-side.
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function WagesDashboard() {
+export default function WagesDashboard({ embedded = false }: { embedded?: boolean }) {
   const currentWeek = getWeekBounds(0);
   const [period, setPeriod] = useState(currentWeek);
   const [xeroDeliveryFee, setXeroDeliveryFee] = useState<number | null>(null);
@@ -374,15 +374,17 @@ export default function WagesDashboard() {
   const hasErrors = data?.errors && data.errors.length > 0;
 
   return (
-    <div className="p-6 space-y-6 max-w-screen-xl">
+    <div className={embedded ? "p-6 space-y-6 border-b border-border pb-8 mb-2" : "p-6 space-y-6 max-w-screen-xl"}>
       {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-bold text-foreground" style={{ fontFamily: "'Cabinet Grotesk', sans-serif" }}>
-            Wages Dashboard
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Wages vs sales by area — week of {formatDateRange(period.from, period.to)}
+          {!embedded && (
+            <h1 className="text-xl font-bold text-foreground" style={{ fontFamily: "'Cabinet Grotesk', sans-serif" }}>
+              Wages Dashboard
+            </h1>
+          )}
+          <p className={embedded ? "text-sm font-semibold text-foreground" : "text-sm text-muted-foreground mt-1"}>
+            {embedded ? "Wages & Revenue" : "Wages vs sales by area — "} {embedded ? `· week of ${formatDateRange(period.from, period.to)}` : `week of ${formatDateRange(period.from, period.to)}`}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
