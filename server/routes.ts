@@ -5681,6 +5681,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     try {
       let totalCateringGross = 0;
       let totalCateringExGst = 0;
+      let totalCateringGrossInclWholesale = 0;
+      let totalCateringExGstInclWholesale = 0;
       let orderCount = 0;
       let page = 1;
       let hasMore = true;
@@ -5703,17 +5705,21 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         if (items.length === 0) { hasMore = false; break; }
 
         for (const order of items) {
-          // Exclude wholesale orders
           const isWholesale = order.customer_groups?.some((g: any) =>
             (g.id || g.uuid || g) === WHOLESALE_GROUP
           ) || order.customer_group_id === WHOLESALE_GROUP;
-          if (isWholesale) continue;
 
           const gt: number = parseFloat(order.grand_total || "0");
-          totalCateringGross += gt;
-          // ex GST = grand_total / 1.1
-          totalCateringExGst += gt / 1.1;
-          orderCount++;
+          // Always accumulate incl-wholesale totals
+          totalCateringGrossInclWholesale += gt;
+          totalCateringExGstInclWholesale += gt / 1.1;
+
+          // Retail-only totals (excl wholesale)
+          if (!isWholesale) {
+            totalCateringGross += gt;
+            totalCateringExGst += gt / 1.1;
+            orderCount++;
+          }
         }
 
         const totalItems: number = flexData.total_items || flexData.total || 0;
@@ -5724,6 +5730,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       result.flex = {
         cateringGross: totalCateringGross,
         cateringExGst: totalCateringExGst,
+        cateringExGstInclWholesale: totalCateringExGstInclWholesale,
+        cateringGrossInclWholesale: totalCateringGrossInclWholesale,
         orderCount,
       };
     } catch (e: any) {

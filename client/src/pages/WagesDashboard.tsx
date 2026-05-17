@@ -34,6 +34,8 @@ interface WagesDashboardData {
   flex?: {
     cateringGross: number;
     cateringExGst: number;
+    cateringExGstInclWholesale: number;
+    cateringGrossInclWholesale: number;
     orderCount: number;
   };
   xero?: {
@@ -366,9 +368,10 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
   const driversArea = data?.areas?.drivers;
   const cateringExGst = data?.flex?.cateringExGst ?? null;
   const cateringGross = data?.flex?.cateringGross ?? null;
+  const cateringExGstInclWholesale = data?.flex?.cateringExGstInclWholesale ?? null;
 
   // Total wages summary
-  const totalWages = (cbdArea?.oncost ?? 0) + (productionArea?.oncost ?? 0) + (driversArea?.oncost ?? 0);
+  const totalWages = (cbdArea?.wages ?? 0) + (productionArea?.wages ?? 0) + (driversArea?.wages ?? 0);
   const totalHours = (cbdArea?.hours ?? 0) + (productionArea?.hours ?? 0) + (driversArea?.hours ?? 0);
 
   const hasErrors = data?.errors && data.errors.length > 0;
@@ -461,10 +464,10 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
         <KpiCard
           title="CBD Store"
           icon={Store}
-          wages={cbdArea?.oncost ?? null}
+          wages={cbdArea?.wages ?? null}
           sales={null}
           salesLabel="Lightspeed Turnover"
-          target={30}
+          target={26}
           hours={cbdArea?.hours}
           shifts={cbdArea?.shifts}
           pendingWages={cbdArea?.pendingWages}
@@ -476,14 +479,14 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
         <KpiCard
           title="Production Kitchen"
           icon={ChefHat}
-          wages={productionArea?.oncost ?? null}
-          sales={cateringExGst}
-          salesLabel="Catering Sales"
-          target={30}
+          wages={productionArea?.wages ?? null}
+          sales={cateringExGstInclWholesale}
+          salesLabel="Catering Sales (incl. wholesale)"
+          target={16}
           hours={productionArea?.hours}
           shifts={productionArea?.shifts}
           pendingWages={productionArea?.pendingWages}
-          salesNote="ex GST, excl. wholesale"
+          salesNote="ex GST, incl. wholesale"
           isLoading={isLoading}
         />
 
@@ -491,10 +494,10 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
         <KpiCard
           title="Drivers"
           icon={Car}
-          wages={driversArea?.oncost ?? null}
+          wages={driversArea?.wages ?? null}
           sales={xeroDeliveryFee}
           salesLabel="Delivery Fee"
-          target={100}
+          target={88}
           hours={driversArea?.hours}
           shifts={driversArea?.shifts}
           pendingWages={driversArea?.pendingWages}
