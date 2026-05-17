@@ -12,6 +12,7 @@ import {
   Car, Store, Clock, DollarSign,
   PlugZap, Calendar
 } from "lucide-react";
+import { RevenueChart } from "@/components/RevenueChart";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface AreaData {
@@ -499,6 +500,9 @@ export default function WagesDashboard() {
           isLoading={isLoading || xeroLoading}
         />
       </div>
+
+      {/* Revenue Line Chart */}
+      <RevenueChart />
 
       {/* Xero status / connect block */}
       <Card className={cn("border-dashed", xeroDeliveryFee == null && !xeroLoading ? "border-muted" : "border-transparent")}>

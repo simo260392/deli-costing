@@ -5553,6 +5553,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     console.error("[Express global error]", err?.message || err);
     if (!res.headersSent) {
       res.status(err?.status || 500).json({ error: err?.message || "Internal server error" });
+    }
+  });
 
   // ─── Wages Dashboard ─────────────────────────────────────────────────────────
   // GET /api/wages-dashboard?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -5805,6 +5807,136 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     });
   }));
 
+  // ─── Revenue Chart ───────────────────────────────────────────────────────────
+  // GET /api/revenue-chart?range=this_month|last_month|ytd|all_time
+  app.get("/api/revenue-chart", asyncRoute(async (req, res) => {
+    const { range = "this_month" } = req.query as { range?: string };
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+
+    let fromDate: Date;
+    let toDate: Date = new Date(now);
+    toDate.setHours(23, 59, 59, 999);
+    let groupBy: "day" | "week" = "day";
+
+    if (range === "this_month") {
+      fromDate = new Date(year, month, 1);
+      groupBy = "day";
+    } else if (range === "last_month") {
+      fromDate = new Date(year, month - 1, 1);
+      toDate = new Date(year, month, 0, 23, 59, 59, 999);
+      groupBy = "day";
+    } else if (range === "ytd") {
+      fromDate = new Date(year, 0, 1);
+      groupBy = "week";
+    } else {
+      fromDate = new Date(2020, 11, 1);
+      groupBy = "week";
+    }
+
+    const fromStr = fromDate.toISOString().split("T")[0];
+    const toStr = toDate.toISOString().split("T")[0];
+
+    const FLEX_PROXY = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
+    const FLEX_SECRET = "deli-flex-proxy-2026";
+    const WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
+
+    const allOrders: any[] = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromStr + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toStr + "T23:59:59Z")}`;
+      const flexRes = await fetch(`${FLEX_PROXY}?path=${encodeURIComponent(flexPath)}`, {
+        headers: { "x-proxy-secret": FLEX_SECRET },
+      });
+
+      if (!flexRes.ok) {
+        const errText = await flexRes.text();
+        return res.status(502).json({ error: `Flex API error ${flexRes.status}: ${errText.slice(0, 200)}` });
+      }
+
+      const flexData: any = await flexRes.json();
+      const items: any[] = flexData.items || flexData.orders || [];
+      if (items.length === 0) { hasMore = false; break; }
+      allOrders.push(...items);
+
+      const totalItems: number = flexData.total_items || flexData.total || 0;
+      hasMore = page * 200 < totalItems;
+      page++;
+      if (page > 200) break; // safety cap
+    }
+
+    function getMondayOfWeek(d: Date): Date {
+      const day = d.getDay();
+      const diff = (day + 6) % 7;
+      const monday = new Date(d);
+      monday.setDate(d.getDate() - diff);
+      monday.setHours(0, 0, 0, 0);
+      return monday;
+    }
+
+    const buckets = new Map<string, { date: string; catering: number; delivery: number; cbd: number }>();
+
+    for (const order of allOrders) {
+      const isWholesale = order.customer_groups?.some((g: any) =>
+        (g.id || g.uuid || g) === WHOLESALE_GROUP
+      ) || order.customer_group_id === WHOLESALE_GROUP;
+      if (isWholesale) continue;
+
+      const grandTotal = parseFloat(order.grand_total || "0");
+      if (grandTotal <= 0) continue;
+
+      const deliveryStr: string = order.delivery_datetime || order.created_at || "";
+      const deliveryDate = new Date(deliveryStr);
+      if (isNaN(deliveryDate.getTime())) continue;
+
+      // Convert to AWST (+8h)
+      const awstDate = new Date(deliveryDate.getTime() + 8 * 3600000);
+
+      let bucketDate: string;
+      if (groupBy === "day") {
+        bucketDate = awstDate.toISOString().split("T")[0];
+      } else {
+        const monday = getMondayOfWeek(awstDate);
+        bucketDate = monday.toISOString().split("T")[0];
+      }
+
+      if (!buckets.has(bucketDate)) {
+        buckets.set(bucketDate, { date: bucketDate, catering: 0, delivery: 0, cbd: 0 });
+      }
+      const bucket = buckets.get(bucketDate)!;
+
+      const subtotalInclTax = parseFloat(order.subtotal_incl_tax || "0");
+      bucket.catering += subtotalInclTax;
+
+      const shippingInclTax = parseFloat(order.shipping?.price_incl_tax || "0");
+      bucket.delivery += shippingInclTax;
+    }
+
+    const sortedKeys = [...buckets.keys()].sort();
+    const dataPoints = sortedKeys.map(k => {
+      const b = buckets.get(k)!;
+      return {
+        date: b.date,
+        catering: Math.round(b.catering * 100) / 100,
+        delivery: Math.round(b.delivery * 100) / 100,
+        cbd: 0,
+        total: Math.round((b.catering + b.delivery) * 100) / 100,
+      };
+    });
+
+    res.json({ range, groupBy, from: fromStr, to: toStr, dataPoints, totalOrders: allOrders.length });
+  }));
+
+  // ── Global Express error handler ──────────────────────────────────────────
+  // Catches any error thrown (or passed to next()) from any route handler.
+  app.use((err: any, _req: any, res: any, _next: any) => {
+    console.error("[Express global error]", err?.message || err);
+    if (!res.headersSent) {
+      res.status(err?.status || 500).json({ error: err?.message || "Internal server error" });
     }
   });
 }
