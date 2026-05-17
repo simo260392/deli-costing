@@ -5812,128 +5812,250 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     });
   }));
 
-  // ─── Revenue Chart ───────────────────────────────────────────────────────────
-  // GET /api/revenue-chart?range=this_month|last_month|ytd|all_time
-  app.get("/api/revenue-chart", asyncRoute(async (req, res) => {
-    const { range = "this_month" } = req.query as { range?: string };
+  // ─── Revenue Chart helpers ───────────────────────────────────────────────────
+  const RC_PROXY_URL = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
+  const RC_PROXY_SECRET = "deli-flex-proxy-2026";
+  const RC_WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
+  function getMondayOfWeek(d: Date): Date {
+    const diff = (d.getDay() + 6) % 7;
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - diff);
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+  }
 
-    let fromDate: Date;
-    let toDate: Date = new Date(now);
-    toDate.setHours(23, 59, 59, 999);
-    let groupBy: "day" | "week" = "day";
-
-    if (range === "this_month") {
-      fromDate = new Date(year, month, 1);
-      groupBy = "day";
-    } else if (range === "last_month") {
-      fromDate = new Date(year, month - 1, 1);
-      toDate = new Date(year, month, 0, 23, 59, 59, 999);
-      groupBy = "day";
-    } else if (range === "ytd") {
-      fromDate = new Date(year, 0, 1);
-      groupBy = "week";
-    } else {
-      fromDate = new Date(2020, 11, 1);
-      groupBy = "week";
-    }
-
-    const fromStr = fromDate.toISOString().split("T")[0];
-    const toStr = toDate.toISOString().split("T")[0];
-
-    const FLEX_PROXY = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
-    const FLEX_SECRET = "deli-flex-proxy-2026";
-    const WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
+  // Fetch one month of orders from Flex and return aggregated weekly buckets
+  async function fetchFlexMonth(year: number, month: number): Promise<Map<string, { catering: number; delivery: number; count: number }>> {
+    const from = new Date(year, month, 1);
+    const to = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const fromStr = from.toISOString().split("T")[0];
+    const toStr = to.toISOString().split("T")[0];
 
     const allOrders: any[] = [];
     let page = 1;
     let hasMore = true;
-
     while (hasMore) {
       const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromStr + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toStr + "T23:59:59Z")}`;
-      const flexRes = await fetch(`${FLEX_PROXY}?path=${encodeURIComponent(flexPath)}`, {
-        headers: { "x-proxy-secret": FLEX_SECRET },
+      const flexRes = await fetch(`${RC_PROXY_URL}?path=${encodeURIComponent(flexPath)}`, {
+        headers: { "x-proxy-secret": RC_PROXY_SECRET },
+        signal: AbortSignal.timeout(30000),
       });
-
-      if (!flexRes.ok) {
-        const errText = await flexRes.text();
-        return res.status(502).json({ error: `Flex API error ${flexRes.status}: ${errText.slice(0, 200)}` });
-      }
-
+      if (!flexRes.ok) throw new Error(`Flex API ${flexRes.status}`);
       const flexData: any = await flexRes.json();
-      const items: any[] = flexData.items || flexData.orders || [];
-      if (items.length === 0) { hasMore = false; break; }
+      const items: any[] = flexData.items || [];
+      if (!items.length) break;
       allOrders.push(...items);
-
-      const totalItems: number = flexData.total_items || flexData.total || 0;
-      hasMore = page * 200 < totalItems;
+      const total: number = flexData.total_items || 0;
+      hasMore = page * 200 < total;
       page++;
-      if (page > 200) break; // safety cap
+      if (page > 50) break;
     }
 
-    function getMondayOfWeek(d: Date): Date {
-      const day = d.getDay();
-      const diff = (day + 6) % 7;
-      const monday = new Date(d);
-      monday.setDate(d.getDate() - diff);
-      monday.setHours(0, 0, 0, 0);
-      return monday;
-    }
-
-    const buckets = new Map<string, { date: string; catering: number; delivery: number; cbd: number }>();
-
+    const buckets = new Map<string, { catering: number; delivery: number; count: number }>();
     for (const order of allOrders) {
       const isWholesale = order.customer_groups?.some((g: any) =>
-        (g.id || g.uuid || g) === WHOLESALE_GROUP
-      ) || order.customer_group_id === WHOLESALE_GROUP;
+        (g.id || g.uuid || g) === RC_WHOLESALE_GROUP
+      ) || order.customer_group_id === RC_WHOLESALE_GROUP;
       if (isWholesale) continue;
+      const grand = parseFloat(order.grand_total || "0");
+      if (grand <= 0) continue;
+      const dt = new Date(order.delivery_datetime || order.created_at || "");
+      if (isNaN(dt.getTime())) continue;
+      const awst = new Date(dt.getTime() + 8 * 3600000);
+      const monday = getMondayOfWeek(awst);
+      const key = monday.toISOString().split("T")[0];
+      const b = buckets.get(key) || { catering: 0, delivery: 0, count: 0 };
+      b.catering += parseFloat(order.subtotal_incl_tax || "0");
+      b.delivery += parseFloat(order.shipping?.price_incl_tax || "0");
+      b.count++;
+      buckets.set(key, b);
+    }
+    return buckets;
+  }
 
-      const grandTotal = parseFloat(order.grand_total || "0");
-      if (grandTotal <= 0) continue;
+  // Fetch one month live (daily grouping) for this_month / last_month
+  async function fetchFlexRange(fromStr: string, toStr: string): Promise<{ dataPoints: any[]; totalOrders: number }> {
+    const allOrders: any[] = [];
+    let page = 1;
+    let hasMore = true;
+    while (hasMore) {
+      const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromStr + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toStr + "T23:59:59Z")}`;
+      const flexRes = await fetch(`${RC_PROXY_URL}?path=${encodeURIComponent(flexPath)}`, {
+        headers: { "x-proxy-secret": RC_PROXY_SECRET },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!flexRes.ok) throw new Error(`Flex API ${flexRes.status}`);
+      const flexData: any = await flexRes.json();
+      const items: any[] = flexData.items || [];
+      if (!items.length) break;
+      allOrders.push(...items);
+      const total: number = flexData.total_items || 0;
+      hasMore = page * 200 < total;
+      page++;
+      if (page > 50) break;
+    }
+    const buckets = new Map<string, { catering: number; delivery: number }>();
+    for (const order of allOrders) {
+      const isWholesale = order.customer_groups?.some((g: any) =>
+        (g.id || g.uuid || g) === RC_WHOLESALE_GROUP
+      ) || order.customer_group_id === RC_WHOLESALE_GROUP;
+      if (isWholesale) continue;
+      const grand = parseFloat(order.grand_total || "0");
+      if (grand <= 0) continue;
+      const dt = new Date(order.delivery_datetime || order.created_at || "");
+      if (isNaN(dt.getTime())) continue;
+      const awst = new Date(dt.getTime() + 8 * 3600000);
+      const key = awst.toISOString().split("T")[0];
+      const b = buckets.get(key) || { catering: 0, delivery: 0 };
+      b.catering += parseFloat(order.subtotal_incl_tax || "0");
+      b.delivery += parseFloat(order.shipping?.price_incl_tax || "0");
+      buckets.set(key, b);
+    }
+    const dataPoints = [...buckets.keys()].sort().map(k => {
+      const b = buckets.get(k)!;
+      return { date: k, catering: Math.round(b.catering * 100) / 100, delivery: Math.round(b.delivery * 100) / 100, cbd: 0, total: Math.round((b.catering + b.delivery) * 100) / 100 };
+    });
+    return { dataPoints, totalOrders: allOrders.length };
+  }
 
-      const deliveryStr: string = order.delivery_datetime || order.created_at || "";
-      const deliveryDate = new Date(deliveryStr);
-      if (isNaN(deliveryDate.getTime())) continue;
+  // ─── Revenue Chart — cache-first for YTD/all_time ────────────────────────────
+  // GET /api/revenue-chart?range=this_month|last_month|ytd|all_time
+  app.get("/api/revenue-chart", asyncRoute(async (req, res) => {
+    const { range = "this_month" } = req.query as { range?: string };
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth(); // 0-indexed
 
-      // Convert to AWST (+8h)
-      const awstDate = new Date(deliveryDate.getTime() + 8 * 3600000);
-
-      let bucketDate: string;
-      if (groupBy === "day") {
-        bucketDate = awstDate.toISOString().split("T")[0];
+    // ── Live fetch for short ranges ──
+    if (range === "this_month" || range === "last_month") {
+      let fromDate: Date, toDate: Date;
+      if (range === "this_month") {
+        fromDate = new Date(year, month, 1);
+        toDate = new Date(now);
+        toDate.setHours(23, 59, 59, 999);
       } else {
-        const monday = getMondayOfWeek(awstDate);
-        bucketDate = monday.toISOString().split("T")[0];
+        fromDate = new Date(year, month - 1, 1);
+        toDate = new Date(year, month, 0, 23, 59, 59, 999);
       }
-
-      if (!buckets.has(bucketDate)) {
-        buckets.set(bucketDate, { date: bucketDate, catering: 0, delivery: 0, cbd: 0 });
-      }
-      const bucket = buckets.get(bucketDate)!;
-
-      const subtotalInclTax = parseFloat(order.subtotal_incl_tax || "0");
-      bucket.catering += subtotalInclTax;
-
-      const shippingInclTax = parseFloat(order.shipping?.price_incl_tax || "0");
-      bucket.delivery += shippingInclTax;
+      const fromStr = fromDate.toISOString().split("T")[0];
+      const toStr = toDate.toISOString().split("T")[0];
+      const { dataPoints, totalOrders } = await fetchFlexRange(fromStr, toStr);
+      return res.json({ range, groupBy: "day", from: fromStr, to: toStr, dataPoints, totalOrders, fromCache: false });
     }
 
-    const sortedKeys = [...buckets.keys()].sort();
-    const dataPoints = sortedKeys.map(k => {
-      const b = buckets.get(k)!;
-      return {
-        date: b.date,
-        catering: Math.round(b.catering * 100) / 100,
-        delivery: Math.round(b.delivery * 100) / 100,
-        cbd: 0,
-        total: Math.round((b.catering + b.delivery) * 100) / 100,
-      };
-    });
+    // ── Cache-first for YTD / all_time ──
+    let fromDate: Date;
+    if (range === "ytd") {
+      fromDate = new Date(year, 0, 1);
+    } else {
+      fromDate = new Date(2020, 11, 1); // Dec 2020 — earliest Flex data
+    }
+    // Cache covers up to end of LAST complete month. Current month is always live.
+    const cacheToMonth = month - 1; // last complete month (0-indexed)
+    const cacheToYear = cacheToMonth < 0 ? year - 1 : year;
+    const cacheToMonthAdj = cacheToMonth < 0 ? 11 : cacheToMonth;
 
-    res.json({ range, groupBy, from: fromStr, to: toStr, dataPoints, totalOrders: allOrders.length });
+    const fromStr = fromDate.toISOString().split("T")[0];
+    const cacheEndStr = new Date(cacheToYear, cacheToMonthAdj + 1, 0).toISOString().split("T")[0]; // end of last complete month
+    const nowStr = now.toISOString().split("T")[0];
+
+    // Load cached weekly buckets
+    const { data: cachedRows, error: cacheErr } = await supabase
+      .from("revenue_chart_cache")
+      .select("bucket_date, catering, delivery, total, order_count")
+      .eq("group_by", "week")
+      .gte("bucket_date", fromStr)
+      .lte("bucket_date", cacheEndStr)
+      .order("bucket_date", { ascending: true });
+
+    // Load current month live (just a few pages)
+    const currentMonthFrom = new Date(year, month, 1).toISOString().split("T")[0];
+    const liveResult = await fetchFlexRange(currentMonthFrom, nowStr);
+    // Convert current month daily → weekly buckets
+    const liveWeeklyBuckets = new Map<string, { catering: number; delivery: number; count: number }>();
+    for (const dp of liveResult.dataPoints) {
+      const d = new Date(dp.date + "T12:00:00");
+      const monday = getMondayOfWeek(d);
+      const key = monday.toISOString().split("T")[0];
+      const b = liveWeeklyBuckets.get(key) || { catering: 0, delivery: 0, count: 0 };
+      b.catering += dp.catering;
+      b.delivery += dp.delivery;
+      b.count++;
+      liveWeeklyBuckets.set(key, b);
+    }
+
+    // Merge: cached + live (live overwrites if same week key)
+    const merged = new Map<string, { date: string; catering: number; delivery: number; total: number }>();
+    for (const row of (cachedRows || [])) {
+      merged.set(row.bucket_date, { date: row.bucket_date, catering: Number(row.catering), delivery: Number(row.delivery), total: Number(row.total) });
+    }
+    for (const [key, b] of liveWeeklyBuckets) {
+      const catering = Math.round(b.catering * 100) / 100;
+      const delivery = Math.round(b.delivery * 100) / 100;
+      merged.set(key, { date: key, catering, delivery, total: Math.round((b.catering + b.delivery) * 100) / 100 });
+    }
+
+    const dataPoints = [...merged.keys()].sort().map(k => ({
+      ...merged.get(k)!,
+      cbd: 0,
+    }));
+
+    const totalOrders = (cachedRows?.reduce((s: number, r: any) => s + (r.order_count || 0), 0) || 0) + liveResult.totalOrders;
+    const cacheCount = cachedRows?.length || 0;
+
+    return res.json({
+      range, groupBy: "week", from: fromStr, to: nowStr,
+      dataPoints, totalOrders,
+      fromCache: true, cachedWeeks: cacheCount,
+      cacheErr: cacheErr?.message || null,
+    });
+  }));
+
+  // POST /api/revenue-chart/refresh-cache?year=YYYY&month=MM
+  // Fetches one calendar month from Flex and upserts into revenue_chart_cache.
+  // Called by the monthly cron and the initial backfill.
+  app.post("/api/revenue-chart/refresh-cache", asyncRoute(async (req, res) => {
+    const { year, month, secret } = req.body as { year: number; month: number; secret?: string };
+    // Simple bearer check so this can't be called by anyone
+    const AUTH = req.headers.authorization;
+    if (AUTH !== `Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320` && secret !== "deli-flex-proxy-2026") {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (typeof year !== "number" || typeof month !== "number" || month < 0 || month > 11) {
+      return res.status(400).json({ error: "Provide year (number) and month (0–11 number)" });
+    }
+
+    const buckets = await fetchFlexMonth(year, month);
+
+    const rows = [...buckets.entries()].map(([date, b]) => ({
+      bucket_date: date,
+      group_by: "week",
+      catering: Math.round(b.catering * 100) / 100,
+      delivery: Math.round(b.delivery * 100) / 100,
+      total: Math.round((b.catering + b.delivery) * 100) / 100,
+      order_count: b.count,
+      updated_at: new Date().toISOString(),
+    }));
+
+    if (rows.length === 0) {
+      return res.json({ ok: true, upserted: 0, year, month, note: "No orders found" });
+    }
+
+    const { error } = await supabase
+      .from("revenue_chart_cache")
+      .upsert(rows, { onConflict: "bucket_date,group_by" });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Mark month as cached in meta
+    const cacheKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+    await supabase.from("revenue_cache_meta").upsert(
+      { cache_key: cacheKey, last_fetched_at: new Date().toISOString(), order_count: [...buckets.values()].reduce((s, b) => s + b.count, 0) },
+      { onConflict: "cache_key" }
+    );
+
+    return res.json({ ok: true, upserted: rows.length, year, month, cacheKey });
   }));
 
   // ── Global Express error handler ──────────────────────────────────────────
