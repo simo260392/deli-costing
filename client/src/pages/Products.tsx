@@ -1247,9 +1247,9 @@ function ProductCard({
           {/* Price & margin */}
           <div className="text-right shrink-0">
             <div className="text-sm font-bold tabular-nums">{fmt(product.price)}</div>
-            {hasCosting && (
-              <div className={cn("text-xs font-medium tabular-nums", marginColor(costing!.marginPercent))}>
-                {pct(costing!.marginPercent)} margin
+            {hasCosting && costing != null && (
+              <div className={cn("text-xs font-medium tabular-nums", marginColor(costing.marginPercent))}>
+                {pct(costing.marginPercent)} margin
               </div>
             )}
           </div>
