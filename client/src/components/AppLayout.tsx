@@ -5,27 +5,39 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  ClipboardList, BarChart3, LogOut, User, Archive, TrendingUp
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 
-const navItems = [
+// Top-level nav items (not grouped)
+const topNavItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, slug: "dashboard" },
   { href: "/wages", label: "Wages", icon: TrendingUp, slug: "wages" },
   { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
   { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
-  { href: "/products", label: "Products", icon: Store, slug: "products" },
   { href: "/wholesale", label: "Wholesale Packaging", icon: Archive, slug: "wholesale" },
-  { href: "/recipe-book", label: "Product Info PDF", icon: BookMarked, slug: "recipe-book" },
-  { href: "/ingredients", label: "Ingredients", icon: Package, slug: "ingredients" },
-  { href: "/suppliers", label: "Suppliers", icon: Truck, slug: "suppliers" },
-  { href: "/sub-recipes", label: "Sub-Recipes", icon: BookOpen, slug: "sub-recipes" },
-  { href: "/recipes", label: "Recipes", icon: UtensilsCrossed, slug: "recipes" },
   { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw, slug: "xero-imports" },
-  { href: "/custom-pricing", label: "Custom Pricing", icon: Calculator, slug: "custom-pricing" },
+];
+
+// Food group sub-items
+const foodSubItems = [
+  { href: "/products",      label: "Products",       icon: Store,          slug: "products" },
+  { href: "/ingredients",   label: "Ingredients",    icon: Package,        slug: "ingredients" },
+  { href: "/recipes",       label: "Recipes",        icon: UtensilsCrossed,slug: "recipes" },
+  { href: "/sub-recipes",   label: "Sub-Recipes",    icon: BookOpen,       slug: "sub-recipes" },
+  { href: "/suppliers",     label: "Suppliers",      icon: Truck,          slug: "suppliers" },
+  { href: "/recipe-book",   label: "Product Info PDF",icon: BookMarked,     slug: "recipe-book" },
+  { href: "/custom-pricing",label: "Custom Pricing", icon: Calculator,     slug: "custom-pricing" },
+];
+
+const foodSlugs = new Set(foodSubItems.map(i => i.slug));
+const foodHrefs = new Set(foodSubItems.map(i => i.href));
+
+// Bottom-pinned items
+const bottomNavItems = [
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
 ];
 
@@ -48,6 +60,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { staff, logout, hasAccess } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Auto-expand Food group if currently on a food sub-page
+  const onFoodPage = foodSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
+  const [foodOpen, setFoodOpen] = useState(onFoodPage);
+
   const { data: xeroCountData } = useQuery({
     queryKey: ["/api/xero/imports/pending-count"],
     queryFn: () => apiRequest("GET", "/api/xero/imports/pending-count").then((r) => r.json()),
@@ -58,42 +74,83 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isActive = (href: string) =>
     href === "/" ? location === "/" || location === "" : location === href || location.startsWith(href + "/");
 
-  // Filter nav items by access
-  const visibleNavItems = navItems.filter(({ slug }) => hasAccess(slug));
+  const navLink = (href: string, label: string, Icon: any, slug: string, indent = false) => (
+    <li key={href}>
+      <Link
+        href={href}
+        onClick={() => setMobileOpen(false)}
+        className={cn(
+          "flex items-center gap-3 rounded-md text-sm font-medium transition-colors",
+          indent ? "px-3 py-2 pl-8" : "px-3 py-2.5",
+          isActive(href)
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-muted"
+        )}
+        data-testid={`nav-${label.toLowerCase().replace(/\s+/g, "-")}`}
+      >
+        <Icon size={15} strokeWidth={isActive(href) ? 2.5 : 2} />
+        <span className="flex-1">{label}</span>
+        {label === "Invoice Imports" && xeroCount > 0 && (
+          <span className={cn(
+            "ml-auto text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none",
+            isActive(href) ? "bg-white/20 text-white" : "bg-amber-500 text-white"
+          )}>
+            {xeroCount}
+          </span>
+        )}
+      </Link>
+    </li>
+  );
 
   const sidebar = (
     <nav className="flex flex-col h-full">
       <Logo />
       <div className="flex-1 overflow-y-auto py-3 px-3">
         <ul className="space-y-0.5">
-          {visibleNavItems.map(({ href, label, icon: Icon, slug }) => (
-            <li key={href}>
-              <Link
-                href={href}
-                onClick={() => setMobileOpen(false)}
+
+          {/* Top-level items */}
+          {topNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+            navLink(href, label, Icon, slug)
+          )}
+
+          {/* ── Food group ── */}
+          {foodSubItems.some(({ slug }) => hasAccess(slug)) && (
+            <li>
+              {/* Food category header — clickable to toggle */}
+              <button
+                onClick={() => setFoodOpen(o => !o)}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
-                  isActive(href)
-                    ? "bg-primary text-primary-foreground"
+                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
+                  onFoodPage
+                    ? "text-primary font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted"
                 )}
-                data-testid={`nav-${label.toLowerCase().replace(/\s+/g, "-")}`}
+                data-testid="nav-food-group"
               >
-                <Icon size={16} strokeWidth={isActive(href) ? 2.5 : 2} />
-                <span className="flex-1">{label}</span>
-                {label === "Invoice Imports" && xeroCount > 0 && (
-                  <span className={cn(
-                    "ml-auto text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none",
-                    isActive(href)
-                      ? "bg-white/20 text-white"
-                      : "bg-amber-500 text-white"
-                  )}>
-                    {xeroCount}
-                  </span>
-                )}
-              </Link>
+                <Utensils size={15} strokeWidth={onFoodPage ? 2.5 : 2} />
+                <span className="flex-1 text-left">Food</span>
+                <ChevronDown
+                  size={14}
+                  className={cn("transition-transform duration-200", foodOpen ? "rotate-0" : "-rotate-90")}
+                />
+              </button>
+
+              {/* Sub-items */}
+              {foodOpen && (
+                <ul className="mt-0.5 space-y-0.5">
+                  {foodSubItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+                    navLink(href, label, Icon, slug, true)
+                  )}
+                </ul>
+              )}
             </li>
-          ))}
+          )}
+
+          {/* Bottom-pinned items */}
+          {bottomNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+            navLink(href, label, Icon, slug)
+          )}
+
         </ul>
       </div>
 
