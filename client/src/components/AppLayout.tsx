@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -14,12 +14,13 @@ import { cn } from "@/lib/utils";
 
 // Top-level nav items (not grouped)
 const topNavItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard, slug: "dashboard" },
-  { href: "/wages", label: "Wages", icon: TrendingUp, slug: "wages" },
-  { href: "/prep", label: "Production", icon: ChefHat, slug: "prep" },
-  { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
-  { href: "/wholesale", label: "Wholesale Packaging", icon: Archive, slug: "wholesale" },
-  { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw, slug: "xero-imports" },
+  { href: "/",            label: "Dashboard",          icon: LayoutDashboard, slug: "dashboard" },
+  { href: "/wages",       label: "Wages",              icon: TrendingUp,      slug: "wages" },
+  { href: "/safety",      label: "Safety",             icon: ShieldCheck,     slug: "safety" },
+  { href: "/prep",        label: "Production",         icon: ChefHat,         slug: "prep" },
+  { href: "/prep-reports",label: "Production Reports", icon: BarChart3,        slug: "prep-reports" },
+  { href: "/wholesale",   label: "Wholesale Packaging",icon: Archive,         slug: "wholesale" },
+  { href: "/xero-imports",label: "Invoice Imports",    icon: RefreshCw,       slug: "xero-imports" },
 ];
 
 // Food group sub-items

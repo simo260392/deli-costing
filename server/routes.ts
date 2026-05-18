@@ -6066,6 +6066,166 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     return res.json({ ok: true, upserted: rows.length, year, month, cacheKey });
   }));
 
+  // ─── SafetyCulture ────────────────────────────────────────────────────────
+  const SC_TOKEN = "scapi_jEN3Gh4Sq_dhY7b53vgGpwfJDHVWl_ackd_qT9eimci-NfVtF3C60x_m-gdFaVHjmq5s4BRXRgivh7X_FtW9d6pIcJN9wbPfNxwj5b8EgOFskBQsEGxQOGdoy-SXNEmD-KownUxpYen7linST45zYW0iV0ZvpM4ritr-d8WuRtk";
+  const SC_BASE = "https://api.safetyculture.io";
+
+  // Template groups (IDs confirmed from live data)
+  const SC_TEMPLATE_GROUPS: Record<string, { label: string; ids: string[]; scored: boolean }> = {
+    fridge_logs: {
+      label: "Fridge Logs",
+      scored: true,
+      ids: [
+        "template_94c8e7c258e2474e9c8c8f7260af03bc", // CBD Fridge Log - Daily
+        "template_e8f03ae6feaa4a81bcbe21d4342d68e1", // Inglewood Fridge Log - Daily (legacy)
+        "template_a88d63d03b8749e1b32d030a1d3ab591", // Osborne Park Fridge Log - Daily (new)
+      ],
+    },
+    cleaning: {
+      label: "Cleaning",
+      scored: true,
+      ids: [
+        "template_0c7826b99f464955b3c66a0c9d863857", // CBD FOH Cleaning schedule
+        "template_c4fbee9c8a3948fabf6f7255a4e8fb5f", // CBD Kitchen Weekly Cleaning Schedule
+        "template_40ba5acf47cb421ab9c557a941316743", // Monthly Cleaning Schedule
+      ],
+    },
+    food_safety: {
+      label: "Food Safety",
+      scored: true,
+      ids: [
+        "template_f771f0ea43444729a6ba2c16b3a6324d", // Cooking & Cooling Log
+        "template_4440fb9853cd47519de40d3507ea3496", // Food Transportation Log
+        "template_cf16aaf49dda4f12b097c1cd21ffba86", // Supplier Delivery Temperature Log
+        "template_7f2b9a3536ee479d895f9bc6e41b74a5", // Delivery Temperature Recording
+      ],
+    },
+    order_sheets: {
+      label: "Order Sheets",
+      scored: false,
+      ids: [
+        "template_7030ad1e104f482abdfbc145ca3b50e5", // CBD Additional Stock Order
+        "template_d1f37b53a36946e89129f8c43eefc2dc", // Kakulas
+        "template_dc3b6c4d32fb49019e1b0df5cacb6b1e", // Spudshed
+        "template_f2a4914f7b024d94992e9d99f45406c1", // Costco
+        "template_d6cd8a6106474d1a869aeccde4e11242", // Campbells
+        "template_72c546dd0a894da2828e2c19c1a73902", // Fruit & Veg Markets
+      ],
+    },
+  };
+
+  // GET /api/safety/inspections?days=30&group=fridge_logs
+  // Returns recent inspections summarised per template, optionally filtered to a group
+  app.get("/api/safety/inspections", asyncRoute(async (req, res) => {
+    const days = Math.min(parseInt(req.query.days as string || "30"), 180);
+    const groupFilter = req.query.group as string | undefined;
+
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    const sinceStr = since.toISOString();
+
+    // Fetch pages until we've covered the date range
+    const allItems: any[] = [];
+    let url = `${SC_BASE}/feed/inspections?limit=100`;
+    let pages = 0;
+
+    while (url && pages < 50) {
+      const scRes = await fetch(url, { headers: { Authorization: `Bearer ${SC_TOKEN}` }, signal: AbortSignal.timeout(15000) });
+      if (!scRes.ok) throw new Error(`SafetyCulture API ${scRes.status}`);
+      const data: any = await scRes.json();
+      const items: any[] = data.data || [];
+      // Items come oldest-first; stop once we're past the window
+      let doneEarly = false;
+      for (const item of items) {
+        const modified = item.modified_at || item.date_modified || "";
+        if (modified && modified < sinceStr) { doneEarly = true; continue; }
+        allItems.push(item);
+      }
+      const nextPage: string | undefined = data.metadata?.next_page;
+      if (!nextPage || doneEarly) break;
+      url = SC_BASE + nextPage;
+      pages++;
+    }
+
+    // Group by template
+    const byTemplate = new Map<string, { templateId: string; templateName: string; group: string; inspections: any[] }>();
+
+    for (const item of allItems) {
+      const tid: string = item.template_id || "";
+      const tname: string = item.template_name || "Unknown";
+
+      // Find which group this template belongs to
+      let group = "other";
+      for (const [gKey, gVal] of Object.entries(SC_TEMPLATE_GROUPS)) {
+        if (gVal.ids.includes(tid)) { group = gKey; break; }
+      }
+      if (groupFilter && group !== groupFilter) continue;
+
+      if (!byTemplate.has(tid)) byTemplate.set(tid, { templateId: tid, templateName: tname, group, inspections: [] });
+      byTemplate.get(tid)!.inspections.push(item);
+    }
+
+    // Summarise each template
+    const summaries = [...byTemplate.values()].map(({ templateId, templateName, group, inspections }) => {
+      const completed = inspections.filter(i => i.date_completed);
+      const incomplete = inspections.filter(i => !i.date_completed);
+      const scores = completed.filter(i => i.score_percentage != null).map(i => i.score_percentage as number);
+      const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 10) / 10 : null;
+      const lastCompleted = completed.sort((a, b) => (b.date_completed || "").localeCompare(a.date_completed || ""))[0] || null;
+      return {
+        templateId, templateName, group,
+        totalCount: inspections.length,
+        completedCount: completed.length,
+        incompleteCount: incomplete.length,
+        avgScore,
+        lastCompletedAt: lastCompleted?.date_completed || null,
+        lastScore: lastCompleted?.score_percentage ?? null,
+        lastAuditId: lastCompleted?.id || null,
+        lastConductedBy: lastCompleted?.author_name || null,
+        recentScores: completed.slice(0, 10).map(i => ({ date: i.date_completed?.slice(0, 10), score: i.score_percentage, auditId: i.id })),
+      };
+    });
+
+    // Sort: by group order, then by last completed desc
+    const groupOrder = ["fridge_logs", "cleaning", "food_safety", "order_sheets", "other"];
+    summaries.sort((a, b) => {
+      const go = groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group);
+      if (go !== 0) return go;
+      return (b.lastCompletedAt || "").localeCompare(a.lastCompletedAt || "");
+    });
+
+    const groups = Object.entries(SC_TEMPLATE_GROUPS).map(([key, val]) => ({ key, label: val.label, scored: val.scored }));
+
+    return res.json({ days, summaries, groups, totalInspections: allItems.length });
+  }));
+
+  // GET /api/safety/actions — open/overdue actions
+  app.get("/api/safety/actions", asyncRoute(async (req, res) => {
+    const scRes = await fetch(`${SC_BASE}/feed/actions?limit=100`, {
+      headers: { Authorization: `Bearer ${SC_TOKEN}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!scRes.ok) throw new Error(`SafetyCulture actions API ${scRes.status}`);
+    const data: any = await scRes.json();
+    const actions: any[] = (data.data || []).map((a: any) => ({
+      id: a.id,
+      title: a.title || a.description || "Untitled",
+      status: a.status,
+      priority: a.priority,
+      dueDate: a.due_date,
+      createdAt: a.created_at,
+      completedAt: a.completed_at,
+      creatorName: a.creator_user_name,
+      auditTitle: a.audit_title,
+      auditItemLabel: a.audit_item_label,
+      uniqueId: a.unique_id,
+      typeName: a.type_name,
+    }));
+    const open = actions.filter(a => a.status !== "COMPLETED" && a.status !== "CLOSED");
+    const overdue = open.filter(a => a.dueDate && new Date(a.dueDate) < new Date());
+    return res.json({ actions, open, overdue });
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {
