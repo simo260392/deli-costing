@@ -143,6 +143,8 @@ export interface IStorage {
   createXeroLineItem(data: InsertXeroLineItem): Promise<XeroLineItem>;
   updateXeroLineItem(id: number, data: Partial<InsertXeroLineItem>): Promise<XeroLineItem | undefined>;
   deleteXeroLineItem(id: number): Promise<void>;
+  deleteXeroLineItemsByImportId(importId: number): Promise<void>;
+  updateXeroImportParsed(id: number, data: { xeroInvoiceNumber?: string; invoiceDate?: string | null; totalAmount?: number | null; supplierName?: string | null; supplierId?: number | null; }): Promise<XeroImport | undefined>;
   resolveXeroLineItem(id: number, resolution: {
     status: 'matched' | 'added' | 'ignored';
     ingredientId?: number;
@@ -581,6 +583,24 @@ export const storage: IStorage = {
   },
   deleteXeroLineItem: async (id) => {
     await supabase.from("xero_line_items").delete().eq("id", id);
+  },
+  deleteXeroLineItemsByImportId: async (importId) => {
+    await supabase.from("xero_line_items").delete().eq("xero_import_id", importId);
+  },
+  updateXeroImportParsed: async (id, data) => {
+    const update: Record<string, any> = {};
+    if (data.xeroInvoiceNumber !== undefined) update.xero_invoice_number = data.xeroInvoiceNumber;
+    if (data.invoiceDate !== undefined) update.invoice_date = data.invoiceDate;
+    if (data.totalAmount !== undefined) update.total_amount = data.totalAmount;
+    if (data.supplierName !== undefined) update.supplier_name = data.supplierName;
+    if (data.supplierId !== undefined) update.supplier_id = data.supplierId;
+    update.synced_at = new Date().toISOString();
+    const { data: row, error } = await supabase.from("xero_imports")
+      .update(update)
+      .eq("id", id)
+      .select().single();
+    if (error) return undefined;
+    return toCamel(row) as XeroImport;
   },
   resolveXeroLineItem: async (id, resolution) => {
     const { data: row, error } = await supabase.from("xero_line_items")

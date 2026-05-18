@@ -3027,20 +3027,86 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     fs.createReadStream(pdfPath).pipe(res);
   });
 
-  // POST /api/xero/imports/:id/upload-pdf — manually upload a PDF
-  app.post("/api/xero/imports/:id/upload-pdf", pdfUpload.single("pdf"), async (req: any, res) => {
-    try {
-      const id = Number(req.params.id);
-      const xeroImport = await storage.getXeroImport(id);
-      if (!xeroImport) return res.status(404).json({ error: "Invoice not found" });
-      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const destPath = path.join(PDF_CACHE_DIR, `${xeroImport.xeroInvoiceId}.pdf`);
-      fs.renameSync(req.file.path, destPath);
-      res.json({ ok: true, url: `/api/xero/imports/${id}/pdf` });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+  // POST /api/xero/imports/:id/upload-pdf — manually upload a PDF and re-parse it
+  app.post("/api/xero/imports/:id/upload-pdf", pdfUpload.single("pdf"), asyncRoute(async (req: any, res) => {
+    const id = Number(req.params.id);
+    const xeroImport = await storage.getXeroImport(id);
+    if (!xeroImport) return res.status(404).json({ error: "Invoice not found" });
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    // Save PDF to cache
+    const destPath = path.join(PDF_CACHE_DIR, `${xeroImport.xeroInvoiceId}.pdf`);
+    try { fs.renameSync(req.file.path, destPath); }
+    catch { fs.copyFileSync(req.file.path, destPath); fs.unlinkSync(req.file.path); }
+
+    // Re-parse the newly uploaded file
+    const fileName = req.file.originalname || xeroImport.lineDescription || `${xeroImport.supplierName || "invoice"}.pdf`;
+    const { execFile } = await import("child_process");
+    const parsed: any = await new Promise((resolve) => {
+      execFile(
+        "python3", [path.join(__dirname, "parse_invoice.py"), destPath, fileName],
+        { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
+        (_err, stdout, _stderr) => {
+          let jsonStr = stdout;
+          const s = stdout.indexOf('{'), e2 = stdout.lastIndexOf('}');
+          if (s !== -1 && e2 !== -1) jsonStr = stdout.slice(s, e2 + 1);
+          try { resolve(JSON.parse(jsonStr)); }
+          catch { resolve({ supplierName: null, invoiceNumber: null, invoiceDate: null, totalAmount: null, lineItems: [], error: stdout.slice(0, 300) }); }
+        }
+      );
+    });
+
+    // Resolve supplier
+    const allSuppliers = await storage.getSuppliers();
+    let supplierId = xeroImport.supplierId || null;
+    const supplierName = parsed.supplierName || xeroImport.supplierName || null;
+    if (!supplierId && supplierName) {
+      const match = allSuppliers.find((s: any) => s.name.toLowerCase() === supplierName.toLowerCase());
+      if (match) supplierId = match.id;
     }
-  });
+
+    // Update import record with parsed data
+    await storage.updateXeroImportParsed(id, {
+      xeroInvoiceNumber: parsed.invoiceNumber || xeroImport.xeroInvoiceNumber,
+      invoiceDate: parsed.invoiceDate || xeroImport.invoiceDate || null,
+      totalAmount: parsed.totalAmount || null,
+      supplierName,
+      supplierId,
+    });
+
+    // Replace line items with freshly parsed ones
+    await storage.deleteXeroLineItemsByImportId(id);
+    let lineItemsCreated = 0;
+    for (const li of (parsed.lineItems || [])) {
+      await storage.createXeroLineItem({
+        xeroImportId: id,
+        description: li.description,
+        status: "pending",
+        quantity: li.quantity || null,
+        costPerUnit: li.unitPrice || null,
+        lineTotal: li.lineTotal || null,
+        unit: li.unit || null,
+        cartonsSupplied: li.cartonsSupplied || null,
+        packsPerCarton: li.packsPerCarton || null,
+        packSize: li.packSize || null,
+        packUnit: li.packUnit || null,
+        brandName: (li.brandName || "").trim(),
+        createdAt: new Date().toISOString(),
+      } as any);
+      lineItemsCreated++;
+    }
+
+    res.json({
+      ok: true,
+      url: `/api/xero/imports/${id}/pdf`,
+      invoiceNumber: parsed.invoiceNumber,
+      invoiceDate: parsed.invoiceDate,
+      totalAmount: parsed.totalAmount,
+      supplierName,
+      lineItemsCreated,
+      parseWarning: parsed.error || null,
+    });
+  }));
 
   // POST /api/xero/imports/:id/save-pdf — agent posts base64 PDF to save to disk
   app.post("/api/xero/imports/:id/save-pdf", async (req, res) => {
@@ -3058,6 +3124,86 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       res.status(500).json({ error: e.message });
     }
   });
+
+  // POST /api/xero/imports/:id/reparse — re-run parse_invoice.py on a cached PDF and update the record
+  app.post("/api/xero/imports/:id/reparse", asyncRoute(async (req, res) => {
+    const id = Number(req.params.id);
+    const xeroImport = await storage.getXeroImport(id);
+    if (!xeroImport) return res.status(404).json({ error: "Invoice not found" });
+
+    const pdfPath = path.join(PDF_CACHE_DIR, `${xeroImport.xeroInvoiceId}.pdf`);
+    if (!fs.existsSync(pdfPath)) {
+      return res.status(404).json({ error: "PDF not in cache — please re-upload the file first" });
+    }
+
+    // Re-run parse_invoice.py
+    const fileName = xeroImport.lineDescription || `${xeroImport.supplierName || "invoice"}.pdf`;
+    const { execFile } = await import("child_process");
+    const parsed: any = await new Promise((resolve) => {
+      execFile(
+        "python3", [path.join(__dirname, "parse_invoice.py"), pdfPath, fileName],
+        { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
+        (_err, stdout, _stderr) => {
+          let jsonStr = stdout;
+          const jsonStart = stdout.indexOf('{');
+          const jsonEnd = stdout.lastIndexOf('}');
+          if (jsonStart !== -1 && jsonEnd !== -1) jsonStr = stdout.slice(jsonStart, jsonEnd + 1);
+          try { resolve(JSON.parse(jsonStr)); }
+          catch { resolve({ supplierName: null, invoiceNumber: null, invoiceDate: null, totalAmount: null, lineItems: [], error: stdout.slice(0, 300) }); }
+        }
+      );
+    });
+
+    // Resolve supplier
+    const allSuppliers = await storage.getSuppliers();
+    let supplierId = xeroImport.supplierId || null;
+    const supplierName = parsed.supplierName || xeroImport.supplierName || null;
+    if (!supplierId && supplierName) {
+      const match = allSuppliers.find((s: any) => s.name.toLowerCase() === supplierName.toLowerCase());
+      if (match) supplierId = match.id;
+    }
+
+    // Update the import record with freshly parsed data
+    await storage.updateXeroImportParsed(id, {
+      xeroInvoiceNumber: parsed.invoiceNumber || xeroImport.xeroInvoiceNumber,
+      invoiceDate: parsed.invoiceDate || xeroImport.invoiceDate || null,
+      totalAmount: parsed.totalAmount || null,
+      supplierName,
+      supplierId,
+    });
+
+    // Delete old line items and recreate from fresh parse
+    await storage.deleteXeroLineItemsByImportId(id);
+    let lineItemsCreated = 0;
+    for (const li of (parsed.lineItems || [])) {
+      await storage.createXeroLineItem({
+        xeroImportId: id,
+        description: li.description,
+        status: "pending",
+        quantity: li.quantity || null,
+        costPerUnit: li.unitPrice || null,
+        lineTotal: li.lineTotal || null,
+        unit: li.unit || null,
+        cartonsSupplied: li.cartonsSupplied || null,
+        packsPerCarton: li.packsPerCarton || null,
+        packSize: li.packSize || null,
+        packUnit: li.packUnit || null,
+        brandName: (li.brandName || "").trim(),
+        createdAt: new Date().toISOString(),
+      } as any);
+      lineItemsCreated++;
+    }
+
+    res.json({
+      ok: true,
+      invoiceNumber: parsed.invoiceNumber,
+      invoiceDate: parsed.invoiceDate,
+      totalAmount: parsed.totalAmount,
+      supplierName,
+      lineItemsCreated,
+      parseWarning: parsed.error || null,
+    });
+  }));
 
   // ─── Manual Upload (multipart) with AI extraction ────────────────────────────
   // POST /api/drive/upload — accepts PDF or image, runs parse_invoice.py, creates import
