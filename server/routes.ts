@@ -2402,6 +2402,11 @@ Return ONLY the JSON object, no explanation.`;
       // Filter out only cancelled orders
       const activeOrders = allOrders.filter(o => o.status !== 'cancelled');
 
+      // Debug: fullraw=true returns the complete raw Flex payload (first order only)
+      if (req.query.fullraw === "true") {
+        return res.json({ keys: activeOrders[0] ? Object.keys(activeOrders[0]) : [], first: activeOrders[0] || null });
+      }
+
       if (raw) {
         // Return full per-order objects (trimmed for payload size)
         const orders = activeOrders.map(o => ({
