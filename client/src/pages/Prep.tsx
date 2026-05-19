@@ -15,7 +15,7 @@ import {
   ChefHat, RefreshCw, ChevronDown, ChevronUp, CheckCircle2,
   Clock, Timer, AlertCircle, SkipForward, RotateCcw, Play,
   CalendarDays, ShoppingCart, ListChecks, X, Check, Plus, User,
-  ClipboardList, Trash2, Package, Pencil, Loader2
+  ClipboardList, Trash2, Package, Pencil, Loader2, Store
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SearchableSelect, SearchableOption } from "@/components/SearchableSelect";
@@ -637,6 +637,11 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-foreground truncate">{customerName}</span>
               <span className="text-xs text-muted-foreground font-bold">#{order.id}</span>
+              {order.is_wholesale && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#256984]/12 text-[#256984] border border-[#256984]/25">
+                  <Store size={9} /> Wholesale
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-0.5 flex-wrap">
               <span className="text-xs text-muted-foreground flex items-center gap-1">
