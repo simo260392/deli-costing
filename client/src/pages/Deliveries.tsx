@@ -150,7 +150,7 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
 export default function Deliveries() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [tab, setTab] = useState<"report" | "balances">("report");
+  const [tab, setTab] = useState<"report" | "balances">("balances");
   const [manualOpen, setManualOpen] = useState(false);
   const [expandedCustomers, setExpandedCustomers] = useState<Set<string>>(new Set());
 
