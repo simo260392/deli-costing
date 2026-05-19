@@ -34,7 +34,7 @@ interface FlexOrderItem {
 interface FlexOrder {
   id: number; uuid: string;
   company: string; first_name: string; last_name: string;
-  delivery_datetime: string; created_at: string; status: string;
+  delivery_datetime: string; dispatch_datetime: string | null; created_at: string; status: string;
   internal_notes: string;
   delivery_notes: string;
   notes: string;
@@ -83,6 +83,9 @@ function fmtDate(iso: string) {
 }
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString("en-AU", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+function fmtTimeOnly(iso: string) {
+  return new Date(iso).toLocaleString("en-AU", { hour: "2-digit", minute: "2-digit" });
 }
 function fmtMins(mins: number | null | undefined) {
   if (!mins) return "—";
@@ -500,6 +503,11 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
               <span className="text-xs text-muted-foreground flex items-center gap-1">
                 <Clock size={11} /> {order.delivery_datetime ? fmtDateTime(order.delivery_datetime) : "No delivery time"}
               </span>
+              {order.dispatch_datetime && (
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  · Dispatch {fmtTimeOnly(order.dispatch_datetime)}
+                </span>
+              )}
               <span className="text-xs text-muted-foreground">
                 {checkedCount}/{order.items.length} items
               </span>

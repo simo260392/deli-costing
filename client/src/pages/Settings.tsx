@@ -565,6 +565,7 @@ export default function Settings() {
     gst_rate: "10",
     drive_receipts_folder_id: "",
     google_client_id: "",
+    dispatch_offset_mins: "30",
   });
 
   const { data: settingsData = {}, isLoading } = useQuery({
@@ -582,6 +583,7 @@ export default function Settings() {
         gst_rate: settingsData.gst_rate || "10",
         drive_receipts_folder_id: settingsData.drive_receipts_folder_id || "",
         google_client_id: settingsData.google_client_id || "",
+        dispatch_offset_mins: settingsData.dispatch_offset_mins || "30",
       });
     }
   }, [settingsData]);
@@ -683,6 +685,28 @@ export default function Settings() {
                       onChange={(e) => setForm({ ...form, markup_percent: e.target.value })}
                       className="max-w-xs" data-testid="input-markup-percent"
                     />
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Dispatch Offset */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Clock size={16} className="text-primary" /> Dispatch Time Offset
+                  </CardTitle>
+                  <CardDescription>How many minutes before delivery time to calculate the dispatch time shown on production order cards.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-3 max-w-xs">
+                    <Input
+                      type="number" min="0" max="240" step="5"
+                      value={form.dispatch_offset_mins}
+                      onChange={(e) => setForm({ ...form, dispatch_offset_mins: e.target.value })}
+                      className="w-24"
+                      data-testid="input-dispatch-offset"
+                    />
+                    <span className="text-sm text-muted-foreground">minutes before delivery</span>
                   </div>
                 </CardContent>
               </Card>

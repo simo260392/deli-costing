@@ -2408,14 +2408,30 @@ Return ONLY the JSON object, no explanation.`;
       }
 
       if (raw) {
+        // Load dispatch offset from settings (default 30 mins)
+        let dispatchOffsetMins = 30;
+        try {
+          const offsetSetting = await storage.getSetting("dispatch_offset_mins");
+          if (offsetSetting) dispatchOffsetMins = parseInt(offsetSetting) || 30;
+        } catch (_) {}
+
         // Return full per-order objects (trimmed for payload size)
-        const orders = activeOrders.map(o => ({
+        const orders = activeOrders.map(o => {
+          // Calculate dispatch_datetime = delivery_datetime - offset
+          let dispatch_datetime: string | null = null;
+          if (o.delivery_datetime) {
+            const d = new Date(o.delivery_datetime);
+            d.setMinutes(d.getMinutes() - dispatchOffsetMins);
+            dispatch_datetime = d.toISOString();
+          }
+          return {
           id: o.id,
           uuid: o.uuid,
           company: o.company || '',
           first_name: o.first_name || '',
           last_name: o.last_name || '',
           delivery_datetime: o.delivery_datetime,
+          dispatch_datetime,
           created_at: o.created_at || '',
           status: o.status,
           internal_notes: o.internal_notes || '',
@@ -2430,7 +2446,8 @@ Return ONLY the JSON object, no explanation.`;
             attributes_summary: i.attributes_summary || '',
             notes: i.notes || '',
           })),
-        }));
+          };
+        });
         return res.json({ date, totalOrders: orders.length, orders });
       }
 
