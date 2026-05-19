@@ -24,10 +24,13 @@ import { SearchableSelect, SearchableOption } from "@/components/SearchableSelec
 interface StaffMember { id: number; name: string; }
 interface StockItem { id: number; item_name: string; item_type: string; quantity: number; unit: string; updated_at: string; }
 
+interface ComboOptionItem { name: string; }
+interface ComboOption { name: string; items: ComboOptionItem[]; }
 interface FlexOrderItem {
   uuid: string; name: string; quantity: number; sku: string;
   price_incl_tax: number; attributes_summary: string;
   notes: string;
+  combo_options?: ComboOption[];
   checked?: boolean;
 }
 
@@ -113,6 +116,36 @@ function useElapsed(startedAt: string | null, active: boolean) {
 // ─── Order status helpers ─────────────────────────────────────────────────────
 type OrderState = { viewed: boolean; checkedItems: Record<string, { checked: boolean; staffId?: number; staffName?: string; checkedAt?: string }>; prepStatus: string; isComplete?: boolean; itemCount?: number };
 const DEFAULT_ORDER_STATE: OrderState = { viewed: false, checkedItems: {}, prepStatus: "new", isComplete: false };
+
+// Returns the flat list of all tickable entries for an order.
+// Combo items expand into sub-rows (uuid = "<parent_uuid>__sub__<optIdx>").
+// Non-combo items use their own uuid.
+interface TickableItem { uuid: string; name: string; parentUuid?: string; isSubItem?: boolean; comboLabel?: string; quantity?: number; }
+function getTickableItems(order: FlexOrder): TickableItem[] {
+  const result: TickableItem[] = [];
+  for (const item of order.items) {
+    const combos = (item.combo_options || []).filter(co => co.items.length > 0);
+    if (combos.length > 0) {
+      // Combo parent — expand sub-items
+      for (let oi = 0; oi < combos.length; oi++) {
+        const co = combos[oi];
+        for (let ii = 0; ii < co.items.length; ii++) {
+          result.push({
+            uuid: `${item.uuid}__sub__${oi}_${ii}`,
+            name: co.items[ii].name,
+            parentUuid: item.uuid,
+            isSubItem: true,
+            comboLabel: co.name,
+            quantity: 1,
+          });
+        }
+      }
+    } else {
+      result.push({ uuid: item.uuid, name: item.name, quantity: Number(item.quantity) || 1 });
+    }
+  }
+  return result;
+}
 
 function orderColour(status: string) {
   if (status === "edited") return { border: "border-purple-400", bg: "bg-purple-50", badge: "bg-purple-100 text-purple-700" };
@@ -430,7 +463,8 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
 
   const colour = isComplete ? orderColour("complete") : orderColour(state.prepStatus || "new");
   const customerName = order.company || `${order.first_name} ${order.last_name}`.trim();
-  const checkedCount = order.items.filter(i => state.checkedItems[i.uuid]?.checked).length;
+  const tickableItems = getTickableItems(order);
+  const checkedCount = tickableItems.filter(i => state.checkedItems[i.uuid]?.checked).length;
 
   const handleExpand = () => {
     if (!expanded) {
@@ -447,10 +481,16 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
 
   const doUncheck = (uuid: string) => {
     const newChecked = { ...state.checkedItems, [uuid]: { checked: false } };
-    const checkedQty = order.items.filter(i => newChecked[i.uuid]?.checked).length;
-    const total = order.items.length;
+    const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
+    const total = tickableItems.length;
     const newStatus = checkedQty === 0 ? "not_started" : checkedQty === total ? "done" : "in_progress";
-    onStateChange(order.id, { checkedItems: newChecked, prepStatus: newStatus });
+    // If the order was marked complete, reset it back to in_progress
+    const wasComplete = isComplete || state.isComplete;
+    onStateChange(order.id, {
+      checkedItems: newChecked,
+      prepStatus: wasComplete ? "in_progress" : newStatus,
+      ...(wasComplete ? { isComplete: false } : {}),
+    });
     setUnconfirmUuid(null);
   };
 
@@ -467,27 +507,32 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
 
   const handleStaffSelected = (staffId: number, staffName: string, useFromStock: boolean, stockItemId?: number) => {
     if (!pendingItemUuid) return;
-    const pendingItemObj = order.items.find(i => i.uuid === pendingItemUuid);
+    // For sub-items (combo), find the parent item for stock/log purposes
+    const isSubItem = pendingItemUuid.includes('__sub__');
+    const parentUuid = isSubItem ? pendingItemUuid.split('__sub__')[0] : pendingItemUuid;
+    const pendingItemObj = order.items.find(i => i.uuid === parentUuid);
+    // For sub-items look up the tickable item name
+    const pendingTickable = tickableItems.find(t => t.uuid === pendingItemUuid);
     const newChecked = {
       ...state.checkedItems,
       [pendingItemUuid]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
     };
-    const checkedQty = order.items.filter(i => newChecked[i.uuid]?.checked).length;
-    const total = order.items.length;
+    const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
+    const total = tickableItems.length;
     const allDone = checkedQty === total;
     const newStatus = checkedQty === 0 ? "not_started" : allDone ? "done" : "in_progress";
     onStateChange(order.id, { checkedItems: newChecked, prepStatus: newStatus });
     setStaffPickerOpen(false);
     setPendingItemUuid(null);
     // Log this tick-off to the production report
-    if (pendingItemObj) {
+    if (pendingItemObj || pendingTickable) {
       const orderDate = order.delivery_datetime ? order.delivery_datetime.slice(0, 10) : new Date().toISOString().slice(0, 10);
       fetch(`${API_BASE}/api/order-tick-log`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          itemName: pendingItemObj.name,
-          quantity: pendingItemObj.quantity,
+          itemName: pendingTickable?.name ?? pendingItemObj?.name ?? '',
+          quantity: pendingTickable?.quantity ?? pendingItemObj?.quantity ?? 1,
           staffName,
           staffId: staffId || null,
           orderId: order.id,
@@ -510,10 +555,12 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
     }
   };
 
-  const pendingItem = order.items.find(i => i.uuid === pendingItemUuid);
+  // For the staff picker dialog: use the tickable item name (handles sub-items)
+  const pendingTickableItem = pendingItemUuid ? tickableItems.find(t => t.uuid === pendingItemUuid) : undefined;
+  const pendingItem = pendingItemUuid ? order.items.find(i => i.uuid === (pendingItemUuid.includes('__sub__') ? pendingItemUuid.split('__sub__')[0] : pendingItemUuid)) : undefined;
   const handleConfirmComplete = () => {
     setMarkCompleteOpen(false);
-    onMarkComplete(order.id, order.items.length);
+    onMarkComplete(order.id, tickableItems.length);
     // Only show grey box dialog for wholesale orders
     if (order.is_wholesale) {
       setTimeout(() => setGreyBoxOpen(true), 200);
@@ -547,8 +594,8 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
         onClose={() => { setStaffPickerOpen(false); setPendingItemUuid(null); }}
         staff={staff}
         onSelect={handleStaffSelected}
-        itemName={pendingItem?.name ?? "item"}
-        orderQty={pendingItem?.quantity ?? 1}
+        itemName={pendingTickableItem?.name ?? pendingItem?.name ?? "item"}
+        orderQty={pendingTickableItem?.quantity ?? Number(pendingItem?.quantity) ?? 1}
       />
       <MarkCompleteDialog
         open={markCompleteOpen}
@@ -601,7 +648,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                 </span>
               )}
               <span className="text-xs text-muted-foreground">
-                {checkedCount}/{order.items.length} items
+                {checkedCount}/{tickableItems.length} items
               </span>
             </div>
           </div>
@@ -632,6 +679,93 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
               </div>
             )}
             {(order.items ?? []).map(item => {
+              const combos = (item.combo_options || []).filter(co => co.items.length > 0);
+              const isCombo = combos.length > 0;
+
+              if (isCombo) {
+                // Render combo parent as a header + sub-item rows
+                const allSubChecked = combos.every((co, oi) =>
+                  co.items.every((_, ii) => !!state.checkedItems[`${item.uuid}__sub__${oi}_${ii}`]?.checked)
+                );
+                return (
+                  <div key={item.uuid} className="space-y-0.5">
+                    {/* Combo header — no tick box */}
+                    <div className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2 rounded-lg border",
+                      allSubChecked
+                        ? "bg-green-50 border-green-200 dark:bg-green-950/20"
+                        : "bg-muted/30 border-border"
+                    )}>
+                      <div className={cn(
+                        "w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0",
+                        allSubChecked ? "bg-green-600 border-green-600" : "border-muted-foreground/40 bg-muted"
+                      )}>
+                        {allSubChecked && <Check size={12} className="text-white" strokeWidth={3} />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className={cn("text-sm font-semibold text-[#256984]", allSubChecked && "line-through text-muted-foreground")}>
+                          {item.name}
+                        </span>
+                        {item.attributes_summary && (
+                          <span className="text-xs text-muted-foreground ml-1.5">({item.attributes_summary})</span>
+                        )}
+                      </div>
+                      <span className="text-sm font-bold text-[#256984] shrink-0">×{item.quantity}</span>
+                    </div>
+                    {/* Sub-item rows */}
+                    {combos.map((co, oi) =>
+                      co.items.map((ci, ii) => {
+                        const subUuid = `${item.uuid}__sub__${oi}_${ii}`;
+                        const subState = state.checkedItems[subUuid];
+                        const subChecked = !!subState?.checked;
+                        return (
+                          <button
+                            key={subUuid}
+                            onClick={() => handleItemClick(subUuid)}
+                            className={cn(
+                              "w-full flex items-center gap-3 pl-8 pr-3 py-1.5 rounded-lg text-left transition-all border",
+                              subChecked
+                                ? "bg-green-100 border-green-300 dark:bg-green-950/30"
+                                : "bg-white dark:bg-card border-border hover:bg-muted/40"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-all",
+                              subChecked ? "bg-green-600 border-green-600" : "border-muted-foreground"
+                            )}>
+                              {subChecked && <Check size={10} className="text-white" strokeWidth={3} />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className={cn("text-xs font-medium", subChecked && "line-through text-muted-foreground")}>
+                                {ci.name}
+                              </span>
+                              <span className="text-xs text-muted-foreground ml-1.5 italic">{co.name}</span>
+                              {subChecked && subState?.staffName && (
+                                <span className="text-xs text-green-700 ml-1.5 font-medium">
+                                  ✓ {subState.staffName}
+                                  {subState.checkedAt && (
+                                    <span className="text-green-600 font-normal ml-1">
+                                      · {new Date(subState.checkedAt).toLocaleString("en-AU", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", hour12: true })}
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                    {/* Item-level note */}
+                    {item.notes && (
+                      <p className="text-xs text-[#256984] bg-[#256984]/8 border border-[#256984]/20 rounded-md px-2.5 py-1 ml-8">
+                        <span className="font-semibold">Item note:</span> {item.notes}
+                      </p>
+                    )}
+                  </div>
+                );
+              }
+
+              // Standard (non-combo) item
               const itemState = state.checkedItems[item.uuid];
               const checked = !!itemState?.checked;
               return (
@@ -917,18 +1051,19 @@ export default function Prep() {
       for (const order of flexOrders) {
         const s = next[order.id];
         if (!s) continue;
-        const allChecked = order.items.length > 0 && order.items.every(i => s.checkedItems[i.uuid]?.checked);
+        const tickables = getTickableItems(order);
+        const allChecked = tickables.length > 0 && tickables.every(i => s.checkedItems[i.uuid]?.checked);
         // Auto-restore isComplete if all items are ticked but isComplete is false (e.g. save failed last session)
         if (allChecked && !s.isComplete) {
-          next[order.id] = { ...s, isComplete: true, prepStatus: "done", itemCount: order.items.length };
+          next[order.id] = { ...s, isComplete: true, prepStatus: "done", itemCount: tickables.length };
           fetch(`${API_BASE}/api/order-states/${order.id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ date: dateFrom, prepStatus: "done", checkedItems: s.checkedItems, isComplete: true, itemCount: order.items.length }),
+            body: JSON.stringify({ date: dateFrom, prepStatus: "done", checkedItems: s.checkedItems, isComplete: true, itemCount: tickables.length }),
           }).catch(() => {});
           changed = true;
         // Detect edited: marked complete but now has more items
-        } else if (s.isComplete && s.itemCount > 0 && order.items.length > s.itemCount) {
+        } else if (s.isComplete && s.itemCount > 0 && tickables.length > s.itemCount) {
           next[order.id] = { ...s, isComplete: false, prepStatus: "edited" };
           fetch(`${API_BASE}/api/order-states/${order.id}`, {
             method: "PUT",
@@ -1306,7 +1441,19 @@ export default function Prep() {
       // Only include unchecked items — items that haven't been ticked off yet
       const uncheckedOrders = flexOrders.map(o => {
         const oState = orderStates[o.id] ?? DEFAULT_ORDER_STATE;
-        const uncheckedItems = (o.items ?? []).filter(i => !oState.checkedItems[i.uuid]?.checked);
+        // For prep list generation: only include non-combo items that haven't been ticked
+        // (combo sub-items use synthetic UUIDs so we check all tickables)
+        const tickables = getTickableItems(o);
+        const uncheckedItems = (o.items ?? []).filter(i => {
+          const combos = (i.combo_options || []).filter((co: ComboOption) => co.items.length > 0);
+          if (combos.length > 0) {
+            // Combo: include if any sub-item unchecked
+            return combos.some((co, oi) =>
+              co.items.some((_, ii) => !oState.checkedItems[`${i.uuid}__sub__${oi}_${ii}`]?.checked)
+            );
+          }
+          return !oState.checkedItems[i.uuid]?.checked;
+        });
         return { ...o, items: uncheckedItems ?? [] };
       }).filter(o => o.items.length > 0);
 

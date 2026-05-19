@@ -2457,6 +2457,10 @@ Return ONLY the JSON object, no explanation.`;
             price_incl_tax: i.price_incl_tax || 0,
             attributes_summary: i.attributes_summary || '',
             notes: i.notes || '',
+            combo_options: (i.combo_options || []).filter((co: any) => co.items && co.items.length > 0).map((co: any) => ({
+              name: co.name,
+              items: (co.items || []).map((ci: any) => ({ name: ci.name || ci.product_name || '' }))
+            })),
           })),
           };
         });
