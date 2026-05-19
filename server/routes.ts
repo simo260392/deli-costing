@@ -3061,7 +3061,9 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     let supplierId = xeroImport.supplierId || null;
     const supplierName = parsed.supplierName || xeroImport.supplierName || null;
     if (!supplierId && supplierName) {
-      const match = allSuppliers.find((s: any) => s.name.toLowerCase() === supplierName.toLowerCase());
+      const sNorm = supplierName.toLowerCase();
+      let match = allSuppliers.find((s: any) => s.name.toLowerCase() === sNorm);
+      if (!match) match = allSuppliers.find((s: any) => { const n = s.name.toLowerCase(); return n.includes(sNorm) || sNorm.includes(n); });
       if (match) supplierId = match.id;
     }
 
@@ -3159,7 +3161,9 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     let supplierId = xeroImport.supplierId || null;
     const supplierName = parsed.supplierName || xeroImport.supplierName || null;
     if (!supplierId && supplierName) {
-      const match = allSuppliers.find((s: any) => s.name.toLowerCase() === supplierName.toLowerCase());
+      const sNorm = supplierName.toLowerCase();
+      let match = allSuppliers.find((s: any) => s.name.toLowerCase() === sNorm);
+      if (!match) match = allSuppliers.find((s: any) => { const n = s.name.toLowerCase(); return n.includes(sNorm) || sNorm.includes(n); });
       if (match) supplierId = match.id;
     }
 
@@ -3271,9 +3275,16 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const allSuppliers = await storage.getSuppliers();
       let supplierId: number | null = null;
       if (parsed.supplierName) {
-        const match = allSuppliers.find(
-          (s: any) => s.name.toLowerCase() === parsed.supplierName.toLowerCase()
-        );
+        const parsedLower = parsed.supplierName.toLowerCase();
+        // 1. Exact match
+        let match = allSuppliers.find((s: any) => s.name.toLowerCase() === parsedLower);
+        // 2. Partial match — supplier name contains parsed name or vice versa
+        if (!match) {
+          match = allSuppliers.find((s: any) => {
+            const sLower = s.name.toLowerCase();
+            return sLower.includes(parsedLower) || parsedLower.includes(sLower);
+          });
+        }
         if (match) supplierId = match.id;
       }
 

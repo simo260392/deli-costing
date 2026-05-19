@@ -1652,8 +1652,8 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         ('wh.sales@',           'Wing Hong Food'),
         ('wing hong',           'Wing Hong Food'),
         ('kakulas',             'Kakulas Brothers'),
-        ('b&e foods',           'B&E Foods Perth'),
-        ('befoods.com',         'B&E Foods Perth'),
+        ('b&e foods',           'B&E Foods Perth Pty Ltd'),
+        ('befoods.com',         'B&E Foods Perth Pty Ltd'),
         ('fresh express',       'Fresh Express Produce'),
         ('spudshed',            'Spud Shed'),
     ]
@@ -2119,7 +2119,7 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     is_be_foods = 'b&e foods' in full_text.lower() or 'befoods.com' in full_text.lower()
     if is_be_foods:
         if not supplier_name or re.match(r'^(TAX[\s\-]?INVOICE|INVOICE)', supplier_name or '', re.IGNORECASE):
-            supplier_name = "B&E Foods Perth"
+            supplier_name = "B&E Foods Perth Pty Ltd"
         # Always use B&E-specific parser — earlier generic strategies misparse this format
         be_items = extract_be_foods_format(all_tables)
         if be_items:

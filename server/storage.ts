@@ -518,14 +518,30 @@ export const storage: IStorage = {
   },
   suggestSupplierForName: async (detectedName) => {
     const norm = detectedName.toLowerCase().trim();
-    const { data } = await supabase.from("invoice_memory")
+    // 1. Exact match
+    const { data: exact } = await supabase.from("invoice_memory")
       .select("supplier_id")
       .eq("detected_supplier_name", norm)
       .not("supplier_id", "is", null)
       .order("use_count", { ascending: false })
       .limit(1)
       .single();
-    return (data as any)?.supplier_id ?? null;
+    if ((exact as any)?.supplier_id) return (exact as any).supplier_id;
+    // 2. Partial match — detected name contains a remembered name or vice versa
+    const { data: rows } = await supabase.from("invoice_memory")
+      .select("detected_supplier_name, supplier_id, use_count")
+      .not("supplier_id", "is", null)
+      .not("detected_supplier_name", "is", null)
+      .order("use_count", { ascending: false });
+    if (rows) {
+      for (const row of rows as any[]) {
+        const mem = (row.detected_supplier_name || "").toLowerCase();
+        if (mem && (norm.includes(mem) || mem.includes(norm))) {
+          return row.supplier_id;
+        }
+      }
+    }
+    return null;
   },
   suggestIngredientForLine: async (description) => {
     const norm = description.toLowerCase().trim();
