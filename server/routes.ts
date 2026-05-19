@@ -2819,28 +2819,29 @@ Return ONLY the JSON object, no explanation.`;
           await storage.learnLineItemMapping(resolved.description, resolvedIngredientId);
         }
 
-        // Cascade: ingredient price change → sub-recipes → recipes → platters
-        try {
-          const markup = await getMarkup();
-          const wholesaleMarkup = await getWholesaleMarkup();
-          const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
-          const ingId = resolvedIngredientId!;
-          const directSRs = (await storage.getSubRecipes())
-            .filter((sr) => JSON.parse(sr.ingredientsJson || "[]").some((l: any) => l.ingredientId === ingId))
-            .map((sr) => sr.id);
-          if (directSRs.length > 0) {
-            await cascadeFromSubRecipes(new Set(directSRs), markup, wholesaleMarkup, hourlyRate);
-          }
-          // Recipes that directly use this ingredient
-          for (const r of await storage.getRecipes()) {
-            const usesIng = JSON.parse(r.ingredientsJson || "[]").some((l: any) => l.ingredientId === ingId);
-            const usesPkg = JSON.parse(r.packagingJson || "[]").some((l: any) => l.ingredientId === ingId);
-            if (usesIng || usesPkg) {
-              const costs = await computeRecipeCosts(r.ingredientsJson, r.subRecipesJson, r.packagingJson, r.labourMinutes || 0, markup, hourlyRate, r.portionCount || 1, r.rrp, wholesaleMarkup, r.wholesaleRrp, (r as any).recipesJson);
-              await storage.updateRecipe(r.id, costs);
+        // Cascade: ingredient price change → sub-recipes → recipes (fire-and-forget — don't block response)
+        ;(async () => {
+          try {
+            const markup = await getMarkup();
+            const wholesaleMarkup = await getWholesaleMarkup();
+            const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
+            const ingId = resolvedIngredientId!;
+            const directSRs = (await storage.getSubRecipes())
+              .filter((sr) => JSON.parse(sr.ingredientsJson || "[]").some((l: any) => l.ingredientId === ingId))
+              .map((sr) => sr.id);
+            if (directSRs.length > 0) {
+              await cascadeFromSubRecipes(new Set(directSRs), markup, wholesaleMarkup, hourlyRate);
             }
-          }
-        } catch (_) { /* silent — don't block the response */ }
+            for (const r of await storage.getRecipes()) {
+              const usesIng = JSON.parse(r.ingredientsJson || "[]").some((l: any) => l.ingredientId === ingId);
+              const usesPkg = JSON.parse(r.packagingJson || "[]").some((l: any) => l.ingredientId === ingId);
+              if (usesIng || usesPkg) {
+                const costs = await computeRecipeCosts(r.ingredientsJson, r.subRecipesJson, r.packagingJson, r.labourMinutes || 0, markup, hourlyRate, r.portionCount || 1, r.rrp, wholesaleMarkup, r.wholesaleRrp, (r as any).recipesJson);
+                await storage.updateRecipe(r.id, costs);
+              }
+            }
+          } catch (_) { /* silent */ }
+        })();
 
         // Update brand name + allergens + PEAL asynchronously
         // Priority: 1) user-provided brand from request body, 2) stored brand from parsed invoice line,
