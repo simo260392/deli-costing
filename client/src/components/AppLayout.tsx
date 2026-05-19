@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -24,11 +24,15 @@ const productionSubItems = [
 
 // Items after the Food group
 const midNavItems = [
-  { href: "/deliveries",   label: "Deliveries",         icon: Truck,       slug: "deliveries" },
   { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
   { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
-  { href: "/wholesale",    label: "Wholesale Packaging",icon: Archive,     slug: "wholesale" },
   { href: "/xero-imports", label: "Invoice Imports",    icon: RefreshCw,   slug: "xero-imports" },
+];
+
+// Wholesale group sub-items
+const wholesaleSubItems = [
+  { href: "/wholesale",    label: "Wholesale Packaging", icon: Archive,  slug: "wholesale" },
+  { href: "/deliveries",   label: "Grey Box Tracker",    icon: Package,  slug: "deliveries" },
 ];
 
 // Food group sub-items
@@ -77,6 +81,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const onProductionSubPage = productionSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
   const onProductionPage = location === "/prep" || location.startsWith("/prep/") || onProductionSubPage;
   const [productionOpen, setProductionOpen] = useState(onProductionSubPage);
+
+  // Auto-expand Wholesale group if currently on a wholesale sub-page
+  const onWholesalePage = wholesaleSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
+  const [wholesaleOpen, setWholesaleOpen] = useState(onWholesalePage);
 
   const { data: xeroCountData } = useQuery({
     queryKey: ["/api/xero/imports/pending-count"],
@@ -207,7 +215,37 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </li>
           )}
 
-          {/* 4. Production Reports + Wages + Safety + Wholesale + Invoice Imports */}
+          {/* 4. Wholesale group */}
+          {wholesaleSubItems.some(({ slug }) => hasAccess(slug)) && (
+            <li>
+              <button
+                onClick={() => setWholesaleOpen(o => !o)}
+                className={cn(
+                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
+                  onWholesalePage
+                    ? "text-primary font-semibold"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+                data-testid="nav-wholesale-group"
+              >
+                <ShoppingBag size={15} strokeWidth={onWholesalePage ? 2.5 : 2} />
+                <span className="flex-1 text-left">Wholesale</span>
+                <ChevronDown
+                  size={14}
+                  className={cn("transition-transform duration-200", wholesaleOpen ? "rotate-0" : "-rotate-90")}
+                />
+              </button>
+              {wholesaleOpen && (
+                <ul className="mt-0.5 space-y-0.5">
+                  {wholesaleSubItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+                    navLink(href, label, Icon, slug, true)
+                  )}
+                </ul>
+              )}
+            </li>
+          )}
+
+          {/* 5. Wages + Safety + Invoice Imports */}
           {midNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
             navLink(href, label, Icon, slug)
           )}

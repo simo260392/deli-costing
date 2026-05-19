@@ -222,8 +222,8 @@ export default function Deliveries() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Deliveries</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Grey box tracker</p>
+          <h1 className="text-xl font-bold text-foreground">Grey Box Tracker</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Track grey boxes given to wholesale customers</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
