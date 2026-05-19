@@ -6110,23 +6110,103 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       return res.json({ range, groupBy: "day", from: fromStr, to: toStr, dataPoints, totalOrders, fromCache: false });
     }
 
-    // ── Cache-first for YTD / all_time ──
-    let fromDate: Date;
-    if (range === "ytd") {
-      fromDate = new Date(year, 0, 1);
-    } else {
-      fromDate = new Date(2020, 11, 1); // Dec 2020 — earliest Flex data
+    // ── all_time: monthly buckets from revenue_chart_cache + lightspeed CBD ──
+    if (range === "all_time") {
+      // From earliest Lightspeed data (2020-10)
+      const allTimeFrom = "2020-10-01";
+      const nowStr = now.toISOString().split("T")[0];
+
+      // 1. Load Flex catering monthly aggregates from revenue_chart_cache
+      //    Group weekly rows into months
+      const { data: cachedWeekRows } = await supabase
+        .from("revenue_chart_cache")
+        .select("bucket_date, catering, delivery, total, order_count")
+        .eq("group_by", "week")
+        .gte("bucket_date", allTimeFrom)
+        .order("bucket_date", { ascending: true });
+
+      // Aggregate weekly → monthly for Flex data
+      const flexMonthly = new Map<string, { catering: number; delivery: number; total: number; count: number }>();
+      for (const row of (cachedWeekRows || [])) {
+        // bucket_date is a Monday — use year-month of that date
+        const d = new Date(row.bucket_date + "T12:00:00");
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        const b = flexMonthly.get(key) || { catering: 0, delivery: 0, total: 0, count: 0 };
+        b.catering += Number(row.catering);
+        b.delivery += Number(row.delivery);
+        b.total += Number(row.total);
+        b.count += Number(row.order_count || 0);
+        flexMonthly.set(key, b);
+      }
+
+      // Also add live current month from Flex
+      const currentMonthFrom = new Date(year, month, 1).toISOString().split("T")[0];
+      try {
+        const liveResult = await fetchFlexRange(currentMonthFrom, nowStr);
+        const currentKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+        const lb = { catering: 0, delivery: 0, total: 0, count: liveResult.totalOrders };
+        for (const dp of liveResult.dataPoints) {
+          lb.catering += dp.catering;
+          lb.delivery += dp.delivery;
+          lb.total += dp.total;
+        }
+        if (lb.total > 0) flexMonthly.set(currentKey, lb);
+      } catch (_) { /* ignore live fetch errors — cached data still shows */ }
+
+      // 2. Load Lightspeed CBD monthly data
+      const { data: cbdRows } = await supabase
+        .from("lightspeed_turnover_cache")
+        .select("month_start, net_amount, sale_count")
+        .gte("month_start", allTimeFrom)
+        .order("month_start", { ascending: true });
+
+      const cbdMonthly = new Map<string, number>();
+      for (const row of (cbdRows || [])) {
+        const d = new Date(row.month_start + "T12:00:00");
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        cbdMonthly.set(key, Number(row.net_amount));
+      }
+
+      // 3. Build unified month keys (union of both sources)
+      const allMonthKeys = new Set<string>([
+        ...flexMonthly.keys(),
+        ...cbdMonthly.keys(),
+      ]);
+      const sortedKeys = [...allMonthKeys].sort();
+
+      const dataPoints = sortedKeys.map(key => {
+        const flex = flexMonthly.get(key) || { catering: 0, delivery: 0, total: 0, count: 0 };
+        const cbd = cbdMonthly.get(key) || 0;
+        // month_start date for this key (YYYY-MM-01)
+        const date = key + "-01";
+        return {
+          date,
+          catering: Math.round(flex.catering * 100) / 100,
+          delivery: Math.round(flex.delivery * 100) / 100,
+          cbd: Math.round(cbd * 100) / 100,
+          total: Math.round(flex.total * 100) / 100,
+        };
+      });
+
+      const totalOrders = [...flexMonthly.values()].reduce((s, b) => s + b.count, 0);
+
+      return res.json({
+        range, groupBy: "month", from: allTimeFrom, to: nowStr,
+        dataPoints, totalOrders,
+        fromCache: true,
+      });
     }
-    // Cache covers up to end of LAST complete month. Current month is always live.
-    const cacheToMonth = month - 1; // last complete month (0-indexed)
+
+    // ── Cache-first for YTD (weekly) ──
+    const fromDate = new Date(year, 0, 1);
+    const cacheToMonth = month - 1;
     const cacheToYear = cacheToMonth < 0 ? year - 1 : year;
     const cacheToMonthAdj = cacheToMonth < 0 ? 11 : cacheToMonth;
 
     const fromStr = fromDate.toISOString().split("T")[0];
-    const cacheEndStr = new Date(cacheToYear, cacheToMonthAdj + 1, 0).toISOString().split("T")[0]; // end of last complete month
+    const cacheEndStr = new Date(cacheToYear, cacheToMonthAdj + 1, 0).toISOString().split("T")[0];
     const nowStr = now.toISOString().split("T")[0];
 
-    // Load cached weekly buckets
     const { data: cachedRows, error: cacheErr } = await supabase
       .from("revenue_chart_cache")
       .select("bucket_date, catering, delivery, total, order_count")
@@ -6135,10 +6215,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .lte("bucket_date", cacheEndStr)
       .order("bucket_date", { ascending: true });
 
-    // Load current month live (just a few pages)
     const currentMonthFrom = new Date(year, month, 1).toISOString().split("T")[0];
     const liveResult = await fetchFlexRange(currentMonthFrom, nowStr);
-    // Convert current month daily → weekly buckets
     const liveWeeklyBuckets = new Map<string, { catering: number; delivery: number; count: number }>();
     for (const dp of liveResult.dataPoints) {
       const d = new Date(dp.date + "T12:00:00");
@@ -6151,7 +6229,6 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       liveWeeklyBuckets.set(key, b);
     }
 
-    // Merge: cached + live (live overwrites if same week key)
     const merged = new Map<string, { date: string; catering: number; delivery: number; total: number }>();
     for (const row of (cachedRows || [])) {
       merged.set(row.bucket_date, { date: row.bucket_date, catering: Number(row.catering), delivery: Number(row.delivery), total: Number(row.total) });
@@ -6222,6 +6299,67 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     );
 
     return res.json({ ok: true, upserted: rows.length, year, month, cacheKey });
+  }));
+
+  // ─── Lightspeed Import CSV ────────────────────────────────────────────────
+  // POST /api/lightspeed/import-csv
+  // Accepts a CSV file (multipart) with columns: saledate (YYYY-MM), salecount, saleamount, saleexamount, saletaxamount
+  // Upserts into lightspeed_turnover_cache
+  app.post("/api/lightspeed/import-csv", memoryUpload.single("file"), asyncRoute(async (req: any, res: any) => {
+    const AUTH = req.headers.authorization;
+    if (AUTH !== `Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320`) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    const csvText = req.file.buffer.toString("utf-8");
+    const lines = csvText.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return res.status(400).json({ error: "CSV appears empty" });
+
+    // Detect header
+    const header = lines[0].replace(/"/g, "").split(",").map((h: string) => h.trim().toLowerCase());
+    const idxDate = header.indexOf("saledate");
+    const idxCount = header.indexOf("salecount");
+    const idxTotal = header.indexOf("saleamount");
+    const idxNet = header.indexOf("saleexamount");
+    const idxTax = header.indexOf("saletaxamount");
+    if (idxDate === -1 || idxNet === -1) {
+      return res.status(400).json({ error: "CSV missing required columns (saledate, saleexamount)" });
+    }
+
+    const rows: any[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].replace(/"/g, "").split(",");
+      const saledate = cols[idxDate]?.trim();
+      if (!saledate || !/^\d{4}-\d{2}$/.test(saledate)) continue;
+      rows.push({
+        month_start: saledate + "-01",
+        sale_count: parseInt(cols[idxCount] || "0") || 0,
+        total_amount: parseFloat(cols[idxTotal] || "0") || 0,
+        net_amount: parseFloat(cols[idxNet] || "0") || 0,
+        tax_amount: parseFloat(cols[idxTax] || "0") || 0,
+        source: "csv",
+      });
+    }
+
+    if (rows.length === 0) return res.status(400).json({ error: "No valid rows parsed" });
+
+    const { error } = await supabase
+      .from("lightspeed_turnover_cache")
+      .upsert(rows, { onConflict: "month_start" });
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, upserted: rows.length });
+  }));
+
+  // GET /api/lightspeed/turnover — return all monthly CBD data
+  app.get("/api/lightspeed/turnover", asyncRoute(async (req: any, res: any) => {
+    const { data, error } = await supabase
+      .from("lightspeed_turnover_cache")
+      .select("month_start, sale_count, net_amount, total_amount, source")
+      .order("month_start", { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, rows: data || [] });
   }));
 
   // ─── SafetyCulture ────────────────────────────────────────────────────────

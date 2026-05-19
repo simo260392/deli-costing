@@ -6,9 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer,
+  Tooltip, ResponsiveContainer,
 } from "recharts";
-import { TrendingUp, RefreshCw } from "lucide-react";
+import { TrendingUp } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type RangeKey = "this_month" | "last_month" | "ytd" | "all_time";
@@ -23,7 +23,7 @@ interface DataPoint {
 
 interface RevenueChartData {
   range: string;
-  groupBy: "day" | "week";
+  groupBy: "day" | "week" | "month";
   from: string;
   to: string;
   dataPoints: DataPoint[];
@@ -41,10 +41,10 @@ const RANGES: { key: RangeKey; label: string }[] = [
 
 // Line colours matching app palette
 const LINES = [
-  { key: "total",    label: "Total",      colour: "#256984", dash: false,   width: 2.5 },
-  { key: "catering", label: "Catering",   colour: "#10b981", dash: false,   width: 1.5 },
-  { key: "delivery", label: "Drivers",    colour: "#f59e0b", dash: false,   width: 1.5 },
-  { key: "cbd",      label: "CBD Store",  colour: "#8b5cf6", dash: true,    width: 1.5 },
+  { key: "total",    label: "Total",                       colour: "#256984", dash: false, width: 2.5 },
+  { key: "catering", label: "Catering",                    colour: "#10b981", dash: false, width: 1.5 },
+  { key: "delivery", label: "Drivers",                     colour: "#f59e0b", dash: false, width: 1.5 },
+  { key: "cbd",      label: "CBD Store (Lightspeed)",      colour: "#8b5cf6", dash: true,  width: 1.5 },
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -53,17 +53,23 @@ function fmt$(n: number) {
   return `$${Math.round(n)}`;
 }
 
-function formatXAxis(dateStr: string, groupBy: "day" | "week"): string {
+function formatXAxis(dateStr: string, groupBy: "day" | "week" | "month"): string {
   const d = new Date(dateStr + "T12:00:00");
+  if (groupBy === "month") {
+    return d.toLocaleDateString("en-AU", { month: "short", year: "2-digit" });
+  }
   if (groupBy === "day") {
     return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
   }
-  // Week: show "12 May" for the Monday
+  // Week
   return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
 
-function formatTooltipDate(dateStr: string, groupBy: "day" | "week"): string {
+function formatTooltipDate(dateStr: string, groupBy: "day" | "week" | "month"): string {
   const d = new Date(dateStr + "T12:00:00");
+  if (groupBy === "month") {
+    return d.toLocaleDateString("en-AU", { month: "long", year: "numeric" });
+  }
   if (groupBy === "day") {
     return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" });
   }
@@ -83,7 +89,7 @@ function CustomTooltip({ active, payload, label, groupBy }: any) {
     <div className="bg-background border border-border rounded-lg shadow-lg p-3 text-sm min-w-[180px]">
       <p className="font-semibold text-foreground mb-2 text-xs">{dateLabel}</p>
       {payload
-        .filter((p: any) => p.value > 0 || p.dataKey !== "cbd")
+        .filter((p: any) => p.value > 0)
         .map((p: any) => (
           <div key={p.dataKey} className="flex justify-between gap-4 text-xs">
             <span style={{ color: p.color }}>{p.name}</span>
@@ -99,9 +105,20 @@ function CustomTooltip({ active, payload, label, groupBy }: any) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export function RevenueChart() {
   const [range, setRange] = useState<RangeKey>("this_month");
-  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set(["cbd"])); // CBD hidden by default (no data)
+  // CBD hidden by default on non-monthly views; auto-shown when switching to all_time
+  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set(["cbd"]));
 
-  const { data, isLoading, isError, refetch } = useQuery<RevenueChartData>({
+  // Auto-show CBD line when switching to all_time (data available), hide otherwise
+  const handleRangeChange = (newRange: RangeKey) => {
+    setRange(newRange);
+    if (newRange === "all_time") {
+      setHiddenLines(prev => { const next = new Set(prev); next.delete("cbd"); return next; });
+    } else {
+      setHiddenLines(prev => { const next = new Set(prev); next.add("cbd"); return next; });
+    }
+  };
+
+  const { data, isLoading, isError } = useQuery<RevenueChartData>({
     queryKey: ["/api/revenue-chart", range],
     queryFn: () =>
       apiRequest("GET", `/api/revenue-chart?range=${range}`).then(r => r.json()),
@@ -110,20 +127,24 @@ export function RevenueChart() {
   });
 
   const groupBy = data?.groupBy ?? "day";
+  const isMonthly = groupBy === "month";
 
   // Compute x-axis tick density — show every Nth label to avoid crowding
   const pointCount = data?.dataPoints?.length ?? 0;
-  const tickInterval = pointCount > 60 ? 7 : pointCount > 30 ? 3 : pointCount > 14 ? 1 : 0;
+  const tickInterval = isMonthly
+    ? (pointCount > 48 ? 5 : pointCount > 24 ? 2 : 0)
+    : (pointCount > 60 ? 7 : pointCount > 30 ? 3 : pointCount > 14 ? 1 : 0);
 
   // Summary totals for the period
   const totals = data?.dataPoints?.reduce(
     (acc, d) => ({
       catering: acc.catering + d.catering,
       delivery: acc.delivery + d.delivery,
+      cbd: acc.cbd + (d.cbd || 0),
       total: acc.total + d.total,
     }),
-    { catering: 0, delivery: 0, total: 0 }
-  ) ?? { catering: 0, delivery: 0, total: 0 };
+    { catering: 0, delivery: 0, cbd: 0, total: 0 }
+  ) ?? { catering: 0, delivery: 0, cbd: 0, total: 0 };
 
   function toggleLine(key: string) {
     setHiddenLines(prev => {
@@ -144,7 +165,7 @@ export function RevenueChart() {
             </CardTitle>
             {!isLoading && data && (
               <p className="text-xs text-muted-foreground mt-0.5">
-                {data.totalOrders} orders · {groupBy === "day" ? "Daily" : "Weekly"} view
+                {data.totalOrders} orders · {groupBy === "day" ? "Daily" : groupBy === "month" ? "Monthly" : "Weekly"} view
               </p>
             )}
           </div>
@@ -160,7 +181,7 @@ export function RevenueChart() {
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 )}
-                onClick={() => setRange(r.key)}
+                onClick={() => handleRangeChange(r.key)}
                 data-testid={`range-${r.key}`}
               >
                 {r.label}
@@ -173,10 +194,11 @@ export function RevenueChart() {
         {!isLoading && data && (
           <div className="flex gap-4 mt-2 flex-wrap">
             {[
-              { label: "Total", value: totals.total, colour: "#256984" },
-              { label: "Catering", value: totals.catering, colour: "#10b981" },
-              { label: "Drivers", value: totals.delivery, colour: "#f59e0b" },
-            ].map(({ label, value, colour }) => (
+              { label: "Total",     value: totals.total,    colour: "#256984", show: true },
+              { label: "Catering",  value: totals.catering, colour: "#10b981", show: true },
+              { label: "Drivers",   value: totals.delivery, colour: "#f59e0b", show: true },
+              { label: "CBD Store", value: totals.cbd,      colour: "#8b5cf6", show: isMonthly && totals.cbd > 0 },
+            ].filter(x => x.show).map(({ label, value, colour }) => (
               <div key={label} className="flex items-center gap-1.5">
                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: colour }} />
                 <span className="text-xs text-muted-foreground">{label}:</span>
@@ -232,7 +254,7 @@ export function RevenueChart() {
                 content={<CustomTooltip groupBy={groupBy} />}
                 cursor={{ stroke: "hsl(var(--border))", strokeWidth: 1 }}
               />
-              {LINES.map(line => (
+              {LINES.filter(line => line.key !== "cbd" || isMonthly).map(line => (
                 !hiddenLines.has(line.key) && (
                   <Line
                     key={line.key}
@@ -251,37 +273,30 @@ export function RevenueChart() {
           </ResponsiveContainer>
         )}
 
-        {/* Custom legend with toggle */}
+        {/* Custom legend with toggle — CBD only shown in monthly/all_time view */}
         <div className="flex items-center justify-center gap-4 mt-2 flex-wrap px-4">
-          {LINES.map(line => {
+          {LINES.filter(line => line.key !== "cbd" || isMonthly).map(line => {
             const isHidden = hiddenLines.has(line.key);
-            const isCbd = line.key === "cbd";
             return (
               <button
                 key={line.key}
                 onClick={() => toggleLine(line.key)}
                 className={cn(
                   "flex items-center gap-1.5 text-xs transition-opacity",
-                  isHidden ? "opacity-30" : "opacity-100",
-                  isCbd && "cursor-default"
+                  isHidden ? "opacity-30" : "opacity-100"
                 )}
-                title={isCbd ? "CBD Store — Lightspeed credentials pending" : undefined}
                 data-testid={`legend-${line.key}`}
               >
                 <div
-                  className="rounded-full"
                   style={{
                     width: 20,
                     height: 2.5,
-                    backgroundColor: line.colour,
-                    borderTop: line.dash ? `2px dashed ${line.colour}` : undefined,
-                    backgroundColor: line.dash ? "transparent" : line.colour,
-                  } as any}
+                    background: line.dash
+                      ? `repeating-linear-gradient(90deg, ${line.colour} 0, ${line.colour} 4px, transparent 4px, transparent 8px)`
+                      : line.colour,
+                  }}
                 />
-                <span className="text-muted-foreground">
-                  {line.label}
-                  {isCbd && <span className="ml-1 text-[10px] opacity-60">(pending)</span>}
-                </span>
+                <span className="text-muted-foreground">{line.label}</span>
               </button>
             );
           })}
