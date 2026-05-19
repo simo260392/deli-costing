@@ -3222,7 +3222,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
 
       // Run Python parser — it handles PDF and images, always returns valid JSON
       const { execFile } = await import("child_process");
-      const parsePath = path.join(process.cwd(), "server", "parse_invoice.py");
+      const parsePath = path.join(__dirname, "parse_invoice.py");
       const parsed: any = await new Promise((resolve) => {
         execFile(
           "python3", [parsePath, uploadedPath, originalName],
