@@ -6521,6 +6521,52 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     return res.json({ ok: true, from, to, rows: data || [] });
   }));
 
+  // ─── Missing Items Log ─────────────────────────────────────────────────────
+  // POST /api/missing-items/log
+  // Body: { order_id, item_uuid, item_name, order_date, total_required, qty_missing, qty_made, staff_id?, staff_name?, reason_type, reason_ingredient?, reason_other? }
+  app.post("/api/missing-items/log", asyncRoute(async (req: any, res: any) => {
+    const { order_id, item_uuid, item_name, order_date, total_required, qty_missing, qty_made,
+            staff_id, staff_name, reason_type, reason_ingredient, reason_other } = req.body;
+    if (!item_uuid || !item_name || !order_date || qty_missing == null) {
+      return res.status(400).json({ error: "item_uuid, item_name, order_date, qty_missing required" });
+    }
+    const { data, error } = await supabase.from("missing_items_log").insert({
+      order_id: order_id || null,
+      item_uuid, item_name,
+      order_date,
+      total_required: total_required || 1,
+      qty_missing,
+      qty_made: qty_made || 0,
+      staff_id: staff_id || null,
+      staff_name: staff_name || null,
+      reason_type: reason_type || "other",
+      reason_ingredient: reason_ingredient || null,
+      reason_other: reason_other || null,
+      logged_at: new Date().toISOString(),
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, id: (data as any).id });
+  }));
+
+  // GET /api/missing-items?date=YYYY-MM-DD  — get all missing items for a given date
+  app.get("/api/missing-items", asyncRoute(async (req: any, res: any) => {
+    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from("missing_items_log")
+      .select("*")
+      .eq("order_date", date)
+      .order("logged_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, items: data || [] });
+  }));
+
+  // DELETE /api/missing-items/:id
+  app.delete("/api/missing-items/:id", asyncRoute(async (req: any, res: any) => {
+    const { error } = await supabase.from("missing_items_log").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
   // ─── SafetyCulture ────────────────────────────────────────────────────────
   const SC_TOKEN = "scapi_jEN3Gh4Sq_dhY7b53vgGpwfJDHVWl_ackd_qT9eimci-NfVtF3C60x_m-gdFaVHjmq5s4BRXRgivh7X_FtW9d6pIcJN9wbPfNxwj5b8EgOFskBQsEGxQOGdoy-SXNEmD-KownUxpYen7linST45zYW0iV0ZvpM4ritr-d8WuRtk";
   const SC_BASE = "https://api.safetyculture.io";

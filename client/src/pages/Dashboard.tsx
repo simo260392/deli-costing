@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import WagesDashboard from "@/pages/WagesDashboard";
 import {
   UtensilsCrossed, Package, Truck, TrendingUp,
-  AlertTriangle, CheckCircle, ArrowRight, RefreshCw, FlaskConical, Sparkles
+  AlertTriangle, CheckCircle, ArrowRight, RefreshCw, FlaskConical, Sparkles, XCircle
 } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
@@ -147,6 +147,79 @@ function NutritionIssuesPanel({ issues }: { issues: NutritionIssue[] }) {
   );
 }
 
+function MissingItemsAlert() {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data } = useQuery<{ ok: boolean; items: any[] }>({
+    queryKey: ["/api/missing-items", today],
+    queryFn: () => apiRequest("GET", `/api/missing-items?date=${today}`).then(r => r.json()),
+    refetchInterval: 2 * 60 * 1000, // refresh every 2 min
+  });
+
+  const items = data?.items ?? [];
+  if (items.length === 0) return null;
+
+  // Group by item_name, summing qty_missing
+  const grouped: Record<string, { itemName: string; qtyMissing: number; qtyMade: number; totalRequired: number; reasons: string[] }> = {};
+  for (const it of items) {
+    if (!grouped[it.item_name]) {
+      grouped[it.item_name] = { itemName: it.item_name, qtyMissing: 0, qtyMade: 0, totalRequired: 0, reasons: [] };
+    }
+    grouped[it.item_name].qtyMissing += it.qty_missing ?? 0;
+    grouped[it.item_name].qtyMade += it.qty_made ?? 0;
+    grouped[it.item_name].totalRequired += it.total_required ?? 0;
+    if (it.reason_ingredient) grouped[it.item_name].reasons.push(it.reason_ingredient);
+    else if (it.reason_other) grouped[it.item_name].reasons.push(it.reason_other);
+  }
+  const rows = Object.values(grouped);
+  const totalMissing = rows.reduce((s, r) => s + r.qtyMissing, 0);
+
+  return (
+    <div className="px-6 pt-4">
+      <Card className="border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20">
+        <CardHeader className="pb-2 pt-4">
+          <CardTitle className="text-sm font-semibold text-red-700 dark:text-red-400 flex items-center gap-2">
+            <XCircle size={16} />
+            {totalMissing} item{totalMissing !== 1 ? "s" : ""} missing today
+          </CardTitle>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Logged during today's production — items that were not made
+          </p>
+        </CardHeader>
+        <CardContent className="pb-4">
+          <div className="space-y-1.5">
+            {rows.map((row) => {
+              const allMissing = row.qtyMade === 0;
+              return (
+                <div key={row.itemName} className="flex items-center justify-between gap-3 text-sm rounded px-2 py-1.5 bg-background border border-border">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <span className={cn("inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold shrink-0", allMissing ? "bg-red-500" : "bg-orange-500")}>
+                      !
+                    </span>
+                    <div>
+                      <p className="font-medium truncate">{row.itemName}</p>
+                      {row.reasons.length > 0 && (
+                        <p className="text-xs text-muted-foreground truncate">Reason: {row.reasons.join(", ")}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className={cn("font-semibold tabular-nums", allMissing ? "text-red-600 dark:text-red-400" : "text-orange-600 dark:text-orange-400")}>
+                      {row.qtyMissing} missing
+                    </span>
+                    {row.qtyMade > 0 && (
+                      <span className="text-xs text-muted-foreground ml-1">({row.qtyMade} made)</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const { data: summary, isLoading: loadingSummary } = useQuery({
     queryKey: ["/api/dashboard"],
@@ -195,6 +268,9 @@ export default function Dashboard() {
     <div className="space-y-0 max-w-screen-xl">
       {/* Wages & Revenue section */}
       <WagesDashboard embedded />
+
+      {/* Missing items alert — shows if any items were not made today */}
+      <MissingItemsAlert />
 
       <div className="p-6 space-y-6">
       {/* Header */}

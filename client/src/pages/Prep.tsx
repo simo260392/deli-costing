@@ -15,7 +15,7 @@ import {
   ChefHat, RefreshCw, ChevronDown, ChevronUp, CheckCircle2,
   Clock, Timer, AlertCircle, SkipForward, RotateCcw, Play,
   CalendarDays, ShoppingCart, ListChecks, X, Check, Plus, User,
-  ClipboardList, Trash2, Package, Pencil, Loader2, Store
+  ClipboardList, Trash2, Package, Pencil, Loader2, Store, AlertTriangle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SearchableSelect, SearchableOption } from "@/components/SearchableSelect";
@@ -114,7 +114,21 @@ function useElapsed(startedAt: string | null, active: boolean) {
 }
 
 // ─── Order status helpers ─────────────────────────────────────────────────────
-type OrderState = { viewed: boolean; checkedItems: Record<string, { checked: boolean; staffId?: number; staffName?: string; checkedAt?: string }>; prepStatus: string; isComplete?: boolean; itemCount?: number };
+interface CheckedItemState {
+  checked: boolean;
+  staffId?: number;
+  staffName?: string;
+  checkedAt?: string;
+  // Missing item info (set when 'Items not made' is selected)
+  isMissing?: boolean;          // true = partially or fully missing
+  qtyMissing?: number;
+  qtyMade?: number;
+  totalRequired?: number;
+  reasonType?: string;          // 'ingredient' | 'other'
+  reasonIngredient?: string;
+  reasonOther?: string;
+}
+type OrderState = { viewed: boolean; checkedItems: Record<string, CheckedItemState>; prepStatus: string; isComplete?: boolean; itemCount?: number; hasMissing?: boolean; };
 const DEFAULT_ORDER_STATE: OrderState = { viewed: false, checkedItems: {}, prepStatus: "new", isComplete: false };
 
 // Returns the flat list of all tickable entries for an order.
@@ -164,12 +178,13 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
   open: boolean;
   onClose: () => void;
   staff: StaffMember[];
-  onSelect: (staffId: number, staffName: string, useFromStock: boolean, stockItemId?: number) => void;
+  onSelect: (staffId: number, staffName: string, useFromStock: boolean, stockItemId?: number, isMissing?: boolean) => void;
   itemName: string;
   orderQty: number;
 }) {
   const [selectedId, setSelectedId] = useState<string>("");
   const [useFromStock, setUseFromStock] = useState(false);
+  const [itemsNotMade, setItemsNotMade] = useState(false);
   const [stockMatch, setStockMatch] = useState<StockItem | null>(null);
   const [matchLoading, setMatchLoading] = useState(false);
 
@@ -177,6 +192,7 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
     if (open) {
       setSelectedId("");
       setUseFromStock(false);
+      setItemsNotMade(false);
       setStockMatch(null);
       if (itemName) {
         setMatchLoading(true);
@@ -269,22 +285,43 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
             <p className="text-sm text-muted-foreground italic">No staff on roster today</p>
           )}
         </div>
+        {/* Items not made checkbox */}
+        <div className={cn(
+          "rounded-lg border px-3 py-2.5 transition-colors cursor-pointer",
+          itemsNotMade ? "border-orange-400 bg-orange-50" : "border-border bg-muted/30"
+        )}
+          onClick={() => setItemsNotMade(v => !v)}
+        >
+          <div className="flex items-center gap-2.5 text-sm font-medium">
+            <div className={cn(
+              "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+              itemsNotMade ? "border-orange-500 bg-orange-500" : "border-muted-foreground"
+            )}>
+              {itemsNotMade && <Check size={10} className="text-white" strokeWidth={3} />}
+            </div>
+            <span className={itemsNotMade ? "text-orange-700" : ""}>Items not made</span>
+          </div>
+          {itemsNotMade && (
+            <p className="text-xs text-orange-600 ml-6 mt-1">You'll be asked how many were missing on the next screen.</p>
+          )}
+        </div>
+
         <DialogFooter className="gap-2">
           <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
           <Button
             size="sm"
-            className="bg-[#256984] hover:bg-[#1e5570] text-white"
+            className={itemsNotMade ? "bg-orange-500 hover:bg-orange-600 text-white" : "bg-[#256984] hover:bg-[#1e5570] text-white"}
             disabled={!selectedId && staff.length > 0}
             onClick={() => {
               if (selectedId) {
                 const emp = staff.find(s => s.id.toString() === selectedId);
-                if (emp) onSelect(emp.id, emp.name, useFromStock, stockMatch?.id);
+                if (emp) onSelect(emp.id, emp.name, useFromStock, stockMatch?.id, itemsNotMade);
               } else {
-                onSelect(0, "Unknown", useFromStock, stockMatch?.id);
+                onSelect(0, "Unknown", useFromStock, stockMatch?.id, itemsNotMade);
               }
             }}
           >
-            Confirm
+            {itemsNotMade ? "Next: Log Missing" : "Confirm"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -444,6 +481,166 @@ function GreyBoxDialog({ open, customerName, deliveryDate, onConfirm, onDismiss 
   );
 }
 
+// ─── Missing Items Dialog ───────────────────────────────────────────────────
+interface MissingItemResult {
+  qtyMissing: number;
+  qtyMade: number;
+  reasonType: "ingredient" | "other";
+  reasonIngredient?: string;
+  reasonOther?: string;
+}
+function MissingItemsDialog({ open, itemName, totalRequired, staffName, onConfirm, onDismiss }: {
+  open: boolean;
+  itemName: string;
+  totalRequired: number;
+  staffName: string;
+  onConfirm: (result: MissingItemResult) => void;
+  onDismiss: () => void;
+}) {
+  const [qtyMissing, setQtyMissing] = useState(1);
+  const [reasonType, setReasonType] = useState<"ingredient" | "other">("ingredient");
+  const [ingredientSearch, setIngredientSearch] = useState("");
+  const [selectedIngredient, setSelectedIngredient] = useState("");
+  const [otherReason, setOtherReason] = useState("");
+  const [ingredients, setIngredients] = useState<{ id: number; name: string }[]>([]);
+  const [ingOpen, setIngOpen] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setQtyMissing(Math.min(1, totalRequired));
+      setReasonType("ingredient");
+      setIngredientSearch("");
+      setSelectedIngredient("");
+      setOtherReason("");
+      // Load ingredients list
+      fetch(`${API_BASE}/api/ingredients`)
+        .then(r => r.json())
+        .then(d => setIngredients((d || []).map((i: any) => ({ id: i.id, name: i.name }))))
+        .catch(() => {});
+    }
+  }, [open, totalRequired]);
+
+  const qtyMade = Math.max(0, totalRequired - qtyMissing);
+  const allMissing = qtyMissing >= totalRequired;
+  const filteredIngs = ingredients.filter(i =>
+    i.name.toLowerCase().includes(ingredientSearch.toLowerCase())
+  ).slice(0, 20);
+
+  const canConfirm = qtyMissing > 0 && (
+    reasonType === "ingredient" ? selectedIngredient.length > 0 : otherReason.trim().length > 0
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onDismiss(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <AlertTriangle size={16} className="text-orange-500" />
+            Items Not Made
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          <span className="font-semibold text-foreground">{itemName}</span> — logged by {staffName}
+        </p>
+
+        {/* Quantity missing input */}
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">How many were <span className="text-red-600 font-semibold">NOT made</span>? (required: {totalRequired})</p>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 text-lg"
+              onClick={() => setQtyMissing(q => Math.max(1, q - 1))}>−</Button>
+            <span className="text-2xl font-semibold w-10 text-center text-red-600">{qtyMissing}</span>
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 text-lg"
+              onClick={() => setQtyMissing(q => Math.min(totalRequired, q + 1))}>+</Button>
+            <input type="number" min={1} max={totalRequired} value={qtyMissing}
+              onChange={e => setQtyMissing(Math.min(totalRequired, Math.max(1, parseInt(e.target.value) || 1)))}
+              className="ml-1 w-14 border rounded-md px-2 py-1 text-sm text-center" />
+          </div>
+          <div className={cn(
+            "text-xs font-medium px-2.5 py-1.5 rounded-md",
+            allMissing ? "bg-red-50 text-red-700 border border-red-200" : "bg-orange-50 text-orange-700 border border-orange-200"
+          )}>
+            {allMissing
+              ? `⚠️ All ${totalRequired} items missing — none made`
+              : `✓ ${qtyMade} made · ${qtyMissing} missing`}
+          </div>
+        </div>
+
+        {/* Reason */}
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Reason:</p>
+          <div className="flex gap-2">
+            <button onClick={() => setReasonType("ingredient")}
+              className={cn("flex-1 text-xs py-2 px-3 rounded-lg border font-medium transition-all",
+                reasonType === "ingredient" ? "border-[#256984] bg-[#256984]/10 text-[#256984]" : "border-border bg-card hover:bg-muted/40")}>
+              Ingredient out of stock
+            </button>
+            <button onClick={() => setReasonType("other")}
+              className={cn("flex-1 text-xs py-2 px-3 rounded-lg border font-medium transition-all",
+                reasonType === "other" ? "border-[#256984] bg-[#256984]/10 text-[#256984]" : "border-border bg-card hover:bg-muted/40")}>
+              Other
+            </button>
+          </div>
+
+          {reasonType === "ingredient" && (
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search ingredients..."
+                value={selectedIngredient || ingredientSearch}
+                onChange={e => { setIngredientSearch(e.target.value); setSelectedIngredient(""); setIngOpen(true); }}
+                onFocus={() => setIngOpen(true)}
+                className="w-full border rounded-md px-3 py-1.5 text-sm"
+              />
+              {ingOpen && filteredIngs.length > 0 && (
+                <div className="absolute z-50 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                  {filteredIngs.map(i => (
+                    <button key={i.id}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted/40"
+                      onClick={() => { setSelectedIngredient(i.name); setIngredientSearch(""); setIngOpen(false); }}
+                    >{i.name}</button>
+                  ))}
+                </div>
+              )}
+              {selectedIngredient && (
+                <p className="text-xs text-[#256984] mt-1 font-medium">✓ {selectedIngredient}</p>
+              )}
+            </div>
+          )}
+
+          {reasonType === "other" && (
+            <textarea
+              rows={2}
+              placeholder="Describe the reason..."
+              value={otherReason}
+              onChange={e => setOtherReason(e.target.value)}
+              className="w-full border rounded-md px-3 py-1.5 text-sm resize-none"
+            />
+          )}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={onDismiss}>Cancel</Button>
+          <Button
+            size="sm"
+            disabled={!canConfirm}
+            className="bg-orange-500 hover:bg-orange-600 text-white gap-1.5"
+            onClick={() => onConfirm({
+              qtyMissing,
+              qtyMade,
+              reasonType,
+              reasonIngredient: reasonType === "ingredient" ? selectedIngredient : undefined,
+              reasonOther: reasonType === "other" ? otherReason : undefined,
+            })}
+          >
+            <AlertTriangle size={13} /> Log Missing Items
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Order Card ───────────────────────────────────────────────────────────────
 function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isComplete, onStockDeducted }: {
   order: FlexOrder;
@@ -460,6 +657,9 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   // Staff picker state
   const [staffPickerOpen, setStaffPickerOpen] = useState(false);
   const [pendingItemUuid, setPendingItemUuid] = useState<string | null>(null);
+  // Missing items flow
+  const [missingItemsOpen, setMissingItemsOpen] = useState(false);
+  const [pendingMissingStaff, setPendingMissingStaff] = useState<{ id: number; name: string } | null>(null);
 
   const colour = isComplete ? orderColour("complete") : orderColour(state.prepStatus || "new");
   const customerName = order.company || `${order.first_name} ${order.last_name}`.trim();
@@ -505,7 +705,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
     }
   };
 
-  const handleStaffSelected = (staffId: number, staffName: string, useFromStock: boolean, stockItemId?: number) => {
+  const handleStaffSelected = (staffId: number, staffName: string, useFromStock: boolean, stockItemId?: number, isMissing?: boolean) => {
     if (!pendingItemUuid) return;
     // For sub-items (combo), find the parent item for stock/log purposes
     const isSubItem = pendingItemUuid.includes('__sub__');
@@ -513,6 +713,15 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
     const pendingItemObj = order.items.find(i => i.uuid === parentUuid);
     // For sub-items look up the tickable item name
     const pendingTickable = tickableItems.find(t => t.uuid === pendingItemUuid);
+
+    // If "Items not made" was checked, open the missing items dialog instead of completing
+    if (isMissing) {
+      setStaffPickerOpen(false);
+      setPendingMissingStaff({ id: staffId, name: staffName });
+      setTimeout(() => setMissingItemsOpen(true), 150);
+      return;
+    }
+
     const newChecked = {
       ...state.checkedItems,
       [pendingItemUuid]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
@@ -558,6 +767,96 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   // For the staff picker dialog: use the tickable item name (handles sub-items)
   const pendingTickableItem = pendingItemUuid ? tickableItems.find(t => t.uuid === pendingItemUuid) : undefined;
   const pendingItem = pendingItemUuid ? order.items.find(i => i.uuid === (pendingItemUuid.includes('__sub__') ? pendingItemUuid.split('__sub__')[0] : pendingItemUuid)) : undefined;
+  const pendingTotalRequired = pendingTickableItem?.quantity ?? Number(pendingItem?.quantity) ?? 1;
+  const pendingItemName = pendingTickableItem?.name ?? pendingItem?.name ?? "item";
+
+  const handleMissingConfirm = async (result: MissingItemResult) => {
+    if (!pendingItemUuid || !pendingMissingStaff) return;
+    setMissingItemsOpen(false);
+    const deliveryDate = order.delivery_datetime ? order.delivery_datetime.slice(0, 10) : new Date().toISOString().slice(0, 10);
+    // Mark the item as checked (partially) with missing info
+    const newChecked: Record<string, CheckedItemState> = {
+      ...state.checkedItems,
+      [pendingItemUuid]: {
+        checked: true,
+        staffId: pendingMissingStaff.id,
+        staffName: pendingMissingStaff.name,
+        checkedAt: new Date().toISOString(),
+        isMissing: true,
+        qtyMissing: result.qtyMissing,
+        qtyMade: result.qtyMade,
+        totalRequired: pendingTotalRequired,
+        reasonType: result.reasonType,
+        reasonIngredient: result.reasonIngredient,
+        reasonOther: result.reasonOther,
+      },
+    };
+    const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
+    const total = tickableItems.length;
+    const newStatus = checkedQty === 0 ? "not_started" : checkedQty === total ? "done" : "in_progress";
+    const hasMissing = Object.values(newChecked).some(c => c.isMissing);
+    onStateChange(order.id, { checkedItems: newChecked, prepStatus: newStatus, hasMissing });
+    setPendingItemUuid(null);
+    setPendingMissingStaff(null);
+    // Log to missing_items_log table
+    try {
+      await fetch(`${API_BASE}/api/missing-items/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_id: order.id,
+          item_uuid: pendingItemUuid,
+          item_name: pendingItemName,
+          order_date: deliveryDate,
+          total_required: pendingTotalRequired,
+          qty_missing: result.qtyMissing,
+          qty_made: result.qtyMade,
+          staff_id: pendingMissingStaff.id,
+          staff_name: pendingMissingStaff.name,
+          reason_type: result.reasonType,
+          reason_ingredient: result.reasonIngredient || null,
+          reason_other: result.reasonOther || null,
+        }),
+      });
+    } catch (_) {}
+    // Log the made quantity to production report (as partial production)
+    if (result.qtyMade > 0) {
+      try {
+        await fetch(`${API_BASE}/api/order-tick-log`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            itemName: pendingItemName,
+            quantity: result.qtyMade,
+            staffName: pendingMissingStaff.name,
+            staffId: pendingMissingStaff.id,
+            orderId: order.id,
+            orderDate: deliveryDate,
+          }),
+        });
+      } catch (_) {}
+    }
+    // Log the missing quantity as a separate 'missing' entry
+    try {
+      await fetch(`${API_BASE}/api/order-tick-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemName: pendingItemName,
+          quantity: result.qtyMissing,
+          staffName: "Items Missing",
+          staffId: null,
+          orderId: order.id,
+          orderDate: deliveryDate,
+          notes: result.reasonType === "ingredient"
+            ? `Out of stock: ${result.reasonIngredient}`
+            : result.reasonOther,
+          item_type: "missing",
+        }),
+      });
+    } catch (_) {}
+  };
+
   const handleConfirmComplete = () => {
     setMarkCompleteOpen(false);
     onMarkComplete(order.id, tickableItems.length);
@@ -610,6 +909,14 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
         onConfirm={handleGreyBoxConfirm}
         onDismiss={() => setGreyBoxOpen(false)}
       />
+      <MissingItemsDialog
+        open={missingItemsOpen}
+        itemName={pendingItemName}
+        totalRequired={pendingTotalRequired}
+        staffName={pendingMissingStaff?.name ?? ""}
+        onConfirm={handleMissingConfirm}
+        onDismiss={() => { setMissingItemsOpen(false); setPendingMissingStaff(null); setPendingItemUuid(null); }}
+      />
 
       {/* Uncheck confirmation dialog */}
       <Dialog open={!!unconfirmUuid} onOpenChange={v => { if (!v) setUnconfirmUuid(null); }}>
@@ -657,9 +964,30 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
               </span>
             </div>
           </div>
-          <Badge className={cn("text-xs shrink-0", colour.badge)}>{colour.label}</Badge>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {state.hasMissing && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700 border border-red-300">
+                <AlertTriangle size={9} /> Missing
+              </span>
+            )}
+            <Badge className={cn("text-xs", colour.badge)}>{colour.label}</Badge>
+          </div>
           {expanded ? <ChevronUp size={16} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={16} className="shrink-0 text-muted-foreground" />}
         </button>
+
+        {/* Missing items warning banner — shown when expanded */}
+        {expanded && state.hasMissing && (
+          <div className="border-t border-red-200 bg-red-50 px-4 py-2 flex items-start gap-2">
+            <AlertTriangle size={14} className="text-red-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-red-700">
+              <span className="font-semibold">Items missing from this order — </span>
+              {Object.entries(state.checkedItems)
+                .filter(([, v]) => v.isMissing)
+                .map(([, v]) => `${v.qtyMissing ?? 0}× ${tickableItems.find(t => t.uuid === Object.keys(state.checkedItems).find(k => state.checkedItems[k] === v))?.name ?? ''}`)
+                .join(", ") || "see items below"}
+            </div>
+          </div>
+        )}
 
         {/* Items */}
         {expanded && (
@@ -773,20 +1101,29 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
               // Standard (non-combo) item
               const itemState = state.checkedItems[item.uuid];
               const checked = !!itemState?.checked;
+              const isMissingItem = checked && !!itemState?.isMissing;
+              const allMissingItem = isMissingItem && (itemState?.qtyMade ?? 0) === 0;
               return (
                 <div key={item.uuid} className="space-y-0.5">
                   <button
                     onClick={() => handleItemClick(item.uuid)}
                     className={cn(
                       "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-all border",
-                      checked
-                        ? "bg-green-100 border-green-300 dark:bg-green-950/30"
-                        : "bg-white dark:bg-card border-border hover:bg-muted/40"
+                      !checked
+                        ? "bg-white dark:bg-card border-border hover:bg-muted/40"
+                        : allMissingItem
+                        ? "bg-red-50 border-red-300"
+                        : isMissingItem
+                        ? "bg-orange-50 border-orange-300"
+                        : "bg-green-100 border-green-300 dark:bg-green-950/30"
                     )}
                   >
                     <div className={cn(
                       "w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all",
-                      checked ? "bg-green-600 border-green-600" : "border-muted-foreground"
+                      !checked ? "border-muted-foreground"
+                      : allMissingItem ? "bg-red-600 border-red-600"
+                      : isMissingItem ? "bg-orange-500 border-orange-500"
+                      : "bg-green-600 border-green-600"
                     )}>
                       {checked && <Check size={12} className="text-white" strokeWidth={3} />}
                     </div>
@@ -797,7 +1134,14 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                       {item.attributes_summary && (
                         <span className="text-xs text-muted-foreground ml-1.5">({item.attributes_summary})</span>
                       )}
-                      {checked && itemState?.staffName && (
+                      {checked && isMissingItem && (
+                        <span className={cn("text-xs ml-1.5 font-semibold", allMissingItem ? "text-red-600" : "text-orange-600")}>
+                          {allMissingItem ? `⚠️ All ${itemState.totalRequired} missing` : `⚠️ ${itemState.qtyMissing} of ${itemState.totalRequired} missing`}
+                          {itemState.reasonIngredient && <span className="font-normal"> · {itemState.reasonIngredient}</span>}
+                          {itemState.reasonOther && <span className="font-normal"> · {itemState.reasonOther}</span>}
+                        </span>
+                      )}
+                      {checked && !isMissingItem && itemState?.staffName && (
                         <span className="text-xs text-green-700 ml-1.5 font-medium">
                           ✓ {itemState.staffName}
                           {itemState.checkedAt && (
