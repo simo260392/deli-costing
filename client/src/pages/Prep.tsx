@@ -38,6 +38,8 @@ interface FlexOrder {
   internal_notes: string;
   delivery_notes: string;
   notes: string;
+  customer_uuid: string;
+  is_wholesale: boolean;
   items: FlexOrderItem[];
 }
 
@@ -351,6 +353,64 @@ function MarkCompleteDialog({ open, customerName, onConfirm, onDismiss }: {
   );
 }
 
+// ─── Grey Box Dialog ────────────────────────────────────────────────────────
+function GreyBoxDialog({ open, customerName, deliveryDate, onConfirm, onDismiss }: {
+  open: boolean;
+  customerName: string;
+  deliveryDate: string;
+  onConfirm: (boxCount: number) => void;
+  onDismiss: () => void;
+}) {
+  const [count, setCount] = useState(1);
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onDismiss(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Package size={16} className="text-[#256984]" />
+            Grey Box Log
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          How many grey boxes were packed for <span className="font-semibold text-foreground">{customerName}</span>?
+        </p>
+        <div className="flex items-center gap-3 py-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 w-9 p-0 text-lg"
+            onClick={() => setCount(c => Math.max(0, c - 1))}
+          >−</Button>
+          <span className="text-2xl font-semibold w-10 text-center">{count}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 w-9 p-0 text-lg"
+            onClick={() => setCount(c => c + 1)}
+          >+</Button>
+          <input
+            type="number"
+            min={0}
+            value={count}
+            onChange={e => setCount(Math.max(0, parseInt(e.target.value) || 0))}
+            className="ml-2 w-16 border rounded-md px-2 py-1 text-sm text-center"
+          />
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={onDismiss}>Skip</Button>
+          <Button
+            size="sm"
+            className="bg-[#256984] hover:bg-[#1e5570] text-white gap-1.5"
+            onClick={() => { onConfirm(count); setCount(1); }}
+          >
+            <Package size={13} /> Log Boxes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Order Card ───────────────────────────────────────────────────────────────
 function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isComplete, onStockDeducted }: {
   order: FlexOrder;
@@ -363,6 +423,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
 }) {
   const [expanded, setExpanded] = useState(false);
   const [markCompleteOpen, setMarkCompleteOpen] = useState(false);
+  const [greyBoxOpen, setGreyBoxOpen] = useState(false);
   // Staff picker state
   const [staffPickerOpen, setStaffPickerOpen] = useState(false);
   const [pendingItemUuid, setPendingItemUuid] = useState<string | null>(null);
@@ -453,6 +514,30 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   const handleConfirmComplete = () => {
     setMarkCompleteOpen(false);
     onMarkComplete(order.id, order.items.length);
+    // Only show grey box dialog for wholesale orders
+    if (order.is_wholesale) {
+      setTimeout(() => setGreyBoxOpen(true), 200);
+    }
+  };
+
+  const handleGreyBoxConfirm = async (boxCount: number) => {
+    setGreyBoxOpen(false);
+    const deliveryDate = order.delivery_datetime ? order.delivery_datetime.slice(0, 10) : new Date().toISOString().slice(0, 10);
+    try {
+      await fetch(`${API_BASE}/api/grey-box/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order_id: order.id,
+          customer_name: customerName,
+          customer_uuid: order.customer_uuid || null,
+          delivery_date: deliveryDate,
+          boxes_out: boxCount,
+          boxes_in: 0,
+          logged_by: null,
+        }),
+      });
+    } catch (_) {}
   };
 
   return (
@@ -470,6 +555,13 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
         customerName={customerName}
         onConfirm={handleConfirmComplete}
         onDismiss={() => setMarkCompleteOpen(false)}
+      />
+      <GreyBoxDialog
+        open={greyBoxOpen}
+        customerName={customerName}
+        deliveryDate={order.delivery_datetime ? order.delivery_datetime.slice(0, 10) : new Date().toISOString().slice(0, 10)}
+        onConfirm={handleGreyBoxConfirm}
+        onDismiss={() => setGreyBoxOpen(false)}
       />
 
       {/* Uncheck confirmation dialog */}

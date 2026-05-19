@@ -2415,6 +2415,16 @@ Return ONLY the JSON object, no explanation.`;
           if (offsetSetting) dispatchOffsetMins = parseInt(offsetSetting) || 30;
         } catch (_) {}
 
+        // Load wholesale customer UUIDs from cached flex_customers table
+        const wholesaleUuids = new Set<string>();
+        try {
+          const { data: wCusts } = await supabase
+            .from("flex_customers")
+            .select("uuid")
+            .eq("is_wholesale", true);
+          for (const c of (wCusts || [])) wholesaleUuids.add(c.uuid);
+        } catch (_) {}
+
         // Return full per-order objects (trimmed for payload size)
         const orders = activeOrders.map(o => {
           // Calculate dispatch_datetime = delivery_datetime - offset
@@ -2437,6 +2447,8 @@ Return ONLY the JSON object, no explanation.`;
           internal_notes: o.internal_notes || '',
           delivery_notes: o.delivery_notes || '',
           notes: o.notes || '',
+          customer_uuid: o.customer_uuid || '',
+          is_wholesale: wholesaleUuids.has(o.customer_uuid || ''),
           items: (o.items || []).map((i: any) => ({
             uuid: i.uuid,
             name: i.name,
@@ -6382,6 +6394,127 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .order("month_start", { ascending: true });
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ ok: true, rows: data || [] });
+  }));
+
+  // ─── Grey Box Tracker ────────────────────────────────────────────────────
+
+  // POST /api/grey-box/log  — record boxes out (packed) or boxes in (collected)
+  // body: { order_id, customer_name, customer_uuid?, delivery_date, boxes_out, boxes_in, logged_by?, notes? }
+  app.post("/api/grey-box/log", asyncRoute(async (req: any, res: any) => {
+    const { order_id, customer_name, customer_uuid, delivery_date, boxes_out, boxes_in, logged_by, notes } = req.body;
+    if (!order_id || !customer_name || !delivery_date) {
+      return res.status(400).json({ error: "order_id, customer_name and delivery_date are required" });
+    }
+    const { data, error } = await supabase
+      .from("grey_box_log")
+      .insert([{
+        order_id: Number(order_id),
+        customer_name: String(customer_name),
+        customer_uuid: customer_uuid || null,
+        delivery_date: String(delivery_date),
+        boxes_out: Number(boxes_out) || 0,
+        boxes_in: Number(boxes_in) || 0,
+        logged_by: logged_by || null,
+        notes: notes || null,
+      }])
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, entry: data });
+  }));
+
+  // GET /api/grey-box/log?from=YYYY-MM-DD&to=YYYY-MM-DD  — raw log rows for date range
+  app.get("/api/grey-box/log", asyncRoute(async (req: any, res: any) => {
+    const from = (req.query.from as string) || new Date().toISOString().slice(0, 10);
+    const to   = (req.query.to   as string) || from;
+    const { data, error } = await supabase
+      .from("grey_box_log")
+      .select("*")
+      .gte("delivery_date", from)
+      .lte("delivery_date", to)
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, rows: data || [] });
+  }));
+
+  // DELETE /api/grey-box/log/:id  — remove a log entry (admin correction)
+  app.delete("/api/grey-box/log/:id", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { error } = await supabase.from("grey_box_log").delete().eq("id", id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+  }));
+
+  // GET /api/grey-box/balances  — current box balance per customer
+  // Rules:
+  //   running_balance = SUM(boxes_out) - SUM(boxes_in)  per customer across ALL time
+  //   If balance goes negative at any point, treat it as 0 before adding more boxes_out
+  //   (i.e. floor each customer's balance at 0 — negatives reset to 0)
+  app.get("/api/grey-box/balances", asyncRoute(async (req: any, res: any) => {
+    const { data, error } = await supabase
+      .from("grey_box_log")
+      .select("customer_name, customer_uuid, delivery_date, boxes_out, boxes_in, order_id, id, logged_by, created_at")
+      .order("created_at", { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Compute running balance per customer, flooring at 0 after each transaction
+    const customerMap = new Map<string, {
+      customer_name: string;
+      customer_uuid: string | null;
+      balance: number;
+      total_out: number;
+      total_in: number;
+      last_activity: string;
+    }>();
+
+    for (const row of (data || [])) {
+      const key = row.customer_name;
+      const existing = customerMap.get(key) || {
+        customer_name: row.customer_name,
+        customer_uuid: row.customer_uuid || null,
+        balance: 0,
+        total_out: 0,
+        total_in: 0,
+        last_activity: row.delivery_date,
+      };
+      // Apply boxes_in first (return), floor at 0, then add boxes_out
+      // Actually: process chronologically: after collecting (boxes_in), balance decreases;
+      // after packing (boxes_out), balance increases — floor at 0 before each boxes_out addition
+      const afterIn = Math.max(0, existing.balance - (row.boxes_in || 0));
+      const afterOut = afterIn + (row.boxes_out || 0);
+      existing.balance = afterOut;
+      existing.total_out += row.boxes_out || 0;
+      existing.total_in += row.boxes_in || 0;
+      if (row.delivery_date > existing.last_activity) existing.last_activity = row.delivery_date;
+      customerMap.set(key, existing);
+    }
+
+    // Only include customers with activity (out > 0)
+    const balances = [...customerMap.values()]
+      .filter(c => c.total_out > 0)
+      .sort((a, b) => b.balance - a.balance || a.customer_name.localeCompare(b.customer_name));
+
+    return res.json({ ok: true, balances });
+  }));
+
+  // GET /api/grey-box/weekly?days=7  — daily log grouped by customer for last N days
+  app.get("/api/grey-box/weekly", asyncRoute(async (req: any, res: any) => {
+    const days = Math.min(Number(req.query.days) || 7, 30);
+    const toDate = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(toDate.getDate() - (days - 1));
+    const from = fromDate.toISOString().slice(0, 10);
+    const to   = toDate.toISOString().slice(0, 10);
+
+    const { data, error } = await supabase
+      .from("grey_box_log")
+      .select("customer_name, delivery_date, boxes_out, boxes_in, order_id, id, logged_by, notes")
+      .gte("delivery_date", from)
+      .lte("delivery_date", to)
+      .order("delivery_date", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ ok: true, from, to, rows: data || [] });
   }));
 
   // ─── SafetyCulture ────────────────────────────────────────────────────────

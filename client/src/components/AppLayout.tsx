@@ -24,6 +24,7 @@ const productionSubItems = [
 
 // Items after the Food group
 const midNavItems = [
+  { href: "/deliveries",   label: "Deliveries",         icon: Truck,       slug: "deliveries" },
   { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
   { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
   { href: "/wholesale",    label: "Wholesale Packaging",icon: Archive,     slug: "wholesale" },
