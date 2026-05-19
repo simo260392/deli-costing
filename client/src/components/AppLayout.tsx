@@ -12,15 +12,22 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 
-// Top-level nav items (not grouped)
+// Top-level nav items (in display order)
 const topNavItems = [
   { href: "/",            label: "Dashboard",          icon: LayoutDashboard, slug: "dashboard" },
-  { href: "/wages",       label: "Wages",              icon: TrendingUp,      slug: "wages" },
-  { href: "/safety",      label: "Safety",             icon: ShieldCheck,     slug: "safety" },
-  { href: "/prep",        label: "Production",         icon: ChefHat,         slug: "prep" },
-  { href: "/prep-reports",label: "Production Reports", icon: BarChart3,        slug: "prep-reports" },
-  { href: "/wholesale",   label: "Wholesale Packaging",icon: Archive,         slug: "wholesale" },
-  { href: "/xero-imports",label: "Invoice Imports",    icon: RefreshCw,       slug: "xero-imports" },
+];
+
+// Production group sub-items
+const productionSubItems = [
+  { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
+];
+
+// Items after the Food group
+const midNavItems = [
+  { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
+  { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
+  { href: "/wholesale",    label: "Wholesale Packaging",icon: Archive,     slug: "wholesale" },
+  { href: "/xero-imports", label: "Invoice Imports",    icon: RefreshCw,   slug: "xero-imports" },
 ];
 
 // Food group sub-items
@@ -64,6 +71,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // Auto-expand Food group if currently on a food sub-page
   const onFoodPage = foodSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
   const [foodOpen, setFoodOpen] = useState(onFoodPage);
+
+  // Auto-expand Production group if currently on a production sub-page
+  const onProductionSubPage = productionSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
+  const onProductionPage = location === "/prep" || location.startsWith("/prep/") || onProductionSubPage;
+  const [productionOpen, setProductionOpen] = useState(onProductionSubPage);
 
   const { data: xeroCountData } = useQuery({
     queryKey: ["/api/xero/imports/pending-count"],
@@ -109,15 +121,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <div className="flex-1 overflow-y-auto py-3 px-3">
         <ul className="space-y-0.5">
 
-          {/* Top-level items */}
+          {/* 1. Dashboard */}
           {topNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
             navLink(href, label, Icon, slug)
           )}
 
-          {/* ── Food group ── */}
+          {/* 2. Food group */}
           {foodSubItems.some(({ slug }) => hasAccess(slug)) && (
             <li>
-              {/* Food category header — clickable to toggle */}
               <button
                 onClick={() => setFoodOpen(o => !o)}
                 className={cn(
@@ -135,8 +146,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   className={cn("transition-transform duration-200", foodOpen ? "rotate-0" : "-rotate-90")}
                 />
               </button>
-
-              {/* Sub-items */}
               {foodOpen && (
                 <ul className="mt-0.5 space-y-0.5">
                   {foodSubItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
@@ -147,7 +156,62 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </li>
           )}
 
-          {/* Bottom-pinned items */}
+          {/* 3. Production (with Production Reports sub-item for authorised users) */}
+          {hasAccess("prep") && (
+            <li>
+              {/* Row: link to /prep + chevron toggle (only shown if user has access to sub-items) */}
+              <div className="flex items-center">
+                <Link
+                  href="/prep"
+                  onClick={() => setMobileOpen(false)}
+                  className={cn(
+                    "flex flex-1 items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
+                    onProductionPage
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                  data-testid="nav-production"
+                >
+                  <ChefHat size={15} strokeWidth={onProductionPage ? 2.5 : 2} />
+                  <span className="flex-1">Production</span>
+                </Link>
+                {/* Only show chevron if user has access to at least one sub-item */}
+                {productionSubItems.some(({ slug }) => hasAccess(slug)) && (
+                  <button
+                    onClick={() => setProductionOpen(o => !o)}
+                    className={cn(
+                      "px-2 py-2.5 rounded-md transition-colors",
+                      onProductionPage
+                        ? "text-primary"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                    )}
+                    data-testid="nav-production-toggle"
+                    aria-label="Toggle production sub-menu"
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={cn("transition-transform duration-200", productionOpen ? "rotate-0" : "-rotate-90")}
+                    />
+                  </button>
+                )}
+              </div>
+              {/* Sub-items — only visible when expanded AND user has access */}
+              {productionOpen && productionSubItems.some(({ slug }) => hasAccess(slug)) && (
+                <ul className="mt-0.5 space-y-0.5">
+                  {productionSubItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+                    navLink(href, label, Icon, slug, true)
+                  )}
+                </ul>
+              )}
+            </li>
+          )}
+
+          {/* 4. Production Reports + Wages + Safety + Wholesale + Invoice Imports */}
+          {midNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+            navLink(href, label, Icon, slug)
+          )}
+
+          {/* 5. Settings (bottom-pinned) */}
           {bottomNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
             navLink(href, label, Icon, slug)
           )}
