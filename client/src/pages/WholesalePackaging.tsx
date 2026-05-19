@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
+
 import {
   ChevronDown,
   Search,
@@ -384,7 +384,7 @@ export default function WholesalePackaging() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [activeOnly, setActiveOnly] = useState(true);
+
   const [customers, setCustomers] = useState<WholesaleCustomer[]>([]);
   const dirtyRef = useRef(false);
 
@@ -415,12 +415,6 @@ export default function WholesalePackaging() {
       }),
   });
 
-  const activeQuery = useQuery<string[]>({
-    queryKey: ["/api/wholesale/active-customers"],
-    queryFn: () =>
-      apiRequest("GET", "/api/wholesale/active-customers").then((r) => r.json().catch(() => [])),
-  });
-
   useEffect(() => {
     if (customersQuery.data) setCustomers(customersQuery.data);
   }, [customersQuery.data]);
@@ -431,8 +425,6 @@ export default function WholesalePackaging() {
     }
   }, [customersQuery.isError]);
 
-  const activeIds = new Set<string>(activeQuery.data ?? []);
-
   const handleSaved = useCallback((updated: WholesaleCustomer) => {
     setCustomers((prev) =>
       prev.map((c) => (c.flexCustomerId === updated.flexCustomerId ? { ...c, ...updated } : c))
@@ -441,7 +433,6 @@ export default function WholesalePackaging() {
 
   const filtered = customers
     .filter((c) => {
-      if (activeOnly && activeIds.size > 0 && !activeIds.has(c.flexCustomerId)) return false;
       if (debouncedSearch.trim()) {
         const q = debouncedSearch.toLowerCase();
         return (
@@ -486,17 +477,7 @@ export default function WholesalePackaging() {
             data-testid="input-search"
           />
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Switch
-            id="active-toggle"
-            checked={activeOnly}
-            onCheckedChange={setActiveOnly}
-            data-testid="switch-active-only"
-          />
-          <Label htmlFor="active-toggle" className="text-sm cursor-pointer text-muted-foreground">
-            Active in last 90 days
-          </Label>
-        </div>
+
       </div>
 
       {/* Customer list */}
@@ -511,11 +492,7 @@ export default function WholesalePackaging() {
           <div className="flex flex-col items-center justify-center gap-3 py-20 text-muted-foreground">
             <AlertCircle size={32} strokeWidth={1.5} />
             <p className="text-sm">No matching customers</p>
-            {activeOnly && activeIds.size === 0 && (
-              <p className="text-xs text-muted-foreground/60">
-                Active filter is on but no recent orders were found — try toggling it off
-              </p>
-            )}
+
           </div>
         ) : (
           <div className="space-y-2">
