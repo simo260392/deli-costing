@@ -856,6 +856,10 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
         }),
       });
     } catch (_) {}
+    // Trigger mark-complete popup if this was the last item
+    if (checkedQty === total) {
+      setTimeout(() => setMarkCompleteOpen(true), 300);
+    }
   };
 
   const handleConfirmComplete = () => {
