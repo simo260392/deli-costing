@@ -132,30 +132,29 @@ type OrderState = { viewed: boolean; checkedItems: Record<string, CheckedItemSta
 const DEFAULT_ORDER_STATE: OrderState = { viewed: false, checkedItems: {}, prepStatus: "new", isComplete: false };
 
 // Returns the flat list of all tickable entries for an order.
-// Combo items expand into sub-rows (uuid = "<parent_uuid>__sub__<optIdx>").
-// Non-combo items use their own uuid.
+// All items are tickable in their own right.
+// Items with combo_options also get sub-rows for each combo item (modifiers/components).
+// The parent is always independently tickable — sub-items are additive.
 interface TickableItem { uuid: string; name: string; parentUuid?: string; isSubItem?: boolean; comboLabel?: string; quantity?: number; }
 function getTickableItems(order: FlexOrder): TickableItem[] {
   const result: TickableItem[] = [];
   for (const item of order.items) {
     const combos = (item.combo_options || []).filter(co => co.items.length > 0);
-    if (combos.length > 0) {
-      // Combo parent — expand sub-items
-      for (let oi = 0; oi < combos.length; oi++) {
-        const co = combos[oi];
-        for (let ii = 0; ii < co.items.length; ii++) {
-          result.push({
-            uuid: `${item.uuid}__sub__${oi}_${ii}`,
-            name: co.items[ii].name,
-            parentUuid: item.uuid,
-            isSubItem: true,
-            comboLabel: co.name,
-            quantity: 1,
-          });
-        }
+    // Parent item is always a tickable row
+    result.push({ uuid: item.uuid, name: item.name, quantity: Number(item.quantity) || 1 });
+    // Sub-items (combo options / modifiers) are additional tickable rows beneath the parent
+    for (let oi = 0; oi < combos.length; oi++) {
+      const co = combos[oi];
+      for (let ii = 0; ii < co.items.length; ii++) {
+        result.push({
+          uuid: `${item.uuid}__sub__${oi}_${ii}`,
+          name: co.items[ii].name,
+          parentUuid: item.uuid,
+          isSubItem: true,
+          comboLabel: co.name,
+          quantity: 1,
+        });
       }
-    } else {
-      result.push({ uuid: item.uuid, name: item.name, quantity: Number(item.quantity) || 1 });
     }
   }
   return result;
@@ -681,13 +680,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   const [unconfirmUuid, setUnconfirmUuid] = useState<string | null>(null);
 
   const doUncheck = (uuid: string) => {
-    let newChecked: Record<string, CheckedItemState> = { ...state.checkedItems, [uuid]: { checked: false } };
-    // If unchecking a sub-item, also uncheck the combo parent
-    if (uuid.includes('__sub__')) {
-      const parentUuidForUncheck = uuid.split('__sub__')[0];
-      const { [parentUuidForUncheck]: _removed, ...rest } = newChecked;
-      newChecked = { ...rest, [parentUuidForUncheck]: { checked: false } };
-    }
+    const newChecked: Record<string, CheckedItemState> = { ...state.checkedItems, [uuid]: { checked: false } };
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
     const total = tickableItems.length;
     const newStatus = checkedQty === 0 ? "not_started" : checkedQty === total ? "done" : "in_progress";
@@ -729,27 +722,10 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
       return;
     }
 
-    let newChecked: Record<string, CheckedItemState> = {
+    const newChecked: Record<string, CheckedItemState> = {
       ...state.checkedItems,
       [pendingItemUuid]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
     };
-    // If this is a combo sub-item, check if all siblings are now done → also tick the parent
-    if (pendingItemUuid.includes('__sub__')) {
-      const parentUuidForCheck = pendingItemUuid.split('__sub__')[0];
-      const allSiblingsDone = tickableItems
-        .filter(t => t.parentUuid === parentUuidForCheck)
-        .every(t => newChecked[t.uuid]?.checked);
-      if (allSiblingsDone) {
-        newChecked = {
-          ...newChecked,
-          [parentUuidForCheck]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
-        };
-      } else {
-        // Ensure parent is not marked checked if siblings aren't all done
-        const { [parentUuidForCheck]: _removed, ...rest } = newChecked;
-        newChecked = rest;
-      }
-    }
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
     const total = tickableItems.length;
     const allDone = checkedQty === total;
@@ -1044,55 +1020,84 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
               const isCombo = combos.length > 0;
 
               if (isCombo) {
-                // Render combo parent as a header + sub-item rows
-                const allSubChecked = combos.every((co, oi) =>
-                  co.items.every((_, ii) => !!state.checkedItems[`${item.uuid}__sub__${oi}_${ii}`]?.checked)
-                );
+                // Parent item is now a clickable tick row (like a standard item)
+                // Sub-items (combo options / modifiers) are indented below
+                const parentState = state.checkedItems[item.uuid];
+                const parentChecked = !!parentState?.checked;
+                const parentMissing = parentChecked && !!parentState?.isMissing;
+                const parentAllMissing = parentMissing && (parentState?.qtyMade ?? 0) === 0;
                 return (
                   <div key={item.uuid} className="space-y-0.5">
-                    {/* Combo header — no tick box */}
-                    <div className={cn(
-                      "w-full flex items-center gap-3 px-3 py-2 rounded-lg border",
-                      allSubChecked
-                        ? "bg-green-50 border-green-200 dark:bg-green-950/20"
-                        : "bg-muted/30 border-border"
-                    )}>
+                    {/* Parent row — fully tickable */}
+                    <button
+                      onClick={() => handleItemClick(item.uuid)}
+                      className={cn(
+                        "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-all border",
+                        !parentChecked
+                          ? "bg-white dark:bg-card border-border hover:bg-muted/40"
+                          : parentAllMissing ? "bg-red-50 border-red-300"
+                          : parentMissing ? "bg-orange-50 border-orange-300"
+                          : "bg-green-100 border-green-300 dark:bg-green-950/30"
+                      )}
+                    >
                       <div className={cn(
-                        "w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0",
-                        allSubChecked ? "bg-green-600 border-green-600" : "border-muted-foreground/40 bg-muted"
+                        "w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 transition-all",
+                        !parentChecked ? "border-muted-foreground"
+                        : parentAllMissing ? "bg-red-600 border-red-600"
+                        : parentMissing ? "bg-orange-500 border-orange-500"
+                        : "bg-green-600 border-green-600"
                       )}>
-                        {allSubChecked && <Check size={12} className="text-white" strokeWidth={3} />}
+                        {parentChecked && <Check size={12} className="text-white" strokeWidth={3} />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <span className={cn("text-sm font-semibold text-[#256984]", allSubChecked && "line-through text-muted-foreground")}>
+                        <span className={cn(
+                          "text-sm font-semibold",
+                          !parentChecked ? "text-[#256984]" : "line-through text-muted-foreground"
+                        )}>
                           {item.name}
                         </span>
                         {item.attributes_summary && (
                           <span className="text-xs text-muted-foreground ml-1.5">({item.attributes_summary})</span>
                         )}
+                        {parentChecked && parentState?.staffName && (
+                          <span className="text-xs text-green-700 ml-1.5 font-medium">
+                            ✓ {parentState.staffName}
+                            {parentState.checkedAt && (
+                              <span className="text-green-600 font-normal ml-1">
+                                · {new Date(parentState.checkedAt).toLocaleString("en-AU", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short", hour12: true })}
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </div>
                       <span className="text-sm font-bold text-[#256984] shrink-0">×{item.quantity}</span>
-                    </div>
-                    {/* Sub-item rows */}
+                    </button>
+                    {/* Sub-item rows (combo options / modifiers) — indented */}
                     {combos.map((co, oi) =>
                       co.items.map((ci, ii) => {
                         const subUuid = `${item.uuid}__sub__${oi}_${ii}`;
                         const subState = state.checkedItems[subUuid];
                         const subChecked = !!subState?.checked;
+                        const subMissing = subChecked && !!subState?.isMissing;
+                        const subAllMissing = subMissing && (subState?.qtyMade ?? 0) === 0;
                         return (
                           <button
                             key={subUuid}
                             onClick={() => handleItemClick(subUuid)}
                             className={cn(
                               "w-full flex items-center gap-3 pl-8 pr-3 py-1.5 rounded-lg text-left transition-all border",
-                              subChecked
-                                ? "bg-green-100 border-green-300 dark:bg-green-950/30"
-                                : "bg-white dark:bg-card border-border hover:bg-muted/40"
+                              !subChecked ? "bg-white dark:bg-card border-border hover:bg-muted/40"
+                              : subAllMissing ? "bg-red-50 border-red-300"
+                              : subMissing ? "bg-orange-50 border-orange-300"
+                              : "bg-green-100 border-green-300 dark:bg-green-950/30"
                             )}
                           >
                             <div className={cn(
                               "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-all",
-                              subChecked ? "bg-green-600 border-green-600" : "border-muted-foreground"
+                              !subChecked ? "border-muted-foreground"
+                              : subAllMissing ? "bg-red-600 border-red-600"
+                              : subMissing ? "bg-orange-500 border-orange-500"
+                              : "bg-green-600 border-green-600"
                             )}>
                               {subChecked && <Check size={10} className="text-white" strokeWidth={3} />}
                             </div>
