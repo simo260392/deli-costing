@@ -213,7 +213,7 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <User size={16} className="text-[#256984]" />
@@ -224,34 +224,55 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
           Marking <span className="font-semibold text-foreground">{itemName}</span> as done.
         </p>
 
-        {/* Prep on hand checkbox — always shown */}
-        <div className={cn(
-          "rounded-lg border px-3 py-2.5 space-y-1.5 transition-colors",
-          useFromStock ? "border-[#256984] bg-[#256984]/8" : "border-border bg-muted/30"
-        )}>
-          <button
-            className="w-full flex items-center gap-2.5 text-sm font-medium text-left"
-            onClick={() => setUseFromStock(v => !v)}
-          >
-            <div className={cn(
-              "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
-              useFromStock ? "border-[#256984] bg-[#256984]" : "border-muted-foreground"
-            )}>
-              {useFromStock && <Check size={10} className="text-white" strokeWidth={3} />}
+        {/* Side-by-side: Made from prep on hand + Items not made */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* Made from prep on hand */}
+          <div className={cn(
+            "rounded-lg border px-3 py-2.5 space-y-1.5 transition-colors cursor-pointer",
+            useFromStock ? "border-[#256984] bg-[#256984]/8" : "border-border bg-muted/30"
+          )} onClick={() => setUseFromStock(v => !v)}>
+            <div className="flex items-center gap-2.5 text-sm font-medium">
+              <div className={cn(
+                "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+                useFromStock ? "border-[#256984] bg-[#256984]" : "border-muted-foreground"
+              )}>
+                {useFromStock && <Check size={10} className="text-white" strokeWidth={3} />}
+              </div>
+              <span className={useFromStock ? "text-[#256984]" : ""}>Made from prep on hand?</span>
             </div>
-            Made from prep on hand?
-          </button>
-          <div className="ml-6 text-xs">
-            {matchLoading ? (
-              <span className="flex items-center gap-1 text-muted-foreground"><Loader2 size={10} className="animate-spin" /> Checking stock...</span>
-            ) : stockMatch ? (
-              <span className={cn("flex items-center gap-1", stockEnough ? "text-green-700" : "text-amber-700")}>
-                <Package size={10} />
-                {stockMatch.quantity} {stockMatch.unit} of &quot;{stockMatch.item_name}&quot; in stock
-                {!stockEnough && <span className="text-amber-600"> (need {orderQty}, only {stockMatch.quantity} available)</span>}
-              </span>
-            ) : (
-              <span className="text-muted-foreground">No matching prep stock found</span>
+            <div className="ml-6 text-xs">
+              {matchLoading ? (
+                <span className="flex items-center gap-1 text-muted-foreground"><Loader2 size={10} className="animate-spin" /> Checking...</span>
+              ) : stockMatch ? (
+                <span className={cn("flex items-center gap-1", stockEnough ? "text-green-700" : "text-amber-700")}>
+                  <Package size={10} />
+                  {stockMatch.quantity} {stockMatch.unit} in stock
+                  {!stockEnough && <span className="text-amber-600"> (need {orderQty})</span>}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">No stock found</span>
+              )}
+            </div>
+          </div>
+
+          {/* Items not made */}
+          <div className={cn(
+            "rounded-lg border-2 px-3 py-2.5 transition-colors cursor-pointer",
+            itemsNotMade ? "border-red-500 bg-red-50" : "border-red-300 bg-muted/30"
+          )}
+            onClick={() => setItemsNotMade(v => !v)}
+          >
+            <div className="flex items-center gap-2.5 text-sm font-medium">
+              <div className={cn(
+                "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+                itemsNotMade ? "border-red-500 bg-red-500" : "border-red-400"
+              )}>
+                {itemsNotMade && <Check size={10} className="text-white" strokeWidth={3} />}
+              </div>
+              <span className={itemsNotMade ? "text-red-700 font-semibold" : "text-red-600"}>Items not made</span>
+            </div>
+            {itemsNotMade && (
+              <p className="text-xs text-red-500 ml-6 mt-1">Log how many were missing next.</p>
             )}
           </div>
         </div>
@@ -283,26 +304,6 @@ function StaffPickerDialog({ open, onClose, staff, onSelect, itemName, orderQty 
             </div>
           ) : (
             <p className="text-sm text-muted-foreground italic">No staff on roster today</p>
-          )}
-        </div>
-        {/* Items not made checkbox */}
-        <div className={cn(
-          "rounded-lg border px-3 py-2.5 transition-colors cursor-pointer",
-          itemsNotMade ? "border-orange-400 bg-orange-50" : "border-border bg-muted/30"
-        )}
-          onClick={() => setItemsNotMade(v => !v)}
-        >
-          <div className="flex items-center gap-2.5 text-sm font-medium">
-            <div className={cn(
-              "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
-              itemsNotMade ? "border-orange-500 bg-orange-500" : "border-muted-foreground"
-            )}>
-              {itemsNotMade && <Check size={10} className="text-white" strokeWidth={3} />}
-            </div>
-            <span className={itemsNotMade ? "text-orange-700" : ""}>Items not made</span>
-          </div>
-          {itemsNotMade && (
-            <p className="text-xs text-orange-600 ml-6 mt-1">You'll be asked how many were missing on the next screen.</p>
           )}
         </div>
 
