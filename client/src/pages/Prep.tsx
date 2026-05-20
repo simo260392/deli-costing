@@ -681,7 +681,13 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   const [unconfirmUuid, setUnconfirmUuid] = useState<string | null>(null);
 
   const doUncheck = (uuid: string) => {
-    const newChecked = { ...state.checkedItems, [uuid]: { checked: false } };
+    let newChecked: Record<string, CheckedItemState> = { ...state.checkedItems, [uuid]: { checked: false } };
+    // If unchecking a sub-item, also uncheck the combo parent
+    if (uuid.includes('__sub__')) {
+      const parentUuidForUncheck = uuid.split('__sub__')[0];
+      const { [parentUuidForUncheck]: _removed, ...rest } = newChecked;
+      newChecked = { ...rest, [parentUuidForUncheck]: { checked: false } };
+    }
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
     const total = tickableItems.length;
     const newStatus = checkedQty === 0 ? "not_started" : checkedQty === total ? "done" : "in_progress";
@@ -723,10 +729,27 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
       return;
     }
 
-    const newChecked = {
+    let newChecked: Record<string, CheckedItemState> = {
       ...state.checkedItems,
       [pendingItemUuid]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
     };
+    // If this is a combo sub-item, check if all siblings are now done → also tick the parent
+    if (pendingItemUuid.includes('__sub__')) {
+      const parentUuidForCheck = pendingItemUuid.split('__sub__')[0];
+      const allSiblingsDone = tickableItems
+        .filter(t => t.parentUuid === parentUuidForCheck)
+        .every(t => newChecked[t.uuid]?.checked);
+      if (allSiblingsDone) {
+        newChecked = {
+          ...newChecked,
+          [parentUuidForCheck]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
+        };
+      } else {
+        // Ensure parent is not marked checked if siblings aren't all done
+        const { [parentUuidForCheck]: _removed, ...rest } = newChecked;
+        newChecked = rest;
+      }
+    }
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
     const total = tickableItems.length;
     const allDone = checkedQty === total;
