@@ -660,6 +660,9 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   // Missing items flow
   const [missingItemsOpen, setMissingItemsOpen] = useState(false);
   const [pendingMissingStaff, setPendingMissingStaff] = useState<{ id: number; name: string } | null>(null);
+  // Always-fresh ref to state prop — prevents stale closure reads in async handlers
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   const colour = isComplete ? orderColour("complete") : orderColour(state.prepStatus || "new");
   const customerName = order.company || `${order.first_name} ${order.last_name}`.trim();
@@ -680,7 +683,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   const [unconfirmUuid, setUnconfirmUuid] = useState<string | null>(null);
 
   const doUncheck = (uuid: string) => {
-    const newChecked: Record<string, CheckedItemState> = { ...state.checkedItems, [uuid]: { checked: false } };
+    const newChecked: Record<string, CheckedItemState> = { ...stateRef.current.checkedItems, [uuid]: { checked: false } };
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
     const total = tickableItems.length;
     const newStatus = checkedQty === 0 ? "not_started" : checkedQty === total ? "done" : "in_progress";
@@ -723,7 +726,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
     }
 
     const newChecked: Record<string, CheckedItemState> = {
-      ...state.checkedItems,
+      ...stateRef.current.checkedItems,
       [pendingItemUuid]: { checked: true, staffId, staffName, checkedAt: new Date().toISOString() }
     };
     const checkedQty = tickableItems.filter(i => newChecked[i.uuid]?.checked).length;
@@ -774,9 +777,9 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
     if (!pendingItemUuid || !pendingMissingStaff) return;
     setMissingItemsOpen(false);
     const deliveryDate = order.delivery_datetime ? order.delivery_datetime.slice(0, 10) : new Date().toISOString().slice(0, 10);
-    // Mark the item as checked (partially) with missing info
+    // Mark the item as checked (partially) with missing info — use stateRef for freshest checkedItems
     const newChecked: Record<string, CheckedItemState> = {
-      ...state.checkedItems,
+      ...stateRef.current.checkedItems,
       [pendingItemUuid]: {
         checked: true,
         staffId: pendingMissingStaff.id,
@@ -1487,10 +1490,10 @@ export default function Prep() {
     } catch { /* silent */ }
   }, []);
 
-  // Save a single order state to the server (fire-and-forget)
+  // Save a single order state to the server (fire-and-forget with failure toast)
   const saveOrderState = useCallback(async (id: number, state: OrderState, date: string) => {
     try {
-      await fetch(`${API_BASE}/api/order-states/${id}`, {
+      const resp = await fetch(`${API_BASE}/api/order-states/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1501,34 +1504,54 @@ export default function Prep() {
           itemCount: state.itemCount ?? 0,
         }),
       });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       // Update our own timestamp so we don't re-fetch what we just wrote
-      const now = new Date().toISOString().replace("T", " ").substring(0, 19);
-      lastServerUpdate.current = now;
-    } catch { /* silent */ }
-  }, []);
+      // Use full ISO format to match server timestamps
+      lastServerUpdate.current = new Date().toISOString();
+    } catch {
+      toast({
+        title: "Tick not saved",
+        description: "Connection issue — please re-tap to confirm.",
+        variant: "destructive",
+      });
+    }
+  }, [toast]);
 
   const getOrderState = (id: number): OrderState => orderStates[id] ?? { ...DEFAULT_ORDER_STATE };
+
+  // Pending saves: id → state queued to be saved
+  const pendingSaveRef = useRef<Record<number, OrderState>>({});
 
   const setOrderState = useCallback((id: number, patch: Partial<OrderState>) => {
     setOrderStates(prev => {
       const current = prev[id] ?? { ...DEFAULT_ORDER_STATE };
-      const next = { ...prev, [id]: { ...current, ...patch } };
-      // Persist to server immediately
-      const updated = next[id];
-      saveOrderState(id, updated, dateFrom);
+      const updated = { ...current, ...patch };
+      const next = { ...prev, [id]: updated };
+      // Queue save outside setState to avoid race condition
+      pendingSaveRef.current[id] = updated;
       return next;
     });
-  }, [saveOrderState, dateFrom]);
+  }, []);
+
+  // Drain pending saves after each render
+  useEffect(() => {
+    const pending = pendingSaveRef.current;
+    if (Object.keys(pending).length === 0) return;
+    pendingSaveRef.current = {};
+    for (const [idStr, state] of Object.entries(pending)) {
+      saveOrderState(Number(idStr), state, dateFrom);
+    }
+  });
 
   const markOrderComplete = useCallback((id: number, itemCount: number) => {
     setOrderStates(prev => {
       const current = prev[id] ?? { ...DEFAULT_ORDER_STATE };
       const updated = { ...current, isComplete: true, itemCount };
       const next = { ...prev, [id]: updated };
-      saveOrderState(id, updated, dateFrom);
+      pendingSaveRef.current[id] = updated;
       return next;
     });
-  }, [saveOrderState, dateFrom]);
+  }, []);
 
   // Prep session
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
