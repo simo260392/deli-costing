@@ -19,7 +19,8 @@ const topNavItems = [
 
 // Production group sub-items
 const productionSubItems = [
-  { href: "/prep-reports", label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
+  { href: "/prep-reports",  label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
+  { href: "/delivery-log", label: "Deliveries",          icon: Truck,    slug: "delivery-log" },
 ];
 
 // Items after the Food group

@@ -6842,6 +6842,103 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     return res.json({ actions, open, overdue });
   }));
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // DELIVERY LOG ROUTES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // GET /api/delivery-log?date=YYYY-MM-DD  — today's orders with any logged temps
+  app.get("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
+    const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+    // Get flex orders for this date
+    const awstOffset = 8 * 60 * 60 * 1000;
+    const fromDt = date + "T00:00:00+08:00";
+    const toDt   = date + "T23:59:59+08:00";
+    let orders: any[] = [];
+    let page = 1;
+    while (true) {
+      const r = await flexFetch(`/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
+      const data = await r.json();
+      const batch = data.orders || [];
+      orders = orders.concat(batch);
+      if (batch.length < 100) break;
+      page++;
+    }
+    // Sort by delivery time
+    orders.sort((a: any, b: any) => (a.delivery_datetime || '').localeCompare(b.delivery_datetime || ''));
+    // Get any existing delivery logs for this date
+    const { data: logs } = await supabase.from('delivery_logs').select('*').eq('delivery_date', date);
+    const logMap = new Map<number, any>();
+    for (const l of (logs || [])) logMap.set(l.order_id, l);
+    // Merge
+    const result = orders.map((o: any) => {
+      const clientName = o.company || `${o.first_name || ''} ${o.last_name || ''}`.trim();
+      const delivTime = o.delivery_datetime
+        ? new Date(o.delivery_datetime).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Australia/Perth' })
+        : null;
+      const dispatchMins = 30;
+      const dispatchTime = o.delivery_datetime
+        ? (() => { const d = new Date(new Date(o.delivery_datetime).getTime() - dispatchMins * 60000); return d.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Australia/Perth' }); })()
+        : null;
+      return {
+        order_id: o.id,
+        client: clientName,
+        delivery_time: delivTime,
+        dispatch_time: dispatchTime,
+        log: logMap.get(o.id) || null,
+      };
+    });
+    return res.json({ ok: true, date, orders: result });
+  }));
+
+  // POST /api/delivery-log  — save or update a delivery log entry
+  app.post("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
+    const { order_id, client, delivery_date, delivery_time, dispatch_temp, delivery_temp, food_type, driver, notes, logged_by } = req.body;
+    if (!order_id || !delivery_date) return res.status(400).json({ error: 'order_id and delivery_date required' });
+    // Calculate compliance
+    const dispatch_compliant = dispatch_temp != null && food_type
+      ? (food_type === 'hot' ? Number(dispatch_temp) >= 60 : Number(dispatch_temp) <= 5)
+      : null;
+    const delivery_compliant = delivery_temp != null && food_type
+      ? (food_type === 'hot' ? Number(delivery_temp) >= 60 : Number(delivery_temp) <= 5)
+      : null;
+    // Upsert based on order_id + delivery_date
+    const { data: existing } = await supabase.from('delivery_logs').select('id').eq('order_id', order_id).eq('delivery_date', delivery_date).maybeSingle();
+    let result;
+    if (existing) {
+      result = await supabase.from('delivery_logs').update({
+        client, delivery_time, dispatch_temp, delivery_temp, food_type,
+        dispatch_compliant, delivery_compliant, driver, notes, logged_by
+      }).eq('id', existing.id).select().single();
+    } else {
+      result = await supabase.from('delivery_logs').insert({
+        order_id, client, delivery_date, delivery_time, dispatch_temp, delivery_temp, food_type,
+        dispatch_compliant, delivery_compliant, driver, notes, logged_by
+      }).select().single();
+    }
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    return res.json({ ok: true, log: result.data });
+  }));
+
+  // GET /api/delivery-log/history?from=YYYY-MM-DD&to=YYYY-MM-DD  — manager view
+  app.get("/api/delivery-log/history", asyncRoute(async (req: any, res: any) => {
+    const to   = (req.query.to   as string) || new Date().toISOString().slice(0, 10);
+    const from = (req.query.from as string) || (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); })();
+    const { data, error } = await supabase.from('delivery_logs').select('*')
+      .gte('delivery_date', from).lte('delivery_date', to)
+      .order('delivery_date', { ascending: false })
+      .order('delivery_time', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, from, to, logs: data || [] });
+  }));
+
+  // DELETE /api/delivery-log/:id
+  app.delete("/api/delivery-log/:id", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { error } = await supabase.from('delivery_logs').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {
