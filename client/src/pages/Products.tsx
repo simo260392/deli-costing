@@ -283,13 +283,25 @@ function SizeVariantRow({
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
   const hasComponents = components.length > 0;
 
+  // Fetch live cost for this specific variant (recomputed from current ingredient/recipe prices)
+  const { data: liveVariantCosts } = useQuery<{ id: number; liveCost: number }[]>({
+    queryKey: ["/api/product-size-variants/live-costs", variant.productUuid],
+    queryFn: () =>
+      apiRequest("GET", `/api/product-size-variants/live-costs?product_uuid=${encodeURIComponent(variant.productUuid)}`)
+        .then(r => r.json()),
+    enabled: !!variant.productUuid,
+  });
+  const liveVariantCost = liveVariantCosts?.find(lc => lc.id === variant.id)?.liveCost;
+  // Use live cost for display if available, fall back to local calculation
+  const displayCost = liveVariantCost !== undefined ? liveVariantCost : totalCost;
+
   // Margin calculations — sell price is GST-inclusive, show as-is
   // Strip GST only for margin calculations (cost is ex-GST)
   const sellPriceIncGst = variant.sellPrice ?? null;
   const sellPriceExGst = sellPriceIncGst ? sellPriceIncGst / 1.1 : null;
-  const grossProfit = sellPriceExGst !== null ? sellPriceExGst - totalCost : null;
+  const grossProfit = sellPriceExGst !== null ? sellPriceExGst - displayCost : null;
   const gpPercent = sellPriceExGst && sellPriceExGst > 0 ? (grossProfit! / sellPriceExGst) * 100 : null;
-  const fcPercent = sellPriceExGst && sellPriceExGst > 0 ? (totalCost / sellPriceExGst) * 100 : null;
+  const fcPercent = sellPriceExGst && sellPriceExGst > 0 ? (displayCost / sellPriceExGst) * 100 : null;
 
   return (
     <div className="border rounded-lg bg-background">
@@ -309,7 +321,7 @@ function SizeVariantRow({
           )}
           {hasComponents ? (
             <span className="font-medium text-[#256984]">
-              Cost ${totalCost.toFixed(2)}
+              Cost ${displayCost.toFixed(2)}
             </span>
           ) : (
             <span className="text-muted-foreground">No components set</span>
@@ -361,8 +373,8 @@ function SizeVariantRow({
                 </div>
               ))}
               <div className="flex justify-between items-center pt-1 px-3">
-                <span className="text-xs text-muted-foreground">Total cost</span>
-                <span className="text-sm font-bold tabular-nums">${totalCost.toFixed(2)}</span>
+                <span className="text-xs text-muted-foreground">Total cost (live)</span>
+                <span className="text-sm font-bold tabular-nums">${displayCost.toFixed(2)}</span>
               </div>
             </div>
           )}
@@ -982,6 +994,15 @@ function PricingTab({ productUuid }: { productUuid: string }) {
     enabled: !!productUuid,
   });
 
+  // Fetch live costs — recomputed on-the-fly from current ingredient/recipe prices
+  const { data: liveCosts, isLoading: liveCostsLoading } = useQuery<{ id: number; liveCost: number; componentsCost: number; packagingCost: number }[]>({
+    queryKey: ["/api/product-size-variants/live-costs", productUuid],
+    queryFn: () =>
+      apiRequest("GET", `/api/product-size-variants/live-costs?product_uuid=${encodeURIComponent(productUuid)}`)
+        .then(r => r.json()),
+    enabled: !!productUuid,
+  });
+
   const { data: settingsData } = useQuery<Record<string, string>>({
     queryKey: ["/api/settings"],
     queryFn: () => apiRequest("GET", "/api/settings").then(r => r.json()),
@@ -1000,10 +1021,24 @@ function PricingTab({ productUuid }: { productUuid: string }) {
     </div>
   );
 
-  const hasCosts = variants.some(v => v.totalCost > 0);
-  const hasPrices = variants.some(v => v.sellPrice !== null);
+  // Build a map of variantId → liveCost for fast lookup
+  const liveCostMap = new Map<number, number>();
+  if (liveCosts) {
+    for (const lc of liveCosts) {
+      liveCostMap.set(lc.id, lc.liveCost);
+    }
+  }
 
-  const sorted = [...variants].sort((a, b) => {
+  // Merge live costs into variants — override totalCost with live value if available
+  const liveVariants = variants.map(v => {
+    const live = liveCostMap.get(v.id);
+    return live !== undefined ? { ...v, totalCost: live } : v;
+  });
+
+  const hasCosts = liveVariants.some(v => v.totalCost > 0);
+  const hasPrices = liveVariants.some(v => v.sellPrice !== null);
+
+  const sorted = [...liveVariants].sort((a, b) => {
     const score = (s: string) => {
       const l = s.toLowerCase();
       if (l.includes('individual')) return 0;
@@ -1031,7 +1066,10 @@ function PricingTab({ productUuid }: { productUuid: string }) {
               <th className="text-left text-xs font-semibold text-muted-foreground py-2 pr-2">Size</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Website Price</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">RRP (inc GST)</th>
-              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">Cost</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">
+                Cost
+                {liveCostsLoading && <Loader2 size={10} className="inline ml-1 animate-spin" />}
+              </th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">GP $</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 px-2">GP%</th>
               <th className="text-right text-xs font-semibold text-muted-foreground py-2 pl-2">FC%</th>
@@ -1044,7 +1082,7 @@ function PricingTab({ productUuid }: { productUuid: string }) {
           </tbody>
         </table>
       </div>
-      <p className="text-xs text-muted-foreground">Website Price defaults to Flex sell price (↗); click to override. RRP is back-calculated at {fcTarget}% food cost target (inc GST). GP% and FC% are actuals based on website price. Change the FC% target in Settings.</p>
+      <p className="text-xs text-muted-foreground">Costs are live — recalculated from current ingredient and recipe prices. Website Price defaults to Flex sell price (↗); click to override. RRP is back-calculated at {fcTarget}% food cost target (inc GST). GP% and FC% are actuals based on website price. Change the FC% target in Settings.</p>
     </div>
   );
 }

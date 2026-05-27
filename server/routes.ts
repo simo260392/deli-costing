@@ -2188,6 +2188,52 @@ Return ONLY the JSON object, no explanation.`;
     res.json({ count: products.length, products });
   }));
 
+  // GET /api/product-size-variants/live-costs?product_uuid=X
+  // Recomputes each variant's cost live from current recipe/sub-recipe/ingredient prices.
+  // Returns: [{ id, liveCost, breakdown: { componentsCost, packagingCost } }]
+  app.get("/api/product-size-variants/live-costs", asyncRoute(async (req, res) => {
+    const productUuid = req.query.product_uuid as string | undefined;
+    let query = supabase
+      .from('product_size_variants')
+      .select('id, components_json, packaging_json');
+    if (productUuid) query = (query as any).eq('product_uuid', productUuid);
+    const { data: variants, error } = await query;
+    if (error) throw error;
+
+    const results: { id: number; liveCost: number; componentsCost: number; packagingCost: number }[] = [];
+
+    for (const v of (variants ?? [])) {
+      let comps: any[] = [];
+      let pkgs: any[] = [];
+      try { comps = JSON.parse(v.components_json || '[]'); } catch {}
+      try { pkgs = JSON.parse(v.packaging_json || '[]'); } catch {}
+
+      let componentsCost = 0;
+      for (const c of comps) {
+        if (c.type === 'recipe') {
+          const r = await storage.getRecipe(c.id);
+          // recipes store totalCost = total cost for all portions; costPerServe = per-portion cost
+          if (r) componentsCost += ((r as any).costPerServe ?? (r as any).totalCost ?? 0) * (c.quantity || 1);
+        } else if (c.type === 'sub_recipe') {
+          const sr = await storage.getSubRecipe(c.id);
+          // sub_recipes store costPerUnit = cost per unit of yield
+          if (sr) componentsCost += ((sr as any).costPerUnit ?? (sr as any).totalCost ?? 0) * (c.quantity || 1);
+        } else if (c.type === 'ingredient') {
+          componentsCost += await ingredientLineCost(c.id, c.quantity || 1);
+        }
+      }
+
+      let packagingCost = 0;
+      for (const p of pkgs) {
+        packagingCost += await ingredientLineCost(p.ingredientId, p.quantity || 1);
+      }
+
+      results.push({ id: v.id, liveCost: componentsCost + packagingCost, componentsCost, packagingCost });
+    }
+
+    res.json(results);
+  }));
+
   // PATCH /api/product-size-variants/:id — save components or website_price for a variant
   app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
     try {
@@ -2200,13 +2246,26 @@ Return ONLY the JSON object, no explanation.`;
       if (packaging !== undefined) {
         updates.packaging_json = JSON.stringify(packaging);
       }
-      // Recalculate total_cost whenever components or packaging changes
+      // Recalculate total_cost live from current recipe/sub-recipe/ingredient prices
       if (components !== undefined || packaging !== undefined) {
         const comps = components ?? [];
-        // Need current packaging if only components sent, and vice versa — but we always send both
         const pkgs = packaging ?? [];
-        const compCost = comps.reduce((sum: number, c: any) => sum + (Number(c.costPerUnit || 0) * Number(c.quantity || 0)), 0);
-        const packCost = pkgs.reduce((sum: number, p: any) => sum + (Number(p.costPerUnit || 0) * Number(p.quantity || 0)), 0);
+        let compCost = 0;
+        for (const c of comps) {
+          if (c.type === 'recipe') {
+            const r = await storage.getRecipe(c.id);
+            if (r) compCost += ((r as any).costPerServe ?? (r as any).totalCost ?? 0) * (c.quantity || 1);
+          } else if (c.type === 'sub_recipe') {
+            const sr = await storage.getSubRecipe(c.id);
+            if (sr) compCost += ((sr as any).costPerUnit ?? (sr as any).totalCost ?? 0) * (c.quantity || 1);
+          } else if (c.type === 'ingredient') {
+            compCost += await ingredientLineCost(c.id, c.quantity || 1);
+          }
+        }
+        let packCost = 0;
+        for (const p of pkgs) {
+          packCost += await ingredientLineCost(p.ingredientId, p.quantity || 1);
+        }
         updates.total_cost = compCost + packCost;
       }
       if (websitePrice !== undefined) {
