@@ -1438,6 +1438,15 @@ export default function Products() {
     queryFn: () => apiRequest("GET", "/api/flex-products/costing-inconsistencies").then(r => r.json()),
   });
 
+  type MissingVariant = { id: number; attributesSummary: string; sku: string };
+  type MissingProduct = { productUuid: string; productName: string; emptyVariants: MissingVariant[] };
+  const [missingExpanded, setMissingExpanded] = useState(false);
+  const { data: missingComponents } = useQuery<{ count: number; products: MissingProduct[] }>({
+    queryKey: ["/api/product-size-variants/missing-components"],
+    queryFn: () => apiRequest("GET", "/api/product-size-variants/missing-components").then(r => r.json()),
+    staleTime: 60 * 1000,
+  });
+
   // Bulk fetch ALL costings in one request so cards don't need to lazy-load
   const { data: allCostingsMap = {} } = useQuery<Record<number, FlexProductCosting>>({
     queryKey: ["/api/flex-products/costings/all"],
@@ -1508,6 +1517,44 @@ export default function Products() {
           }
         </Button>
       </div>
+
+      {/* Missing components alert */}
+      {missingComponents && missingComponents.count > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-4">
+          <button
+            className="w-full flex items-start gap-3 text-left"
+            onClick={() => setMissingExpanded(e => !e)}
+          >
+            <AlertTriangle size={18} className="text-amber-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-800">
+                {missingComponents.count} product{missingComponents.count !== 1 ? "s" : ""} with size{missingComponents.count !== 1 ? "s" : ""} missing components
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                These products have at least one size with no recipes, sub-recipes or packaging set — they won't appear correctly on the prep list.
+                {" "}<span className="underline">{missingExpanded ? "Hide details" : "Show details"}</span>
+              </p>
+            </div>
+            <ChevronDown size={16} className={`text-amber-600 shrink-0 mt-0.5 transition-transform ${missingExpanded ? "rotate-180" : ""}`} />
+          </button>
+          {missingExpanded && (
+            <div className="mt-3 space-y-2 pl-7">
+              {missingComponents.products.map(p => (
+                <div key={p.productUuid}>
+                  <p className="text-xs font-semibold text-amber-800">{p.productName}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {p.emptyVariants.map(v => (
+                      <span key={v.id} className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 border border-amber-200 rounded px-2 py-0.5 font-mono">
+                        {v.attributesSummary || "(default)"}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Dietary inconsistency alert */}
       {inconsistencies && inconsistencies.count > 0 && (

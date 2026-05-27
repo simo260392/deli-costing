@@ -2150,6 +2150,44 @@ Return ONLY the JSON object, no explanation.`;
     }
   });
 
+  // GET /api/product-size-variants/missing-components
+  // Returns products where at least one size variant has no components AND no packaging.
+  // Products that only have packaging (e.g. 12oz coffee cups) are NOT flagged.
+  // Response: { count: number; products: [{productUuid, productName, emptyVariants: [{id, attributesSummary, sku}]}] }
+  app.get("/api/product-size-variants/missing-components", asyncRoute(async (_req, res) => {
+    const { data: variants, error } = await supabase
+      .from('product_size_variants')
+      .select('id, product_uuid, product_name, attributes_summary, sku, components_json, packaging_json')
+      .order('product_name')
+      .order('attributes_summary');
+    if (error) throw error;
+
+    // Group by product, flag variants that have neither components nor packaging
+    const productMap = new Map<string, { productUuid: string; productName: string; emptyVariants: any[] }>();
+    for (const v of (variants ?? [])) {
+      let comps: any[] = [];
+      let pkgs: any[] = [];
+      try { comps = JSON.parse(v.components_json || '[]'); } catch {}
+      try { pkgs = JSON.parse(v.packaging_json || '[]'); } catch {}
+      const hasComponents = comps.length > 0;
+      const hasPackaging = pkgs.length > 0;
+      // Only flag if BOTH are empty — packaging-only variants are fine
+      if (!hasComponents && !hasPackaging) {
+        if (!productMap.has(v.product_uuid)) {
+          productMap.set(v.product_uuid, { productUuid: v.product_uuid, productName: v.product_name, emptyVariants: [] });
+        }
+        productMap.get(v.product_uuid)!.emptyVariants.push({
+          id: v.id,
+          attributesSummary: v.attributes_summary,
+          sku: v.sku,
+        });
+      }
+    }
+
+    const products = [...productMap.values()];
+    res.json({ count: products.length, products });
+  }));
+
   // PATCH /api/product-size-variants/:id — save components or website_price for a variant
   app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
     try {

@@ -2275,16 +2275,16 @@ export default function Prep() {
           {/* Computed prep list */}
           {!prepComputeFetching && prepComputed && (
             <>
-              {/* Sub-recipes */}
-              {(prepComputed.subRecipes?.length ?? 0) > 0 ? (
+              {/* Recipes */}
+              {(prepComputed.recipes?.length ?? 0) > 0 ? (
                 <div>
                   <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full bg-[#FCCDE2] inline-block" />
-                    Sub-recipes ({prepComputed.subRecipes.length})
+                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" />
+                    Recipes ({prepComputed.recipes.length})
                   </h3>
                   <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <div className="divide-y divide-border/50">
-                      {prepComputed.subRecipes.map(item => (
+                      {prepComputed.recipes.map(item => (
                         <div key={item.id} className="flex items-center justify-between px-4 py-3">
                           <span className="text-sm text-foreground">{item.name}</span>
                           <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
@@ -2295,16 +2295,16 @@ export default function Prep() {
                 </div>
               ) : null}
 
-              {/* Recipes */}
-              {(prepComputed.recipes?.length ?? 0) > 0 ? (
-                <div className={(prepComputed.subRecipes?.length ?? 0) > 0 ? "mt-2" : ""}>
+              {/* Sub-recipes */}
+              {(prepComputed.subRecipes?.length ?? 0) > 0 ? (
+                <div className={(prepComputed.recipes?.length ?? 0) > 0 ? "mt-2" : ""}>
                   <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" />
-                    Recipes ({prepComputed.recipes.length})
+                    <span className="w-3 h-3 rounded-full bg-[#FCCDE2] inline-block" />
+                    Sub-recipes ({prepComputed.subRecipes.length})
                   </h3>
                   <div className="bg-card border border-border rounded-xl overflow-hidden">
                     <div className="divide-y divide-border/50">
-                      {prepComputed.recipes.map(item => (
+                      {prepComputed.subRecipes.map(item => (
                         <div key={item.id} className="flex items-center justify-between px-4 py-3">
                           <span className="text-sm text-foreground">{item.name}</span>
                           <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
