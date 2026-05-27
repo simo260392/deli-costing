@@ -4806,6 +4806,24 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
   // PREP SESSIONS
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // POST /api/prep/compute — compute recipe/sub-recipe totals from order line items without saving anything
+  // Body: { orders: [{type, sku, name, quantity, flexProductId?}] }
+  // Returns: { recipes: [{id, name, qty}], subRecipes: [{id, name, qty}] }
+  app.post("/api/prep/compute", asyncRoute(async (req, res) => {
+    const { orders } = req.body;
+    if (!orders?.length) return res.json({ recipes: [], subRecipes: [] });
+    const tasks = await explodePrepTasks(orders, supabase);
+    const recipes = tasks
+      .filter((t: any) => t.itemType === "recipe")
+      .map((t: any) => ({ id: t.itemId, name: t.itemName, qty: t.quantityRequired }))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+    const subRecipes = tasks
+      .filter((t: any) => t.itemType === "sub_recipe")
+      .map((t: any) => ({ id: t.itemId, name: t.itemName, qty: t.quantityRequired }))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+    res.json({ recipes, subRecipes });
+  }));
+
   // GET /api/prep/sessions — list all sessions (most recent first)
   app.get("/api/prep/sessions", async (_req, res) => {
     try {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -1973,6 +1973,36 @@ export default function Prep() {
   const subRecipeTasks = prepTasks.filter(t => t.itemType === "sub_recipe");
   const recipeTasks    = prepTasks.filter(t => t.itemType === "recipe");
 
+  // ── Auto-compute prep summary from current orders ──
+  // Build the flat order line items from all loaded flex orders (all items, regardless of tick status)
+  const prepComputeOrders = useMemo(() =>
+    flexOrders.flatMap(o =>
+      (o.items ?? []).map(i => ({
+        type: "flex_product" as const,
+        sku: i.sku,
+        name: i.name,
+        quantity: i.quantity,
+        forOrder: o.company || `${o.first_name} ${o.last_name}`.trim(),
+      }))
+    ),
+    [flexOrders]
+  );
+  const { data: prepComputed, isFetching: prepComputeFetching } = useQuery<{ recipes: {id:number;name:string;qty:number}[]; subRecipes: {id:number;name:string;qty:number}[] }>({
+    queryKey: ["/api/prep/compute", prepComputeOrders],
+    queryFn: async () => {
+      if (prepComputeOrders.length === 0) return { recipes: [], subRecipes: [] };
+      const resp = await fetch(`${API_BASE}/api/prep/compute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orders: prepComputeOrders }),
+      });
+      if (!resp.ok) throw new Error("Failed to compute prep");
+      return resp.json();
+    },
+    enabled: tab === "prep" && prepComputeOrders.length > 0,
+    staleTime: 30 * 1000,
+  });
+
   // ── Date range label ──
   const dateLabel = rangeMode === "today" ? "Today" : rangeMode === "tomorrow" ? "Tomorrow"
     : dateFrom === dateTo ? fmtDate(dateFrom) : `${fmtDate(dateFrom)} – ${fmtDate(dateTo)}`;
@@ -2204,18 +2234,7 @@ export default function Prep() {
                 </div>
               )}
 
-              {/* Generate Prep List CTA */}
-              <div className="pt-2 border-t border-border">
-                <Button
-                  className="w-full bg-[#256984] hover:bg-[#1e5570] text-white gap-2 h-11"
-                  onClick={() => { generatePrepList(); }}
-                  disabled={generatingPrep}
-                >
-                  {generatingPrep
-                    ? <><RefreshCw size={15} className="animate-spin" /> Generating prep list...</>
-                    : <><ListChecks size={15} /> Generate Prep List from These Orders</>}
-                </Button>
-              </div>
+
             </>
           )}
 
@@ -2230,183 +2249,133 @@ export default function Prep() {
         </div>
       )}
 
-      {/* ─────────── PREP LIST TAB ─────────── */}
+      {/* ─────────── PREP TAB ─────────── */}
       {tab === "prep" && (
         <div className="space-y-4">
-          {sessionDetail ? (
-            <>
-              {/* Progress */}
-              <div className="bg-card border border-border rounded-xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold text-foreground">{prepDone}/{prepTasks.length} tasks complete</span>
-                  <span className="text-sm text-muted-foreground">{prepPct}%</span>
-                </div>
-                <div className="h-3 bg-muted rounded-full overflow-hidden">
-                  <div className="h-full bg-[#256984] rounded-full transition-all duration-500" style={{ width: `${prepPct}%` }} />
-                </div>
-                <div className="flex gap-3 mt-2 flex-wrap text-xs text-muted-foreground">
-                  <span>Expected: <span className="font-semibold text-foreground">{fmtMins(prepTasks.reduce((s, t) => s + (t.expectedMinutes || 0), 0))}</span></span>
-                  {prepTasks.some(t => t.status === "in_progress") && (
-                    <span className="text-amber-600 flex items-center gap-1"><Timer size={11} className="animate-pulse" /> {prepTasks.filter(t => t.status === "in_progress").length} in progress</span>
-                  )}
-                </div>
-              </div>
-
-              {/* Sub-recipe tasks */}
-              {subRecipeTasks.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full bg-[#FCCDE2] inline-block" /> Prep ({subRecipeTasks.length})
-                  </h3>
-                  <div className="space-y-2">
-                    {subRecipeTasks.map(t => <PrepTaskCard key={t.id} task={t} staff={staff} onAction={handleTaskAction} />)}
-                  </div>
-                </div>
-              )}
-
-              {/* Recipe tasks */}
-              {recipeTasks.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-bold text-foreground mb-2 mt-4 flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" /> Recipes ({recipeTasks.length})
-                  </h3>
-                  <div className="space-y-2">
-                    {recipeTasks.map(t => <PrepTaskCard key={t.id} task={t} staff={staff} onAction={handleTaskAction} />)}
-                  </div>
-                </div>
-              )}
-
-              {prepTasks.length === 0 && (
-                <div className="text-center py-12 text-muted-foreground">
-                  <AlertCircle className="mx-auto mb-2 opacity-40" size={36} />
-                  <p className="font-semibold">No prep tasks generated</p>
-                  <p className="text-sm mt-1">The orders may not have linked recipes yet. Link recipes on the Products page first.</p>
-                </div>
-              )}
-
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full gap-1.5"
-                onClick={() => { setActiveSessionId(null); }}
-              >
-                ← Back to Orders
-              </Button>
-
-              {/* Log Production Section */}
-              <div className="border-t border-border pt-4 mt-2">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-                    <ClipboardList size={15} className="text-[#256984]" />
-                    Today's Prep Log
-                  </h3>
-                  <Button
-                    size="sm"
-                    className="bg-[#256984] hover:bg-[#1e5570] text-white gap-1.5"
-                    onClick={() => { setLogForm(DEFAULT_LOG_FORM); setLogOpen(true); }}
-                  >
-                    <Plus size={13} /> Log Prep
-                  </Button>
-                </div>
-
-                {todayLogEntries.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic text-center py-4">No prep logged today yet</p>
-                ) : (
-                  <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="divide-y divide-border/50">
-                      {todayLogEntries.map(entry => (
-                        <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-semibold text-foreground block truncate">{entry.itemName}</span>
-                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                              <span className="text-xs font-bold text-[#256984]">{entry.quantity} {entry.unit}</span>
-                              <span className="text-xs text-muted-foreground">·</span>
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <User size={10} />{entry.staffName || "Unknown"}
-                              </span>
-                              <span className="text-xs text-muted-foreground">·</span>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(entry.loggedAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
-                              </span>
-                            </div>
-                            {entry.notes && <span className="text-xs text-muted-foreground italic mt-0.5 block">{entry.notes}</span>}
-                          </div>
-                          <button
-                            onClick={() => deleteLogMutation.mutate(entry.id)}
-                            className="text-muted-foreground hover:text-red-500 transition-colors shrink-0 p-1"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="space-y-6">
-              <div className="text-center py-10 text-muted-foreground">
-                <ListChecks className="mx-auto mb-3 opacity-30" size={44} />
-                <p className="font-semibold text-foreground">No prep list yet</p>
-                <p className="text-sm mt-1 mb-4">Go to the Orders tab, load your orders, then hit "Generate Prep List"</p>
-                <Button variant="outline" onClick={() => setTab("orders")}>
-                  <ShoppingCart size={14} className="mr-1.5" /> View Orders
-                </Button>
-              </div>
-
-              {/* Log Production even without a session */}
-              <div className="border-t border-border pt-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-                    <ClipboardList size={15} className="text-[#256984]" />
-                    Today's Prep Log
-                  </h3>
-                  <Button
-                    size="sm"
-                    className="bg-[#256984] hover:bg-[#1e5570] text-white gap-1.5"
-                    onClick={() => { setLogForm(DEFAULT_LOG_FORM); setLogOpen(true); }}
-                  >
-                    <Plus size={13} /> Log Prep
-                  </Button>
-                </div>
-
-                {todayLogEntries.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic text-center py-4">No prep logged today yet</p>
-                ) : (
-                  <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="divide-y divide-border/50">
-                      {todayLogEntries.map(entry => (
-                        <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-semibold text-foreground block truncate">{entry.itemName}</span>
-                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                              <span className="text-xs font-bold text-[#256984]">{entry.quantity} {entry.unit}</span>
-                              <span className="text-xs text-muted-foreground">·</span>
-                              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                                <User size={10} />{entry.staffName || "Unknown"}
-                              </span>
-                              <span className="text-xs text-muted-foreground">·</span>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(entry.loggedAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
-                              </span>
-                            </div>
-                            {entry.notes && <span className="text-xs text-muted-foreground italic mt-0.5 block">{entry.notes}</span>}
-                          </div>
-                          <button
-                            onClick={() => deleteLogMutation.mutate(entry.id)}
-                            className="text-muted-foreground hover:text-red-500 transition-colors shrink-0 p-1"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+          {/* Loading state */}
+          {prepComputeFetching && (
+            <div className="flex items-center justify-center py-10 text-muted-foreground gap-2">
+              <RefreshCw size={16} className="animate-spin text-[#256984]" />
+              <span className="text-sm">Loading prep list&hellip;</span>
             </div>
           )}
+
+          {/* No orders loaded yet */}
+          {!prepComputeFetching && flexOrders.length === 0 && (
+            <div className="text-center py-14 text-muted-foreground">
+              <ListChecks className="mx-auto mb-3 opacity-30" size={44} />
+              <p className="font-semibold text-foreground">No orders loaded</p>
+              <p className="text-sm mt-1 mb-4">Switch to the Orders tab and load a date first</p>
+              <Button variant="outline" onClick={() => setTab("orders")}>
+                <ShoppingCart size={14} className="mr-1.5" /> View Orders
+              </Button>
+            </div>
+          )}
+
+          {/* Computed prep list */}
+          {!prepComputeFetching && prepComputed && (
+            <>
+              {/* Sub-recipes */}
+              {(prepComputed.subRecipes?.length ?? 0) > 0 ? (
+                <div>
+                  <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[#FCCDE2] inline-block" />
+                    Sub-recipes ({prepComputed.subRecipes.length})
+                  </h3>
+                  <div className="bg-card border border-border rounded-xl overflow-hidden">
+                    <div className="divide-y divide-border/50">
+                      {prepComputed.subRecipes.map(item => (
+                        <div key={item.id} className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-foreground">{item.name}</span>
+                          <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Recipes */}
+              {(prepComputed.recipes?.length ?? 0) > 0 ? (
+                <div className={(prepComputed.subRecipes?.length ?? 0) > 0 ? "mt-2" : ""}>
+                  <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" />
+                    Recipes ({prepComputed.recipes.length})
+                  </h3>
+                  <div className="bg-card border border-border rounded-xl overflow-hidden">
+                    <div className="divide-y divide-border/50">
+                      {prepComputed.recipes.map(item => (
+                        <div key={item.id} className="flex items-center justify-between px-4 py-3">
+                          <span className="text-sm text-foreground">{item.name}</span>
+                          <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* No linked recipes */}
+              {(prepComputed.recipes?.length ?? 0) === 0 && (prepComputed.subRecipes?.length ?? 0) === 0 && (
+                <div className="text-center py-12 text-muted-foreground">
+                  <AlertCircle className="mx-auto mb-2 opacity-40" size={36} />
+                  <p className="font-semibold">No recipes linked to these orders</p>
+                  <p className="text-sm mt-1">Link recipes to products on the Products page first.</p>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Log Prep section — always visible */}
+          <div className="border-t border-border pt-4 mt-2">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <ClipboardList size={15} className="text-[#256984]" />
+                Today's Prep Log
+              </h3>
+              <Button
+                size="sm"
+                className="bg-[#256984] hover:bg-[#1e5570] text-white gap-1.5"
+                onClick={() => { setLogForm(DEFAULT_LOG_FORM); setLogOpen(true); }}
+              >
+                <Plus size={13} /> Log Prep
+              </Button>
+            </div>
+
+            {todayLogEntries.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic text-center py-4">No prep logged today yet</p>
+            ) : (
+              <div className="bg-card border border-border rounded-xl overflow-hidden">
+                <div className="divide-y divide-border/50">
+                  {todayLogEntries.map(entry => (
+                    <div key={entry.id} className="flex items-center gap-3 px-3 py-2.5">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-semibold text-foreground block truncate">{entry.itemName}</span>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          <span className="text-xs font-bold text-[#256984]">{entry.quantity} {entry.unit}</span>
+                          <span className="text-xs text-muted-foreground">·</span>
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <User size={10} />{entry.staffName || "Unknown"}
+                          </span>
+                          <span className="text-xs text-muted-foreground">·</span>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(entry.loggedAt).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </div>
+                        {entry.notes && <span className="text-xs text-muted-foreground italic mt-0.5 block">{entry.notes}</span>}
+                      </div>
+                      <button
+                        onClick={() => deleteLogMutation.mutate(entry.id)}
+                        className="text-muted-foreground hover:text-red-500 transition-colors shrink-0 p-1"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
