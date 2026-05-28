@@ -20,11 +20,11 @@ const topNavItems = [
 // Production group sub-items
 const productionSubItems = [
   { href: "/prep-reports",  label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
-  { href: "/delivery-log", label: "Deliveries",          icon: Truck,    slug: "delivery-log" },
 ];
 
 // Items after the Food group
 const midNavItems = [
+  { href: "/delivery-log", label: "Deliveries",         icon: Truck,       slug: "delivery-log" },
   { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
   { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
   { href: "/xero-imports", label: "Invoice Imports",    icon: RefreshCw,   slug: "xero-imports" },
