@@ -6873,6 +6873,21 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const { data: logs } = await supabase.from('delivery_logs').select('*').eq('delivery_date', date);
     const logMap = new Map<number, any>();
     for (const l of (logs || [])) logMap.set(l.order_id, l);
+    // Load wholesale customer UUIDs
+    const wholesaleUuids = new Set<string>();
+    try {
+      const { data: wCusts } = await supabase.from('flex_customers').select('uuid').eq('is_wholesale', true);
+      for (const c of (wCusts || [])) wholesaleUuids.add(c.uuid);
+    } catch (_) {}
+    // Load grey box balances from grey_box_log
+    const greyBoxMap = new Map<string, number>();
+    try {
+      const { data: gbl } = await supabase.from('grey_box_log').select('customer_uuid, boxes_out, boxes_returned');
+      for (const g of (gbl || [])) {
+        const cur = greyBoxMap.get(g.customer_uuid) || 0;
+        greyBoxMap.set(g.customer_uuid, cur + (g.boxes_out || 0) - (g.boxes_returned || 0));
+      }
+    } catch (_) {}
     // Merge
     const result = orders.map((o: any) => {
       const clientName = o.company || `${o.first_name || ''} ${o.last_name || ''}`.trim();
@@ -6883,11 +6898,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const dispatchTime = o.delivery_datetime
         ? (() => { const d = new Date(new Date(o.delivery_datetime).getTime() - dispatchMins * 60000); return d.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Australia/Perth' }); })()
         : null;
+      const isWholesale = wholesaleUuids.has(o.customer_uuid || '');
+      const greyBoxBalance = isWholesale ? (greyBoxMap.get(o.customer_uuid || '') || 0) : null;
       return {
         order_id: o.id,
         client: clientName,
         delivery_time: delivTime,
         dispatch_time: dispatchTime,
+        is_wholesale: isWholesale,
+        grey_box_balance: greyBoxBalance,
+        customer_uuid: o.customer_uuid || '',
         log: logMap.get(o.id) || null,
       };
     });
@@ -6896,28 +6916,34 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // POST /api/delivery-log  — save or update a delivery log entry
   app.post("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
-    const { order_id, client, delivery_date, delivery_time, dispatch_temp, delivery_temp, food_type, driver, notes, logged_by } = req.body;
+    const { order_id, client, delivery_date, delivery_time, food_type, driver, notes, logged_by, is_wholesale, grey_boxes_balance, grey_boxes_collected, hot_dispatch_temp, hot_delivery_temp, cold_dispatch_temp, cold_delivery_temp } = req.body;
     if (!order_id || !delivery_date) return res.status(400).json({ error: 'order_id and delivery_date required' });
-    // Calculate compliance
-    const dispatch_compliant = dispatch_temp != null && food_type
-      ? (food_type === 'hot' ? Number(dispatch_temp) >= 60 : Number(dispatch_temp) <= 5)
-      : null;
-    const delivery_compliant = delivery_temp != null && food_type
-      ? (food_type === 'hot' ? Number(delivery_temp) >= 60 : Number(delivery_temp) <= 5)
-      : null;
+    // Calculate overall compliance across all provided temps
+    const tempChecks: boolean[] = [];
+    if (hot_dispatch_temp  != null) tempChecks.push(Number(hot_dispatch_temp)  >= 60);
+    if (hot_delivery_temp  != null) tempChecks.push(Number(hot_delivery_temp)  >= 60);
+    if (cold_dispatch_temp != null) tempChecks.push(Number(cold_dispatch_temp) <= 5);
+    if (cold_delivery_temp != null) tempChecks.push(Number(cold_delivery_temp) <= 5);
+    const dispatch_compliant = tempChecks.length > 0 ? tempChecks.every(Boolean) : null;
+    const delivery_compliant = dispatch_compliant;
     // Upsert based on order_id + delivery_date
     const { data: existing } = await supabase.from('delivery_logs').select('id').eq('order_id', order_id).eq('delivery_date', delivery_date).maybeSingle();
     let result;
+    const payload = {
+      client, delivery_time, food_type,
+      hot_dispatch_temp:  hot_dispatch_temp  ?? null,
+      hot_delivery_temp:  hot_delivery_temp  ?? null,
+      cold_dispatch_temp: cold_dispatch_temp ?? null,
+      cold_delivery_temp: cold_delivery_temp ?? null,
+      dispatch_compliant, delivery_compliant, driver, notes, logged_by,
+      is_wholesale: is_wholesale ?? false,
+      grey_boxes_balance:   grey_boxes_balance   ?? null,
+      grey_boxes_collected: grey_boxes_collected ?? null,
+    };
     if (existing) {
-      result = await supabase.from('delivery_logs').update({
-        client, delivery_time, dispatch_temp, delivery_temp, food_type,
-        dispatch_compliant, delivery_compliant, driver, notes, logged_by
-      }).eq('id', existing.id).select().single();
+      result = await supabase.from('delivery_logs').update(payload).eq('id', existing.id).select().single();
     } else {
-      result = await supabase.from('delivery_logs').insert({
-        order_id, client, delivery_date, delivery_time, dispatch_temp, delivery_temp, food_type,
-        dispatch_compliant, delivery_compliant, driver, notes, logged_by
-      }).select().single();
+      result = await supabase.from('delivery_logs').insert({ order_id, delivery_date, ...payload }).select().single();
     }
     if (result.error) return res.status(500).json({ error: result.error.message });
     return res.json({ ok: true, log: result.data });
