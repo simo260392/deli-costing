@@ -6849,20 +6849,24 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // GET /api/delivery-log?date=YYYY-MM-DD  — today's orders with any logged temps
   app.get("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
     const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
-    // Get flex orders for this date — use UTC Z suffix to match other flex routes
-    // AWST date midnight = UTC previous day 16:00, end of AWST day = UTC same day 15:59
-    const fromDt = date + "T00:00:00Z";
-    const toDt   = date + "T23:59:59Z";
+    // Use +08:00 AWST offset — same as /api/flex-orders which is confirmed working
+    // Flex API returns body.items (not body.orders)
+    const fromDt = date + "T00:00:00+08:00";
+    const toDt   = date + "T23:59:59+08:00";
     let orders: any[] = [];
     let page = 1;
-    while (true) {
+    let hasMore = true;
+    while (hasMore) {
       const r = await flexFetch(`/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
       const data = await r.json();
-      const batch = data.orders || [];
+      const batch = data.items || [];
       orders = orders.concat(batch);
-      if (batch.length < 100) break;
+      hasMore = !!data.next_page && batch.length > 0;
       page++;
+      if (page > 20) break;
     }
+    // Filter cancelled orders
+    orders = orders.filter((o: any) => o.status !== 'cancelled');
     // Sort by delivery time
     orders.sort((a: any, b: any) => (a.delivery_datetime || '').localeCompare(b.delivery_datetime || ''));
     // Get any existing delivery logs for this date
