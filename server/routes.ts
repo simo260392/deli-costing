@@ -6521,8 +6521,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // body: { order_id, customer_name, customer_uuid?, delivery_date, boxes_out, boxes_in, logged_by?, notes? }
   app.post("/api/grey-box/log", asyncRoute(async (req: any, res: any) => {
     const { order_id, customer_name, customer_uuid, delivery_date, boxes_out, boxes_in, logged_by, notes } = req.body;
-    if (!order_id || !customer_name || !delivery_date) {
-      return res.status(400).json({ error: "order_id, customer_name and delivery_date are required" });
+    if (!customer_name || !delivery_date) {
+      return res.status(400).json({ error: "customer_name and delivery_date are required" });
     }
     const { data, error } = await supabase
       .from("grey_box_log")
