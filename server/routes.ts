@@ -6611,7 +6611,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     // Only include customers with activity (out > 0)
     const balances = [...customerMap.values()]
       .filter(c => c.total_out > 0)
-      .sort((a, b) => b.balance - a.balance || a.customer_name.localeCompare(b.customer_name));
+      .sort((a, b) => a.customer_name.localeCompare(b.customer_name));
 
     return res.json({ ok: true, balances });
   }));
