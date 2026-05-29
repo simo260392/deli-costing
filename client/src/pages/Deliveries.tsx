@@ -291,7 +291,7 @@ export default function Deliveries() {
 
   // Balance data
   const { data: balanceData, isLoading: balanceLoading, refetch: refetchBalances } = useQuery<{
-    ok: boolean; balances: BalanceRow[];
+    ok: boolean; balances: BalanceRow[]; peakTotal: number;
   }>({
     queryKey: ["/api/grey-box/balances"],
     queryFn: () => apiRequest("GET", "/api/grey-box/balances").then(r => r.json()),
@@ -337,6 +337,7 @@ export default function Deliveries() {
   const totalBoxesOut = balances.reduce((s, b) => s + b.total_out, 0);
   const totalBoxesIn  = balances.reduce((s, b) => s + b.total_in, 0);
   const totalBalance  = balances.reduce((s, b) => s + b.balance, 0);
+  const peakTotal     = balanceData?.peakTotal ?? 0;
 
   const invalidateAll = () => {
     qc.invalidateQueries({ queryKey: ["/api/grey-box/weekly"] });
@@ -528,10 +529,10 @@ export default function Deliveries() {
           {!balanceLoading && balances.length > 0 && (
             <div className="grid grid-cols-3 gap-3">
               {[
-                { label: "Total boxes out", value: totalBoxesOut, icon: Package,     colour: "#256984" },
-                { label: "Total boxes back", value: totalBoxesIn,  icon: PackageCheck, colour: "#10b981" },
-                { label: "Currently with customers", value: totalBalance,  icon: TrendingDown, colour: "#f59e0b" },
-              ].map(({ label, value, icon: Icon, colour }) => (
+                { label: "Total boxes out", value: totalBoxesOut, icon: Package,      colour: "#256984", sub: null },
+                { label: "Total boxes back", value: totalBoxesIn, icon: PackageCheck, colour: "#10b981", sub: null },
+                { label: "Est. boxes owned", value: peakTotal,    icon: TrendingDown,  colour: "#f59e0b", sub: "Based on historical peak" },
+              ].map(({ label, value, icon: Icon, colour, sub }) => (
                 <Card key={label}>
                   <CardContent className="p-4">
                     <div className="flex items-center gap-2 mb-1">
@@ -539,6 +540,7 @@ export default function Deliveries() {
                       <span className="text-xs text-muted-foreground">{label}</span>
                     </div>
                     <p className="text-2xl font-bold" style={{ color: colour }}>{value}</p>
+                    {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
                   </CardContent>
                 </Card>
               ))}

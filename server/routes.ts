@@ -6613,7 +6613,20 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .filter(c => c.total_out > 0)
       .sort((a, b) => a.customer_name.localeCompare(b.customer_name));
 
-    return res.json({ ok: true, balances });
+    // Calculate peak total balance across all time (est. boxes owned)
+    // Replay all transactions chronologically, sum total outstanding across all customers at each point
+    const peakMap = new Map<string, number>(); // customer_name -> running balance
+    let peakTotal = 0;
+    for (const row of (data || [])) {
+      const cur = peakMap.get(row.customer_name) || 0;
+      const afterIn  = Math.max(0, cur - (row.boxes_in || 0));
+      const afterOut = afterIn + (row.boxes_out || 0);
+      peakMap.set(row.customer_name, afterOut);
+      const total = [...peakMap.values()].reduce((s, v) => s + v, 0);
+      if (total > peakTotal) peakTotal = total;
+    }
+
+    return res.json({ ok: true, balances, peakTotal });
   }));
 
   // GET /api/grey-box/weekly?days=7  — daily log grouped by customer for last N days
