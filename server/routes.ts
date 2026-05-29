@@ -6879,13 +6879,17 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const { data: wCusts } = await supabase.from('flex_customers').select('uuid').eq('is_wholesale', true);
       for (const c of (wCusts || [])) wholesaleUuids.add(c.uuid);
     } catch (_) {}
-    // Load grey box balances from grey_box_log
+    // Load grey box balances from grey_box_log (using boxes_in for returned boxes)
     const greyBoxMap = new Map<string, number>();
     try {
-      const { data: gbl } = await supabase.from('grey_box_log').select('customer_uuid, boxes_out, boxes_returned');
+      const { data: gbl } = await supabase.from('grey_box_log').select('customer_uuid, boxes_out, boxes_in');
       for (const g of (gbl || [])) {
+        if (!g.customer_uuid) continue;
         const cur = greyBoxMap.get(g.customer_uuid) || 0;
-        greyBoxMap.set(g.customer_uuid, cur + (g.boxes_out || 0) - (g.boxes_returned || 0));
+        // Apply same flooring logic as balances endpoint
+        const afterIn  = Math.max(0, cur - (g.boxes_in  || 0));
+        const afterOut = afterIn + (g.boxes_out || 0);
+        greyBoxMap.set(g.customer_uuid, afterOut);
       }
     } catch (_) {}
     // Merge
@@ -6946,6 +6950,44 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       result = await supabase.from('delivery_logs').insert({ order_id, delivery_date, ...payload }).select().single();
     }
     if (result.error) return res.status(500).json({ error: result.error.message });
+
+    // If grey boxes were collected, write to grey_box_log so Grey Box Tracker stays in sync
+    if (is_wholesale && grey_boxes_collected != null && Number(grey_boxes_collected) > 0) {
+      try {
+        // Look up customer_uuid from flex_customers by client name
+        const { data: custRow } = await supabase
+          .from('flex_customers')
+          .select('uuid')
+          .ilike('company_name', client)
+          .maybeSingle();
+        const customerUuid = custRow?.uuid || null;
+        // Only insert a new grey_box_log entry — avoid duplicates on update by checking for existing entry for this order/date
+        const { data: existingGbl } = await supabase
+          .from('grey_box_log')
+          .select('id')
+          .eq('order_id', order_id)
+          .eq('delivery_date', delivery_date)
+          .eq('boxes_in', Number(grey_boxes_collected))
+          .maybeSingle();
+        if (!existingGbl) {
+          // Remove any previous grey_box_log entry for this order (in case of re-log)
+          await supabase.from('grey_box_log').delete().eq('order_id', order_id).eq('delivery_date', delivery_date).gt('boxes_in', 0);
+          await supabase.from('grey_box_log').insert({
+            order_id: Number(order_id),
+            customer_name: client,
+            customer_uuid: customerUuid,
+            delivery_date,
+            boxes_out: 0,
+            boxes_in: Number(grey_boxes_collected),
+            logged_by: driver || null,
+            notes: 'Auto-logged from delivery record',
+          });
+        }
+      } catch (e) {
+        console.error('Failed to sync grey box log from delivery:', e);
+      }
+    }
+
     return res.json({ ok: true, log: result.data });
   }));
 
