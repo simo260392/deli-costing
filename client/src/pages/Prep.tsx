@@ -1062,6 +1062,7 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                         {item.attributes_summary && (
                           <span className="text-xs text-muted-foreground ml-1.5">({item.attributes_summary})</span>
                         )}
+                        <span className="text-sm font-bold text-[#256984] ml-1.5">×{item.quantity}</span>
                         {parentChecked && parentState?.staffName && (
                           <span className="text-xs text-green-700 ml-1.5 font-medium">
                             ✓ {parentState.staffName}
@@ -1073,7 +1074,6 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                           </span>
                         )}
                       </div>
-                      <span className="text-sm font-bold text-[#256984] shrink-0">×{item.quantity}</span>
                     </button>
                     {/* Sub-item rows (combo options / modifiers) — indented */}
                     {combos.map((co, oi) =>
@@ -1187,8 +1187,8 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
                           )}
                         </span>
                       )}
+                      <span className="text-sm font-bold text-[#256984] ml-1.5">×{item.quantity}</span>
                     </div>
-                    <span className="text-sm font-bold text-[#256984] shrink-0">×{item.quantity}</span>
                   </button>
                   {/* Item-level note */}
                   {item.notes && (
