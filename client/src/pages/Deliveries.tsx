@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,8 +12,100 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
   Package, PackageCheck, TrendingDown, AlertTriangle, Trash2,
-  Calendar, ChevronDown, ChevronUp, RefreshCw
+  Calendar, ChevronDown, ChevronUp, RefreshCw, Check
 } from "lucide-react";
+
+// ─── Smart Search Combobox ───────────────────────────────────────────────────
+function SmartSearch({
+  value,
+  onChange,
+  options,
+  placeholder = "Search…",
+  loading = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  placeholder?: string;
+  loading?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Sync display text when value changes externally (e.g. reset)
+  useEffect(() => {
+    if (!open) setQuery(value);
+  }, [value, open]);
+
+  // Close on outside click
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        // If user typed something but didn't pick, revert to current value
+        setQuery(value);
+      }
+    }
+    if (open) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, value]);
+
+  const filtered = options.filter(o =>
+    o.toLowerCase().includes(query.toLowerCase())
+  ).slice(0, 20);
+
+  function pick(opt: string) {
+    onChange(opt);
+    setQuery(opt);
+    setOpen(false);
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <Input
+        value={query}
+        placeholder={loading ? "Loading…" : placeholder}
+        disabled={loading}
+        autoComplete="off"
+        onChange={e => {
+          setQuery(e.target.value);
+          setOpen(true);
+          // Clear selection if user edits away from it
+          if (e.target.value !== value) onChange("");
+        }}
+        onFocus={() => { setQuery(""); setOpen(true); }}
+        onKeyDown={e => {
+          if (e.key === "Escape") { setOpen(false); setQuery(value); }
+          if (e.key === "Enter" && filtered.length === 1) pick(filtered[0]);
+        }}
+      />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 mt-1 w-full bg-background border border-border rounded-lg shadow-lg max-h-52 overflow-y-auto">
+          {filtered.map(opt => (
+            <button
+              key={opt}
+              type="button"
+              onMouseDown={e => { e.preventDefault(); pick(opt); }}
+              className={cn(
+                "w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2",
+                value === opt && "bg-[#256984]/10 text-[#256984] font-medium"
+              )}
+            >
+              {value === opt && <Check size={12} className="shrink-0" />}
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      {open && !loading && filtered.length === 0 && query.length > 0 && (
+        <div className="absolute z-50 mt-1 w-full bg-background border border-border rounded-lg shadow-sm px-3 py-2 text-sm text-muted-foreground">
+          No matches found
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface BalanceRow {
@@ -57,7 +149,7 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState({
+  const emptyForm = {
     customer_name: "",
     order_id: "",
     delivery_date: new Date().toISOString().slice(0, 10),
@@ -65,8 +157,28 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
     boxes_in: "",
     logged_by: "",
     notes: "",
-  });
+  };
+  const [form, setForm] = useState(emptyForm);
   const { toast } = useToast();
+
+  // Fetch wholesale customers (API returns array directly)
+  const { data: customersData, isLoading: customersLoading } = useQuery<{ companyName: string }[]>({
+    queryKey: ["/api/wholesale/customers"],
+    queryFn: () => apiRequest("GET", "/api/wholesale/customers").then(r => r.json()),
+    staleTime: 5 * 60 * 1000,
+    enabled: open,
+  });
+  const customerOptions = (Array.isArray(customersData) ? customersData : []).map(c => c.companyName).sort();
+
+  // Fetch all Deputy staff (roster endpoint returns all active employees as fallback)
+  const today = new Date().toISOString().slice(0, 10);
+  const { data: rosterData, isLoading: rosterLoading } = useQuery<{ employees: { id: number; name: string }[] }>({
+    queryKey: ["/api/deputy/roster", today],
+    queryFn: () => apiRequest("GET", `/api/deputy/roster?date=${today}`).then(r => r.json()),
+    staleTime: 5 * 60 * 1000,
+    enabled: open,
+  });
+  const staffOptions = (rosterData?.employees ?? []).map(s => s.name).sort();
 
   const save = useMutation({
     mutationFn: () => apiRequest("POST", "/api/grey-box/log", {
@@ -83,10 +195,12 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
       toast({ title: "Entry saved" });
       onSaved();
       onClose();
-      setForm({ customer_name: "", order_id: "", delivery_date: new Date().toISOString().slice(0, 10), boxes_out: "", boxes_in: "", logged_by: "", notes: "" });
+      setForm(emptyForm);
     },
     onError: () => toast({ title: "Failed to save", variant: "destructive" }),
   });
+
+  const canSave = form.customer_name.trim().length > 0 && form.logged_by.trim().length > 0 && !save.isPending;
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
@@ -98,8 +212,14 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
         </DialogHeader>
         <div className="space-y-3 py-1">
           <div className="space-y-1.5">
-            <Label>Customer name</Label>
-            <Input value={form.customer_name} onChange={e => setForm(f => ({ ...f, customer_name: e.target.value }))} placeholder="e.g. BHP" />
+            <Label>Customer <span className="text-red-500">*</span></Label>
+            <SmartSearch
+              value={form.customer_name}
+              onChange={v => setForm(f => ({ ...f, customer_name: v }))}
+              options={customerOptions}
+              placeholder="Search wholesale customers…"
+              loading={customersLoading}
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -122,8 +242,14 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>Logged by (optional)</Label>
-            <Input value={form.logged_by} onChange={e => setForm(f => ({ ...f, logged_by: e.target.value }))} placeholder="Staff name" />
+            <Label>Logged by <span className="text-red-500">*</span></Label>
+            <SmartSearch
+              value={form.logged_by}
+              onChange={v => setForm(f => ({ ...f, logged_by: v }))}
+              options={staffOptions}
+              placeholder="Search staff…"
+              loading={rosterLoading}
+            />
           </div>
           <div className="space-y-1.5">
             <Label>Notes (optional)</Label>
@@ -135,7 +261,7 @@ function ManualEntryDialog({ open, onClose, onSaved }: {
           <Button
             size="sm"
             className="bg-[#256984] hover:bg-[#1e5570] text-white"
-            disabled={!form.customer_name.trim() || save.isPending}
+            disabled={!canSave}
             onClick={() => save.mutate()}
           >
             {save.isPending ? "Saving…" : "Save entry"}
