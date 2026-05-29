@@ -1,12 +1,16 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
-import MemoryStore from "memorystore";
+import connectPgSimple from "connect-pg-simple";
+import { Pool } from "pg";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
-const SessionStore = MemoryStore(session);
+const PgSession = connectPgSimple(session);
+// Use DATABASE_URL env var if set, otherwise derive from Supabase credentials
+const DB_URL = process.env.DATABASE_URL;
+const pgPool = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
 
 // Extend session type
 declare module "express-session" {
@@ -41,7 +45,7 @@ app.use(
     secret: process.env.SESSION_SECRET || "deli-secret-2026",
     resave: false,
     saveUninitialized: false,
-    store: new SessionStore({ checkPeriod: 86400000 }), // prune expired entries every 24h
+    store: new PgSession({ pool: pgPool, tableName: "session", pruneSessionInterval: 86400 }),
     cookie: {
       secure: false, // works over http in sandbox
       httpOnly: true,
