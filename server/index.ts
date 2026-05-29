@@ -43,6 +43,8 @@ app.use(
 app.use(express.urlencoded({ extended: false }));
 
 // Session middleware — must be before registerRoutes
+const isProduction = process.env.NODE_ENV === "production";
+app.set("trust proxy", 1); // trust Railway/Cloudflare reverse proxy
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "deli-secret-2026",
@@ -52,8 +54,9 @@ app.use(
       ? new PgSession({ pool: pgPool, tableName: "session", pruneSessionInterval: 86400 })
       : new MemStore({ checkPeriod: 86400000 }),
     cookie: {
-      secure: false, // works over http in sandbox
+      secure: isProduction,       // HTTPS only in prod (required for sameSite:none)
       httpOnly: true,
+      sameSite: isProduction ? "none" : "lax", // 'none' allows cross-site cookies via Cloudflare proxy
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     },
   })
