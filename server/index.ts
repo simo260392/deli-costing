@@ -2,15 +2,18 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
+import MemoryStore from "memorystore";
 import { Pool } from "pg";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
 const PgSession = connectPgSimple(session);
-// Use DATABASE_URL env var if set, otherwise derive from Supabase credentials
+const MemStore = MemoryStore(session);
+// Use DATABASE_URL env var if set for persistent sessions, otherwise fall back to memory
 const DB_URL = process.env.DATABASE_URL;
-const pgPool = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
+const pgPool = DB_URL ? new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } }) : null;
+if (!DB_URL) console.warn('[session] DATABASE_URL not set — using in-memory session store (sessions will not survive restarts)');
 
 // Extend session type
 declare module "express-session" {
@@ -45,7 +48,9 @@ app.use(
     secret: process.env.SESSION_SECRET || "deli-secret-2026",
     resave: false,
     saveUninitialized: false,
-    store: new PgSession({ pool: pgPool, tableName: "session", pruneSessionInterval: 86400 }),
+    store: pgPool
+      ? new PgSession({ pool: pgPool, tableName: "session", pruneSessionInterval: 86400 })
+      : new MemStore({ checkPeriod: 86400000 }),
     cookie: {
       secure: false, // works over http in sandbox
       httpOnly: true,
