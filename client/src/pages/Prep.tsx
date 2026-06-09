@@ -1414,7 +1414,7 @@ export default function Prep() {
   // Missing items banner state — auto-opens when date changes
   const [missingBannerOpen, setMissingBannerOpen] = useState(true);
   useEffect(() => { setMissingBannerOpen(true); }, [dateFrom]);
-  const { data: missingItemsData } = useQuery<{ items: Array<{ id: number; order_id: number; item_name: string; reason_type: string; reason_ingredient?: string; reason_other?: string; qty_missing?: number; qty_made?: number; total_required?: number; }> }>({ 
+  const { data: missingItemsData } = useQuery<{ items: Array<{ id: number; order_id: number; item_name: string; reason_type: string; reason_ingredient?: string; reason_other?: string; qty_missing?: number; qty_made?: number; total_required?: number; staff_name?: string; }> }>({ 
     queryKey: ["/api/missing-items", dateFrom],
     queryFn: () => apiRequest("GET", `/api/missing-items?date=${dateFrom}`).then(r => r.json()),
     refetchInterval: 30000,
@@ -2154,6 +2154,9 @@ export default function Prep() {
                                   ? `Out of stock: ${item.reason_ingredient}`
                                   : item.reason_other || "No reason given"}
                               </span>
+                              {item.staff_name && (
+                                <span className="text-red-400 ml-1">• <span className="italic">{item.staff_name}</span></span>
+                              )}
                             </span>
                           </li>
                         ))}
