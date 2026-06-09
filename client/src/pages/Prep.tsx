@@ -1411,6 +1411,16 @@ export default function Prep() {
   const dateFrom = rangeMode === "today" ? today() : rangeMode === "tomorrow" ? tomorrow() : customFrom;
   const dateTo   = rangeMode === "today" ? today() : rangeMode === "tomorrow" ? tomorrow() : customTo;
 
+  // Missing items banner state — auto-opens when date changes
+  const [missingBannerOpen, setMissingBannerOpen] = useState(true);
+  useEffect(() => { setMissingBannerOpen(true); }, [dateFrom]);
+  const { data: missingItemsData } = useQuery<{ items: Array<{ id: number; order_id: number; item_name: string; reason_type: string; reason_ingredient?: string; reason_other?: string; qty_missing?: number; qty_made?: number; total_required?: number; }> }>({ 
+    queryKey: ["/api/missing-items", dateFrom],
+    queryFn: () => apiRequest("GET", `/api/missing-items?date=${dateFrom}`).then(r => r.json()),
+    refetchInterval: 30000,
+  });
+  const missingItems = missingItemsData?.items ?? [];
+
   // Flex orders state
   const [flexOrders, setFlexOrders] = useState<FlexOrder[]>([]);
   const [fetchingOrders, setFetchingOrders] = useState(false);
@@ -2085,6 +2095,77 @@ export default function Prep() {
           </div>
         )}
       </div>
+
+      {/* ── Missing Items Banner ── */}
+      {missingItems.length > 0 && (
+        <div className="border border-red-200 bg-red-50 rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 text-left"
+            onClick={() => setMissingBannerOpen(v => !v)}
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={16} className="text-red-600 shrink-0" />
+              <span className="text-sm font-semibold text-red-700">
+                {missingItems.length} missing item{missingItems.length !== 1 ? "s" : ""} for {rangeMode === "today" ? "today" : rangeMode === "tomorrow" ? "tomorrow" : dateFrom}
+              </span>
+              <span className="text-xs bg-red-100 text-red-700 border border-red-200 rounded-full px-2 py-0.5">
+                Items not made
+              </span>
+            </div>
+            {missingBannerOpen ? <ChevronUp size={15} className="text-red-500" /> : <ChevronDown size={15} className="text-red-500" />}
+          </button>
+          {missingBannerOpen && (
+            <div className="px-4 pb-3 space-y-2">
+              {(() => {
+                // Group by order_id
+                const byOrder: Record<number, typeof missingItems> = {};
+                for (const item of missingItems) {
+                  if (!byOrder[item.order_id]) byOrder[item.order_id] = [];
+                  byOrder[item.order_id].push(item);
+                }
+                return Object.entries(byOrder).map(([orderId, items]) => {
+                  const orderIdNum = Number(orderId);
+                  const matchedOrder = flexOrders.find(o => o.id === orderIdNum);
+                  const clientLabel = matchedOrder
+                    ? (matchedOrder.company || `${matchedOrder.first_name} ${matchedOrder.last_name}`.trim())
+                    : `Order #${orderId}`;
+                  const deliveryTime = matchedOrder?.delivery_datetime
+                    ? fmtTimeOnly(matchedOrder.delivery_datetime)
+                    : null;
+                  return (
+                    <div key={orderId} className="bg-white border border-red-100 rounded-lg p-3">
+                      <p className="text-xs font-semibold text-red-700 mb-1.5">
+                        {clientLabel} — #{orderId}
+                        {deliveryTime && (
+                          <span className="ml-2 font-normal text-red-500">Delivery {deliveryTime}</span>
+                        )}
+                      </p>
+                      <ul className="space-y-1">
+                        {items.map(item => (
+                          <li key={item.id} className="flex items-start gap-1.5 text-xs text-red-800">
+                            <span className="mt-0.5 shrink-0">•</span>
+                            <span>
+                              <span className="font-medium">{item.item_name}</span>
+                              {item.qty_missing != null && item.total_required != null && (
+                                <span className="text-red-500 ml-1">({item.qty_missing} of {item.total_required} missing)</span>
+                              )}
+                              <span className="text-red-400 ml-1">
+                                — {item.reason_type === "ingredient" && item.reason_ingredient
+                                  ? `Out of stock: ${item.reason_ingredient}`
+                                  : item.reason_other || "No reason given"}
+                              </span>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div className="flex gap-0 border border-border rounded-xl overflow-hidden">
