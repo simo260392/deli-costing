@@ -214,8 +214,9 @@ function SizeVariantRow({
       apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { components: comps, packaging: pkgs }).then(r => r.json()),
     onSuccess: () => {
       setDirty(false);
-      // Invalidate so PricingTab auto-refreshes with new totalCost
+      // Invalidate so PricingTab and header cost auto-refresh
       queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants", variant.productUuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/live-costs", variant.productUuid] });
     },
     onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
@@ -249,7 +250,7 @@ function SizeVariantRow({
     if (type === 'recipe') {
       const r = recipes.find(x => x.id === id);
       if (!r) return;
-      item = { type: 'recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
+      item = { type: 'recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.costPerServe ?? r.totalCost ?? 0 };
     } else if (type === 'sub_recipe') {
       const r = subRecipes.find(x => x.id === id);
       if (!r) return;
@@ -292,8 +293,9 @@ function SizeVariantRow({
     enabled: !!variant.productUuid,
   });
   const liveVariantCost = liveVariantCosts?.find(lc => lc.id === variant.id)?.liveCost;
-  // Use live cost for display if available, fall back to local calculation
-  const displayCost = liveVariantCost !== undefined ? liveVariantCost : totalCost;
+  // Use local totalCost when components are loaded (instant update on add/remove)
+  // Fall back to server live cost only when panel first loads with no local state yet
+  const displayCost = components.length > 0 || packaging.length > 0 ? totalCost : (liveVariantCost ?? totalCost);
 
   // Margin calculations — sell price is GST-inclusive, show as-is
   // Strip GST only for margin calculations (cost is ex-GST)
