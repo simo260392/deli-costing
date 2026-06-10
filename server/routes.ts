@@ -1416,7 +1416,9 @@ Return ONLY the JSON object, no explanation.`;
       const { yieldAmount, ingredientsJson, subRecipesJson, labourMinutes } = req.body;
       const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
       const costs = await computeSubRecipeCosts(ingredientsJson || "[]", subRecipesJson || "[]", yieldAmount || 1, labourMinutes || 0, hourlyRate);
-      const sr = await storage.createSubRecipe({ ...req.body, ...costs });
+      // Exclude labourCost — not a column in sub_recipes table
+      const { labourCost: _lc, ...costFields } = costs;
+      const sr = await storage.createSubRecipe({ ...req.body, ...costFields });
       res.json(sr);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
@@ -1430,7 +1432,9 @@ Return ONLY the JSON object, no explanation.`;
       const merged = { ...existing, ...req.body };
       const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
       const costs = await computeSubRecipeCosts(merged.ingredientsJson || "[]", merged.subRecipesJson || "[]", merged.yieldAmount || 1, merged.labourMinutes || 0, hourlyRate);
-      const sr = await storage.updateSubRecipe(Number(req.params.id), { ...req.body, ...costs });
+      // Exclude labourCost — not a column in sub_recipes table
+      const { labourCost: _lc2, ...costFields2 } = costs;
+      const sr = await storage.updateSubRecipe(Number(req.params.id), { ...req.body, ...costFields2 });
       // Cascade: propagate through sub-recipe graph → recipes → platters
       try {
         const markup = await getMarkup();
