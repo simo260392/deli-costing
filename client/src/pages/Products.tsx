@@ -52,7 +52,7 @@ type FlexProductCosting = {
   updatedAt: string;
 };
 
-type Recipe = { id: number; name: string; totalCost: number; category?: string; portionSize?: string };
+type Recipe = { id: number; name: string; totalCost: number; costPerServe?: number; category?: string; portionSize?: string };
 type SubRecipe = { id: number; name: string; totalCost: number; category?: string; yieldUnit?: string };
 type Ingredient = { id: number; name: string; category: string; unit: string; costPerUnit: number; bestCostPerUnit?: number; isPackaging?: boolean };
 
@@ -559,7 +559,8 @@ function CostingEditor({
     if (type === "recipe") {
       const r = recipes.find(r => r.id === id);
       name = r?.name || "";
-      costPerUnit = Number(r?.totalCost) || 0;
+      // Use costPerServe (per-portion cost) — totalCost is the whole-batch cost
+      costPerUnit = Number(r?.costPerServe ?? r?.totalCost) || 0;
       unit = "serve";
     } else if (type === "sub_recipe") {
       const sr = subRecipes.find(sr => sr.id === id);
