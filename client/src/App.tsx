@@ -24,6 +24,7 @@ import WagesDashboard from "@/pages/WagesDashboard";
 import SafetyDashboard from "@/pages/SafetyDashboard";
 import Deliveries from "@/pages/Deliveries";
 import DeliveryLog from "@/pages/DeliveryLog";
+import StockOrder from "@/pages/StockOrder";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -105,6 +106,7 @@ function AuthenticatedApp() {
         <Route path="/safety" component={SafetyDashboard} />
         <Route path="/deliveries" component={Deliveries} />
         <Route path="/delivery-log" component={DeliveryLog} />
+        <Route path="/stock-order" component={StockOrder} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

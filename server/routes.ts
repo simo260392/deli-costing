@@ -7028,6 +7028,106 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     return res.json({ ok: true });
   }));
 
+  // ── Stock Ordering ────────────────────────────────────────────────────────
+
+  // GET /api/stock-order/par-levels — all par levels keyed by ingredient_id
+  app.get("/api/stock-order/par-levels", asyncRoute(async (_req: any, res: any) => {
+    const { data, error } = await supabase.from('ingredient_par_levels').select('*');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // PUT /api/stock-order/par-levels/:ingredientId — upsert par level for one ingredient
+  app.put("/api/stock-order/par-levels/:ingredientId", asyncRoute(async (req: any, res: any) => {
+    const ingredientId = Number(req.params.ingredientId);
+    const { parLevel, unit } = req.body;
+    const { data, error } = await supabase
+      .from('ingredient_par_levels')
+      .upsert({ ingredient_id: ingredientId, par_level: parLevel, unit, updated_at: new Date().toISOString() }, { onConflict: 'ingredient_id' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // GET /api/stock-order/drafts — list all drafts newest first
+  app.get("/api/stock-order/drafts", asyncRoute(async (_req: any, res: any) => {
+    const { data, error } = await supabase
+      .from('stock_order_drafts')
+      .select('*')
+      .order('updated_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // POST /api/stock-order/drafts — create new draft
+  app.post("/api/stock-order/drafts", asyncRoute(async (req: any, res: any) => {
+    const { name } = req.body;
+    const { data, error } = await supabase
+      .from('stock_order_drafts')
+      .insert({ name: name || 'Stock Order', status: 'draft' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/stock-order/drafts/:id — update draft name/status
+  app.patch("/api/stock-order/drafts/:id", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { name, status } = req.body;
+    const update: any = { updated_at: new Date().toISOString() };
+    if (name !== undefined) update.name = name;
+    if (status !== undefined) update.status = status;
+    const { data, error } = await supabase
+      .from('stock_order_drafts')
+      .update(update)
+      .eq('id', id)
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // DELETE /api/stock-order/drafts/:id
+  app.delete("/api/stock-order/drafts/:id", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { error } = await supabase.from('stock_order_drafts').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // GET /api/stock-order/drafts/:id/items — line items for a draft
+  app.get("/api/stock-order/drafts/:id/items", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { data, error } = await supabase
+      .from('stock_order_items')
+      .select('*')
+      .eq('draft_id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // PUT /api/stock-order/drafts/:id/items — upsert one line item
+  app.put("/api/stock-order/drafts/:id/items", asyncRoute(async (req: any, res: any) => {
+    const draftId = Number(req.params.id);
+    const { ingredientId, orderQty, notes } = req.body;
+    if (orderQty === 0 || orderQty === null || orderQty === undefined) {
+      // Remove line item if qty set to 0
+      await supabase.from('stock_order_items')
+        .delete()
+        .eq('draft_id', draftId)
+        .eq('ingredient_id', ingredientId);
+      return res.json({ ok: true, deleted: true });
+    }
+    const { data, error } = await supabase
+      .from('stock_order_items')
+      .upsert(
+        { draft_id: draftId, ingredient_id: ingredientId, order_qty: orderQty, notes: notes || '', updated_at: new Date().toISOString() },
+        { onConflict: 'draft_id,ingredient_id' }
+      )
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {

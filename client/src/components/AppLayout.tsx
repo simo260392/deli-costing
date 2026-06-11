@@ -24,6 +24,7 @@ const productionSubItems = [
 
 // Items after the Production group
 const midNavItems = [
+  { href: "/stock-order",  label: "Stock Ordering",     icon: ShoppingBag, slug: "stock-order" },
   { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
   { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
   { href: "/xero-imports", label: "Invoice Imports",    icon: RefreshCw,   slug: "xero-imports" },
