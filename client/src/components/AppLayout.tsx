@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -54,6 +54,13 @@ const foodSubItems = [
 const foodSlugs = new Set(foodSubItems.map(i => i.slug));
 const foodHrefs = new Set(foodSubItems.map(i => i.href));
 
+// Compliance group sub-items
+const complianceSubItems = [
+  { href: "/compliance",                    label: "Records Hub",        icon: ClipboardCheck, slug: "compliance" },
+  { href: "/compliance/allergens-matrix",   label: "Allergens Matrix",   icon: Leaf,           slug: "compliance" },
+  { href: "/compliance/allergen-statement", label: "Allergen Statement", icon: FileText,       slug: "compliance" },
+];
+
 // Bottom-pinned items
 const bottomNavItems = [
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
@@ -95,6 +102,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // Auto-expand Wholesale group if currently on a wholesale sub-page
   const onWholesalePage = wholesaleSubItems.some(i => location === i.href || location.startsWith(i.href + "/"));
   const [wholesaleOpen, setWholesaleOpen] = useState(onWholesalePage);
+
+  // Auto-expand Compliance group if currently on a compliance sub-page
+  const onCompliancePage = location === "/compliance" || location.startsWith("/compliance/");
+  const [complianceOpen, setComplianceOpen] = useState(onCompliancePage);
 
   const { data: xeroCountData } = useQuery({
     queryKey: ["/api/xero/imports/pending-count"],
@@ -307,7 +318,35 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             navLink(href, label, Icon, slug)
           )}
 
-          {/* 5. Settings (bottom-pinned) */}
+          {/* 7. Compliance (always visible to logged-in users — shared kitchen tool) */}
+          <li>
+            <button
+              onClick={() => setComplianceOpen(o => !o)}
+              className={cn(
+                "w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
+                onCompliancePage
+                  ? "text-primary font-semibold"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
+              )}
+              data-testid="nav-compliance-group"
+            >
+              <ClipboardCheck size={15} strokeWidth={onCompliancePage ? 2.5 : 2} />
+              <span className="flex-1 text-left">Compliance</span>
+              <ChevronDown
+                size={14}
+                className={cn("transition-transform duration-200", complianceOpen ? "rotate-0" : "-rotate-90")}
+              />
+            </button>
+            {complianceOpen && (
+              <ul className="mt-0.5 space-y-0.5">
+                {complianceSubItems.map(({ href, label, icon: Icon, slug }) =>
+                  navLink(href, label, Icon, slug, true)
+                )}
+              </ul>
+            )}
+          </li>
+
+          {/* 8. Settings (bottom-pinned) */}
           {bottomNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
             navLink(href, label, Icon, slug)
           )}

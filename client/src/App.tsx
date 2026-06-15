@@ -25,6 +25,10 @@ import SafetyDashboard from "@/pages/SafetyDashboard";
 import Deliveries from "@/pages/Deliveries";
 import DeliveryLog from "@/pages/DeliveryLog";
 import StockOrder from "@/pages/StockOrder";
+import Compliance from "@/pages/Compliance";
+import ComplianceLogEntry from "@/pages/ComplianceLogEntry";
+import ComplianceAllergenMatrix from "@/pages/ComplianceAllergenMatrix";
+import AllergenStatement from "@/pages/AllergenStatement";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -46,6 +50,7 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "delivery-log", path: "/delivery-log" },
   { slug: "wages", path: "/wages" },
   { slug: "safety", path: "/safety" },
+  { slug: "compliance", path: "/compliance" },
 ];
 
 function pathToSlug(path: string): string {
@@ -107,6 +112,10 @@ function AuthenticatedApp() {
         <Route path="/deliveries" component={Deliveries} />
         <Route path="/delivery-log" component={DeliveryLog} />
         <Route path="/stock-order" component={StockOrder} />
+        <Route path="/compliance" component={Compliance} />
+        <Route path="/compliance/allergens-matrix" component={ComplianceAllergenMatrix} />
+        <Route path="/compliance/allergen-statement" component={AllergenStatement} />
+        <Route path="/compliance/:logType/:logId" component={ComplianceLogEntry} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

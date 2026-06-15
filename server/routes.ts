@@ -5151,6 +5151,30 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         item_name: itemName, quantity, unit, staff_id: staffId || null, staff_name: staffName, notes: notes || ''
       }).select().single();
       if (error) throw error;
+
+      // Auto-create cooling log for recipe prep entries
+      if ((itemType === 'recipe' || !itemType) && itemId) {
+        const now = new Date(ts);
+        const stage2Time = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+        const stage3Time = new Date(now.getTime() + 4 * 60 * 60 * 1000);
+        const { data: coolingLog } = await supabase.from('compliance_logs').insert({
+          log_type: 'cooling',
+          entry_date: now.toISOString().slice(0, 10),
+          recipe_id: itemId,
+          batch_id: `prep-${(row as any).id}`,
+          source: 'production_auto',
+          status: 'in_progress',
+          notes: ''
+        }).select().single();
+        if (coolingLog) {
+          await supabase.from('compliance_log_stages').insert([
+            { log_id: (coolingLog as any).id, stage_number: 1, stage_label: 'Start', target_time: now.toISOString(), target_rule: '>=60 deg C', recorded_time: now.toISOString() },
+            { log_id: (coolingLog as any).id, stage_number: 2, stage_label: '@ 2 hours', target_time: stage2Time.toISOString(), target_rule: '<=21 deg C' },
+            { log_id: (coolingLog as any).id, stage_number: 3, stage_label: '@ 4 hours', target_time: stage3Time.toISOString(), target_rule: '<=5 deg C' }
+          ]);
+        }
+      }
+
       res.json({ ok: true, id: (row as any).id });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -7127,6 +7151,450 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   }));
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // COMPLIANCE HUB ROUTES
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Helper: derive compliance status dynamically ──────────────────────────
+  function deriveComplianceStatus(log: any, stages: any[] = [], supplierLines: any[] = []): string {
+    // If already stored as pass or closed, trust that
+    if (log.status === 'pass' || log.status === 'closed') return log.status;
+
+    const type = log.log_type;
+
+    if (type === 'cooling') {
+      if (!stages || stages.length === 0) return 'in_progress';
+      const allComplete = stages.every(s => s.recorded_value);
+      const anyMissed = stages.some(s => s.missed);
+      const anyFailed = stages.some(s => s.recorded_value && s.within_target === false);
+      const now = new Date();
+      const anyOverdue = stages.some(s => {
+        if (s.recorded_value || s.missed) return false;
+        return s.target_time && new Date(s.target_time) < now;
+      });
+      if (anyMissed || anyFailed || anyOverdue) return 'action_needed';
+      if (allComplete) return 'pass';
+      return 'in_progress';
+    }
+
+    if (type === 'cooking') {
+      if (log.cook_core_temp === null || log.cook_core_temp === undefined) return 'in_progress';
+      if (Number(log.cook_core_temp) < 75) return 'action_needed';
+      if (log.signed_by_staff_id) return 'pass';
+      return 'in_progress';
+    }
+
+    if (type === 'thawing') {
+      if (log.signed_by_staff_id) return 'pass';
+      if (log.thaw_start_time && log.thaw_target_completion) {
+        const now = new Date();
+        if (new Date(log.thaw_target_completion) < now && !log.signed_by_staff_id) return 'action_needed';
+      }
+      return 'in_progress';
+    }
+
+    if (type === 'supplier') {
+      if (!supplierLines || supplierLines.length === 0) return 'in_progress';
+      const anyFailed = supplierLines.some(l => l.packaging_ok === false || l.use_by_ok === false);
+      if (anyFailed) return 'action_needed';
+      if (log.signed_by_staff_id) return 'pass';
+      return 'in_progress';
+    }
+
+    if (type === 'wastage') {
+      if (log.signed_by_staff_id) return 'pass';
+      return 'in_progress';
+    }
+
+    if (type === 'review') {
+      if (log.signed_by_staff_id) return 'pass';
+      return 'in_progress';
+    }
+
+    return log.status || 'in_progress';
+  }
+
+  // ── GET /api/compliance/logs ──────────────────────────────────────────────
+  app.get('/api/compliance/logs', async (req: any, res: any) => {
+    try {
+      const { date, dateFrom, dateTo, logType } = req.query as Record<string, string>;
+      let query = supabase.from('compliance_logs').select('*').order('entry_date', { ascending: false }).order('created_at', { ascending: false });
+
+      if (date) {
+        query = query.eq('entry_date', date);
+      } else {
+        if (dateFrom) query = query.gte('entry_date', dateFrom);
+        if (dateTo) query = query.lte('entry_date', dateTo);
+      }
+      if (logType) query = query.eq('log_type', logType);
+
+      const { data: logs, error } = await query;
+      if (error) throw error;
+
+      // For in_progress logs, fetch stages/supplier lines and derive status
+      const result = await Promise.all((logs || []).map(async (log: any) => {
+        if (log.status !== 'pass' && log.status !== 'closed') {
+          const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', log.id).order('stage_number');
+          const { data: supplierLines } = log.log_type === 'supplier'
+            ? await supabase.from('compliance_supplier_lines').select('*').eq('log_id', log.id)
+            : { data: [] };
+          log.derivedStatus = deriveComplianceStatus(log, stages || [], supplierLines || []);
+        } else {
+          log.derivedStatus = log.status;
+        }
+        return log;
+      }));
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs ─────────────────────────────────────────────
+  app.post('/api/compliance/logs', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const { data: log, error } = await supabase.from('compliance_logs').insert({
+        log_type: body.log_type || body.logType,
+        entry_date: body.entry_date || body.entryDate || new Date().toISOString().slice(0, 10),
+        recipe_id: body.recipe_id ?? body.recipeId ?? null,
+        batch_id: body.batch_id ?? body.batchId ?? null,
+        source: body.source || 'manual',
+        status: body.status || 'in_progress',
+        notes: body.notes || '',
+        supplier_id: body.supplier_id ?? body.supplierId ?? null,
+        delivery_datetime: body.delivery_datetime ?? body.deliveryDatetime ?? null,
+        thaw_item: body.thaw_item ?? body.thawItem ?? null,
+        thaw_weight_qty: body.thaw_weight_qty ?? body.thawWeightQty ?? null,
+        thaw_location: body.thaw_location ?? body.thawLocation ?? null,
+        thaw_start_time: body.thaw_start_time ?? body.thawStartTime ?? null,
+        thaw_target_completion: body.thaw_target_completion ?? body.thawTargetCompletion ?? null,
+        cook_core_temp: body.cook_core_temp ?? body.cookCoreTemp ?? null,
+        cook_recorded_time: body.cook_recorded_time ?? body.cookRecordedTime ?? null,
+        cook_recorded_by_staff_id: body.cook_recorded_by_staff_id ?? body.cookRecordedByStaffId ?? null,
+        wastage_total_value: body.wastage_total_value ?? body.wastageTotalValue ?? null,
+      }).select().single();
+      if (error) throw error;
+      res.json(log);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/compliance/logs/:id ──────────────────────────────────────────
+  app.get('/api/compliance/logs/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { data: log, error } = await supabase.from('compliance_logs').select('*').eq('id', id).single();
+      if (error || !log) return res.status(404).json({ error: 'Not found' });
+
+      const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', id).order('stage_number');
+      const { data: supplierLines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id);
+      const { data: wastageLines } = await supabase.from('compliance_wastage_lines').select('*').eq('log_id', id);
+      const { data: reviewCategories } = await supabase.from('compliance_review_categories').select('*').eq('log_id', id);
+
+      log.stages = stages || [];
+      log.supplierLines = supplierLines || [];
+      log.wastageLines = wastageLines || [];
+      log.reviewCategories = reviewCategories || [];
+      log.derivedStatus = deriveComplianceStatus(log, stages || [], supplierLines || []);
+
+      res.json(log);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── PUT /api/compliance/logs/:id ──────────────────────────────────────────
+  app.put('/api/compliance/logs/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const body = req.body || {};
+      const updates: Record<string, any> = {};
+
+      const fieldMap: Record<string, string> = {
+        status: 'status', notes: 'notes',
+        signed_by_staff_id: 'signed_by_staff_id', signedByStaffId: 'signed_by_staff_id',
+        signed_at: 'signed_at', signedAt: 'signed_at',
+        supplier_id: 'supplier_id', supplierId: 'supplier_id',
+        delivery_datetime: 'delivery_datetime', deliveryDatetime: 'delivery_datetime',
+        thaw_item: 'thaw_item', thawItem: 'thaw_item',
+        thaw_weight_qty: 'thaw_weight_qty', thawWeightQty: 'thaw_weight_qty',
+        thaw_location: 'thaw_location', thawLocation: 'thaw_location',
+        thaw_start_time: 'thaw_start_time', thawStartTime: 'thaw_start_time',
+        thaw_target_completion: 'thaw_target_completion', thawTargetCompletion: 'thaw_target_completion',
+        cook_core_temp: 'cook_core_temp', cookCoreTemp: 'cook_core_temp',
+        cook_recorded_time: 'cook_recorded_time', cookRecordedTime: 'cook_recorded_time',
+        cook_recorded_by_staff_id: 'cook_recorded_by_staff_id', cookRecordedByStaffId: 'cook_recorded_by_staff_id',
+        wastage_total_value: 'wastage_total_value', wastageTotalValue: 'wastage_total_value',
+        entry_date: 'entry_date', entryDate: 'entry_date',
+        recipe_id: 'recipe_id', recipeId: 'recipe_id',
+        batch_id: 'batch_id', batchId: 'batch_id',
+        source: 'source',
+      };
+
+      for (const [k, v] of Object.entries(body)) {
+        if (fieldMap[k]) updates[fieldMap[k]] = v;
+      }
+      updates.updated_at = new Date().toISOString();
+
+      const { data: log, error } = await supabase.from('compliance_logs').update(updates).eq('id', id).select().single();
+      if (error) throw error;
+      res.json(log);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── DELETE /api/compliance/logs/:id ──────────────────────────────────────
+  app.delete('/api/compliance/logs/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      await supabase.from('compliance_log_stages').delete().eq('log_id', id);
+      await supabase.from('compliance_supplier_lines').delete().eq('log_id', id);
+      await supabase.from('compliance_wastage_lines').delete().eq('log_id', id);
+      await supabase.from('compliance_review_categories').delete().eq('log_id', id);
+      await supabase.from('compliance_logs').delete().eq('id', id);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/compliance/logs/:id/stages ──────────────────────────────────
+  app.get('/api/compliance/logs/:id/stages', async (req: any, res: any) => {
+    try {
+      const { data: stages, error } = await supabase.from('compliance_log_stages').select('*').eq('log_id', req.params.id).order('stage_number');
+      if (error) throw error;
+      res.json(stages || []);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs/:id/stages/:stageId — update a stage ────────
+  app.post('/api/compliance/logs/:id/stages/:stageId', async (req: any, res: any) => {
+    try {
+      const { stageId } = req.params;
+      const body = req.body || {};
+      const updates: Record<string, any> = {};
+      if (body.recorded_value !== undefined) updates.recorded_value = body.recorded_value;
+      if (body.recordedValue !== undefined) updates.recorded_value = body.recordedValue;
+      if (body.recorded_time !== undefined) updates.recorded_time = body.recorded_time;
+      if (body.recordedTime !== undefined) updates.recorded_time = body.recordedTime;
+      if (body.recorded_by_staff_id !== undefined) updates.recorded_by_staff_id = body.recorded_by_staff_id;
+      if (body.recordedByStaffId !== undefined) updates.recorded_by_staff_id = body.recordedByStaffId;
+      if (body.within_target !== undefined) updates.within_target = body.within_target;
+      if (body.withinTarget !== undefined) updates.within_target = body.withinTarget;
+      if (body.missed !== undefined) updates.missed = body.missed;
+      if (body.missed_reason !== undefined) updates.missed_reason = body.missed_reason;
+      if (body.missedReason !== undefined) updates.missed_reason = body.missedReason;
+
+      const { data: stage, error } = await supabase.from('compliance_log_stages').update(updates).eq('id', stageId).select().single();
+      if (error) throw error;
+      res.json(stage);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs/:id/sign-off ────────────────────────────────
+  app.post('/api/compliance/logs/:id/sign-off', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { staffId } = req.body || {};
+      if (!staffId) return res.status(400).json({ error: 'staffId required' });
+      const now = new Date().toISOString();
+      const { data: log, error } = await supabase.from('compliance_logs').update({
+        signed_by_staff_id: staffId,
+        signed_at: now,
+        status: 'pass',
+        updated_at: now,
+      }).eq('id', id).select().single();
+      if (error) throw error;
+      res.json(log);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs/:id/supplier-lines ──────────────────────────
+  app.post('/api/compliance/logs/:id/supplier-lines', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const { data: line, error } = await supabase.from('compliance_supplier_lines').insert({
+        log_id: req.params.id,
+        item: body.item || '',
+        qty: body.qty || '',
+        temp_on_arrival: body.temp_on_arrival ?? body.tempOnArrival ?? null,
+        packaging_ok: body.packaging_ok ?? body.packagingOk ?? null,
+        use_by_ok: body.use_by_ok ?? body.useByOk ?? null,
+      }).select().single();
+      if (error) throw error;
+      res.json(line);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── PUT /api/compliance/logs/:id/supplier-lines/:lineId ──────────────────
+  app.put('/api/compliance/logs/:id/supplier-lines/:lineId', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const updates: Record<string, any> = {};
+      if (body.item !== undefined) updates.item = body.item;
+      if (body.qty !== undefined) updates.qty = body.qty;
+      if (body.temp_on_arrival !== undefined) updates.temp_on_arrival = body.temp_on_arrival;
+      if (body.tempOnArrival !== undefined) updates.temp_on_arrival = body.tempOnArrival;
+      if (body.packaging_ok !== undefined) updates.packaging_ok = body.packaging_ok;
+      if (body.packagingOk !== undefined) updates.packaging_ok = body.packagingOk;
+      if (body.use_by_ok !== undefined) updates.use_by_ok = body.use_by_ok;
+      if (body.useByOk !== undefined) updates.use_by_ok = body.useByOk;
+      const { data: line, error } = await supabase.from('compliance_supplier_lines').update(updates).eq('id', req.params.lineId).select().single();
+      if (error) throw error;
+      res.json(line);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── DELETE /api/compliance/logs/:id/supplier-lines/:lineId ───────────────
+  app.delete('/api/compliance/logs/:id/supplier-lines/:lineId', async (req: any, res: any) => {
+    try {
+      await supabase.from('compliance_supplier_lines').delete().eq('id', req.params.lineId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs/:id/wastage-lines ───────────────────────────
+  app.post('/api/compliance/logs/:id/wastage-lines', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const { data: line, error } = await supabase.from('compliance_wastage_lines').insert({
+        log_id: req.params.id,
+        item: body.item || '',
+        qty: body.qty || '',
+        reason: body.reason || '',
+        dollar_value: body.dollar_value ?? body.dollarValue ?? null,
+      }).select().single();
+      if (error) throw error;
+      res.json(line);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── PUT /api/compliance/logs/:id/wastage-lines/:lineId ───────────────────
+  app.put('/api/compliance/logs/:id/wastage-lines/:lineId', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const updates: Record<string, any> = {};
+      if (body.item !== undefined) updates.item = body.item;
+      if (body.qty !== undefined) updates.qty = body.qty;
+      if (body.reason !== undefined) updates.reason = body.reason;
+      if (body.dollar_value !== undefined) updates.dollar_value = body.dollar_value;
+      if (body.dollarValue !== undefined) updates.dollar_value = body.dollarValue;
+      const { data: line, error } = await supabase.from('compliance_wastage_lines').update(updates).eq('id', req.params.lineId).select().single();
+      if (error) throw error;
+      res.json(line);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── DELETE /api/compliance/logs/:id/wastage-lines/:lineId ────────────────
+  app.delete('/api/compliance/logs/:id/wastage-lines/:lineId', async (req: any, res: any) => {
+    try {
+      await supabase.from('compliance_wastage_lines').delete().eq('id', req.params.lineId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── POST /api/compliance/logs/:id/review-categories — upsert all ─────────
+  app.post('/api/compliance/logs/:id/review-categories', async (req: any, res: any) => {
+    try {
+      const { categories } = req.body || {};
+      if (!Array.isArray(categories)) return res.status(400).json({ error: 'categories array required' });
+      // Delete existing then re-insert
+      await supabase.from('compliance_review_categories').delete().eq('log_id', req.params.id);
+      if (categories.length > 0) {
+        const rows = categories.map((c: any) => ({
+          log_id: req.params.id,
+          category: c.category,
+          status: c.status,
+          note: c.note || '',
+        }));
+        const { error } = await supabase.from('compliance_review_categories').insert(rows);
+        if (error) throw error;
+      }
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/compliance/audit-status ─────────────────────────────────────
+  app.get('/api/compliance/audit-status', async (req: any, res: any) => {
+    try {
+      const { date, dateFrom, dateTo } = req.query as Record<string, string>;
+      let query = supabase.from('compliance_logs').select('id, log_type, status').order('entry_date');
+
+      if (date) {
+        query = query.eq('entry_date', date);
+      } else {
+        if (dateFrom) query = query.gte('entry_date', dateFrom);
+        if (dateTo) query = query.lte('entry_date', dateTo);
+      }
+
+      const { data: logs, error } = await query;
+      if (error) throw error;
+
+      let actionCount = 0;
+      for (const log of (logs || [])) {
+        if (log.status === 'action_needed') {
+          actionCount++;
+        } else if (log.status === 'in_progress') {
+          // Fetch stages for cooling logs to derive real status
+          if (log.log_type === 'cooling') {
+            const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', log.id);
+            const derived = deriveComplianceStatus(log, stages || [], []);
+            if (derived === 'action_needed') actionCount++;
+          }
+        }
+      }
+
+      res.json({ auditReady: actionCount === 0, actionCount });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/compliance/staff — staff list for sign-off picker ────────────
+  // Note: /api/staff exists but requires master password. This endpoint is
+  // for compliance sign-off and returns id, name, role for all active staff.
+  app.get('/api/compliance/staff', async (req: any, res: any) => {
+    try {
+      const { data: staffList, error } = await supabase
+        .from('staff')
+        .select('id, name, access_levels(name)')
+        .eq('is_active', true)
+        .order('name');
+      if (error) throw error;
+      res.json((staffList || []).map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        role: s.access_levels?.name || '',
+      })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
