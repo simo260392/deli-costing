@@ -14,7 +14,7 @@ import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 import { StatusPill } from "./Compliance";
 import {
   ChevronRight, AlertCircle, CheckCircle2, Clock, Thermometer,
-  Trash2, Plus, AlertTriangle, RotateCcw
+  Trash2, Plus, AlertTriangle, RotateCcw, Pencil, Check
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +48,7 @@ interface ComplianceLog {
   id: string;
   log_type: string;
   entry_date: string;
+  log_time: string | null;
   recipe_id: number | null;
   batch_id: string | null;
   source: string;
@@ -1419,9 +1420,16 @@ export default function ComplianceLogEntry() {
   const [notesChanged, setNotesChanged] = useState(false);
   const [startedByStaff, setStartedByStaff] = useState<{ id: number; name: string } | null>(null);
 
+  // Date/time editing state
+  const [editingDateTime, setEditingDateTime] = useState(false);
+  const [editDate, setEditDate] = useState(log?.entry_date || "");
+  const [editTime, setEditTime] = useState(log?.log_time || "");
+
   useEffect(() => {
     if (log) {
       setNotes(log.notes || "");
+      setEditDate(log.entry_date || "");
+      setEditTime(log.log_time || "");
       if (log.created_by_name && !startedByStaff) {
         setStartedByStaff({ id: 0, name: log.created_by_name });
       }
@@ -1522,19 +1530,88 @@ export default function ComplianceLogEntry() {
 
           {/* Summary card */}
           <div className="border rounded-xl p-4 bg-muted/30 space-y-3">
+
+            {/* Date / time row */}
             <div className="flex items-center gap-2 flex-wrap">
-              {log.entry_date && (
-                <Badge variant="secondary">{format(parseISO(log.entry_date), "d MMM yyyy")}</Badge>
+              {!editingDateTime ? (
+                <>
+                  {log.entry_date && (
+                    <Badge variant="secondary">
+                      {format(parseISO(log.entry_date), "d MMM yyyy")}
+                      {log.log_time ? ` · ${log.log_time}` : ""}
+                    </Badge>
+                  )}
+                  <button
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors border border-transparent hover:border-border"
+                    onClick={() => setEditingDateTime(true)}
+                  >
+                    <Pencil size={11} />
+                    Edit date/time
+                  </button>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 flex-wrap w-full">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-xs text-muted-foreground font-medium">Date</label>
+                    <Input
+                      type="date"
+                      value={editDate}
+                      onChange={e => setEditDate(e.target.value)}
+                      className="h-9 w-40 text-sm"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-xs text-muted-foreground font-medium">Time</label>
+                    <Input
+                      type="time"
+                      value={editTime}
+                      onChange={e => setEditTime(e.target.value)}
+                      className="h-9 w-32 text-sm"
+                    />
+                  </div>
+                  <div className="flex items-end gap-1.5 pb-0">
+                    <Button
+                      size="sm"
+                      className="h-9 px-3 gap-1"
+                      style={{ backgroundColor: "#256984" }}
+                      onClick={async () => {
+                        await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
+                          entry_date: editDate,
+                          log_time: editTime || null,
+                        });
+                        await refetch();
+                        setEditingDateTime(false);
+                        toast({ description: "Date & time updated" });
+                      }}
+                    >
+                      <Check size={13} />
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-9 px-3"
+                      onClick={() => {
+                        setEditDate(log.entry_date || "");
+                        setEditTime(log.log_time || "");
+                        setEditingDateTime(false);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
               )}
-              {log.batch_id && (
+              {!editingDateTime && log.batch_id && (
                 <Badge variant="outline" className="font-mono text-xs">{log.batch_id}</Badge>
               )}
-              {log.source && (
+              {!editingDateTime && log.source && (
                 <Badge variant={log.source === "production_auto" ? "default" : "secondary"} className="text-xs">
                   {log.source === "production_auto" ? "Auto-created" : "Manual"}
                 </Badge>
               )}
             </div>
+
             {/* Started by — required for all log types */}
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted-foreground">Started by</label>

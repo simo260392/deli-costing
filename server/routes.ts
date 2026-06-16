@@ -7405,6 +7405,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         cook_recorded_by_staff_id: 'cook_recorded_by_staff_id', cookRecordedByStaffId: 'cook_recorded_by_staff_id',
         wastage_total_value: 'wastage_total_value', wastageTotalValue: 'wastage_total_value',
         entry_date: 'entry_date', entryDate: 'entry_date',
+        log_time: 'log_time', logTime: 'log_time',
         recipe_id: 'recipe_id', recipeId: 'recipe_id',
         batch_id: 'batch_id', batchId: 'batch_id',
         source: 'source',
