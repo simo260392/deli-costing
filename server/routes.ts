@@ -7663,22 +7663,29 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
-  // ── GET /api/compliance/staff — staff list for sign-off picker ────────────
-  // Note: /api/staff exists but requires master password. This endpoint is
-  // for compliance sign-off and returns id, name, role for all active staff.
+  // ── GET /api/compliance/staff — Deputy employee list for staff pickers ─────
   app.get('/api/compliance/staff', async (req: any, res: any) => {
     try {
-      const { data: staffList, error } = await supabase
-        .from('staff')
-        .select('id, name, access_levels(name)')
-        .eq('is_active', true)
-        .order('name');
-      if (error) throw error;
-      res.json((staffList || []).map((s: any) => ({
-        id: s.id,
-        name: s.name,
-        role: s.access_levels?.name || '',
-      })));
+      const deputyToken = await storage.getSetting('deputy_token') || '1b457a884168403374ccd759a42d1f14';
+      const deputySubdomain = await storage.getSetting('deputy_subdomain') || 'thedeli';
+      const deputyBase = `https://${deputySubdomain}.au.deputy.com`;
+
+      const empResp = await fetch(`${deputyBase}/api/v1/resource/Employee?max=200&select=Id,FirstName,LastName,Position,Active`, {
+        headers: { Authorization: `Bearer ${deputyToken}` },
+      });
+      if (!empResp.ok) throw new Error(`Deputy returned ${empResp.status}`);
+      const employees: any[] = await empResp.json();
+
+      const active = employees
+        .filter((e: any) => e.Active !== false)
+        .map((e: any) => ({
+          id: e.Id,
+          name: `${e.FirstName} ${e.LastName}`.trim(),
+          role: e.Position || '',
+        }))
+        .sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+      res.json(active);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
