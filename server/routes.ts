@@ -5928,8 +5928,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
     // ── Deputy: timesheets by OU ──────────────────────────────────────────────
     const DEPUTY_TOKEN = await storage.getSetting("deputy_token") || "1b457a884168403374ccd759a42d1f14";
-    const DEPUTY_SUBDOMAIN = await storage.getSetting("deputy_subdomain") || "thedeli";
-    const deputyBase = `https://${DEPUTY_SUBDOMAIN}.au.deputy.com`;
+    const DEPUTY_SUBDOMAIN = await storage.getSetting("deputy_subdomain") || "thedeli.au.deputy.com";
+    const deputyBase = DEPUTY_SUBDOMAIN.includes('.') ? `https://${DEPUTY_SUBDOMAIN}` : `https://${DEPUTY_SUBDOMAIN}.au.deputy.com`;
 
     // OU IDs and labels
     const OUS: Record<number, string> = { 2: "cbd_store", 41: "drivers", 83: "production" };
@@ -7668,8 +7668,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   app.get('/api/compliance/staff', async (req: any, res: any) => {
     try {
       const deputyToken = await storage.getSetting('deputy_token') || '1b457a884168403374ccd759a42d1f14';
-      const deputySubdomain = await storage.getSetting('deputy_subdomain') || 'thedeli';
-      const deputyBase = `https://${deputySubdomain}.au.deputy.com`;
+      const deputySubdomain = await storage.getSetting('deputy_subdomain') || 'thedeli.au.deputy.com';
+      // subdomain may be stored as full domain (thedeli.au.deputy.com) or short name (thedeli)
+      const deputyBase = deputySubdomain.includes('.') ? `https://${deputySubdomain}` : `https://${deputySubdomain}.au.deputy.com`;
 
       const empResp = await fetch(`${deputyBase}/api/v1/resource/Employee?max=200&select=Id,FirstName,LastName,Position,Active`, {
         headers: { Authorization: `Bearer ${deputyToken}` },
