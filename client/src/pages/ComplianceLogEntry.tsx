@@ -301,12 +301,12 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Person in charge</label>
             <StaffSearchPicker
-              value={picStaff}
-              onChange={async (staff) => {
+              value={picStaff?.name || ""}
+              onSelect={async (staff) => {
                 setPicStaff(staff);
                 await updateLog({
-                  person_in_charge_name: staff?.name ?? null,
-                  person_in_charge_staff_id: staff?.id ?? null,
+                  person_in_charge_name: staff.name,
+                  person_in_charge_staff_id: staff.id,
                 });
               }}
               placeholder="Search staff…"
@@ -386,12 +386,10 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
                       <StaffSearchPicker
                         value={
                           stagePic[stage.id] !== undefined
-                            ? stagePic[stage.id]
-                            : (stage.recorded_by_name
-                                ? { id: stage.recorded_by_staff_id ?? 0, name: stage.recorded_by_name }
-                                : null)
+                            ? (stagePic[stage.id]?.name || "")
+                            : (stage.recorded_by_name || "")
                         }
-                        onChange={staff => setStagePic(prev => ({ ...prev, [stage.id]: staff }))}
+                        onSelect={staff => setStagePic(prev => ({ ...prev, [stage.id]: staff }))}
                         placeholder="Search staff…"
                       />
                     </div>
