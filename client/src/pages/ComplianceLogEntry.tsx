@@ -574,6 +574,7 @@ function CookingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       cookCoreTemp: parseFloat(value),
       cookRecordedTime: new Date().toISOString(),
       cookRecordedByStaffId: recordedBy?.id || null,
+      created_by_name: recordedBy?.name || null,
     });
     toast({ description: `Core temperature recorded: ${value}°C` });
   };
@@ -1297,9 +1298,15 @@ export default function ComplianceLogEntry() {
 
   const [notes, setNotes] = useState(log?.notes || "");
   const [notesChanged, setNotesChanged] = useState(false);
+  const [startedByStaff, setStartedByStaff] = useState<{ id: number; name: string } | null>(null);
 
   useEffect(() => {
-    if (log) setNotes(log.notes || "");
+    if (log) {
+      setNotes(log.notes || "");
+      if (log.created_by_name && !startedByStaff) {
+        setStartedByStaff({ id: 0, name: log.created_by_name });
+      }
+    }
   }, [log?.id]);
 
   const saveNotes = async () => {
@@ -1364,7 +1371,7 @@ export default function ComplianceLogEntry() {
         <div className="p-6 space-y-6 max-w-3xl">
 
           {/* Summary card */}
-          <div className="border rounded-xl p-4 bg-muted/30 space-y-1">
+          <div className="border rounded-xl p-4 bg-muted/30 space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
               {log.entry_date && (
                 <Badge variant="secondary">{format(parseISO(log.entry_date), "d MMM yyyy")}</Badge>
@@ -1378,9 +1385,20 @@ export default function ComplianceLogEntry() {
                 </Badge>
               )}
             </div>
-            {log.recipe_id && (
-              <p className="text-sm text-muted-foreground">Recipe ID: {log.recipe_id}</p>
-            )}
+            {/* Started by — required for all log types */}
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Started by</label>
+              <StaffSearchPicker
+                value={startedByStaff?.name || ""}
+                onSelect={async (staff) => {
+                  setStartedByStaff(staff);
+                  await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
+                    created_by_name: staff.name,
+                  });
+                }}
+                placeholder="Search staff…"
+              />
+            </div>
           </div>
 
           <Separator />
@@ -1431,13 +1449,8 @@ export default function ComplianceLogEntry() {
             )}
           </div>
 
-          {/* Spacer for sign-off bar */}
-          {logType !== "cooling" && <div className="h-24" />}
         </div>
       </div>
-
-      {/* Sign-off bar */}
-      {logType !== "cooling" && <SignOffBar log={log} onRefresh={() => refetch()} />}
     </div>
   );
 }
