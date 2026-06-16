@@ -1502,6 +1502,7 @@ export default function ComplianceLogEntry() {
                     className="bg-red-600 hover:bg-red-700 text-white"
                     onClick={async () => {
                       await apiRequest("DELETE", `/api/compliance/logs/${logId}`);
+                      await qc.invalidateQueries({ queryKey: ["/api/compliance/logs"] });
                       navigate("/compliance");
                     }}
                   >
