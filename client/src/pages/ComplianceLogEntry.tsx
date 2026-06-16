@@ -231,7 +231,7 @@ function FoodSearchPicker({
 function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
   const { toast } = useToast();
 
-  // Header field state — editable inline
+  // Header field state
   const [itemName, setItemName] = useState(log.item_name || "");
   const [batchQty, setBatchQty] = useState(log.batch_qty || "");
   const [thermometerId, setThermometerId] = useState(log.thermometer_id || "");
@@ -239,16 +239,15 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     log.person_in_charge_name ? { id: log.person_in_charge_staff_id ?? 0, name: log.person_in_charge_name } : null
   );
 
-  // Stage state
+  // Stage state — per stage: which is open for entry, staff picker, time edits
+  const [activeStage, setActiveStage] = useState<string | null>(null);
+  const [stagePic, setStagePic] = useState<Record<string, { id: number; name: string } | null>>({});
+  const [stageTimes, setStageTimes] = useState<Record<string, string>>({});
   const [padOpen, setPadOpen] = useState<string | null>(null);
   const [missedPopover, setMissedPopover] = useState<string | null>(null);
   const [missedReason, setMissedReason] = useState("");
-  // Per-stage staff picker: stageId -> { id, name } | null
-  const [stagePic, setStagePic] = useState<Record<string, { id: number; name: string } | null>>({});
-  // Per-stage editable recorded_time: stageId -> ISO string
-  const [stageTimes, setStageTimes] = useState<Record<string, string>>({});
 
-  // Corrective action state
+  // Corrective action
   const [caBatch, setCaBatch] = useState(log.corrective_action_batch || "");
   const [caTaken, setCaTaken] = useState(log.corrective_action_taken || "");
   const [caReviewedBy, setCaReviewedBy] = useState(log.corrective_action_reviewed_by || "");
@@ -260,6 +259,12 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
 
   const anyFailed = stages.some(s => s.within_target === false);
   const hasExistingCA = !!(log.corrective_action_batch || log.corrective_action_taken);
+
+  // A stage is "unlocked" if all previous stages are recorded or missed
+  const isUnlocked = (idx: number) => {
+    if (idx === 0) return true;
+    return stages.slice(0, idx).every(s => s.recorded_value || s.missed);
+  };
 
   const updateLog = async (updates: Record<string, unknown>) => {
     await apiRequest("PUT", `/api/compliance/logs/${log.id}`, updates);
@@ -296,6 +301,7 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       recorded_by_name: recByName,
       recorded_by_staff_id: recByStaffId,
     });
+    setActiveStage(null);
     toast({ description: `Stage ${stage.stage_number} recorded: ${value}°C` });
   };
 
@@ -307,6 +313,7 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     await updateStage(stage.id, { missed: true, missedReason: missedReason, withinTarget: false });
     setMissedPopover(null);
     setMissedReason("");
+    setActiveStage(null);
     toast({ description: `Stage ${stage.stage_number} marked as missed` });
   };
 
@@ -325,7 +332,6 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     }
   };
 
-  // Format ISO -> datetime-local input value (local time)
   const toDatetimeLocal = (iso: string | null) => {
     if (!iso) return "";
     try {
@@ -335,55 +341,58 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     } catch { return ""; }
   };
 
+  const fmtTime = (iso: string | null) => {
+    if (!iso) return "";
+    try { return format(parseISO(iso), "HH:mm"); } catch { return ""; }
+  };
+
+  const fmtDue = (iso: string | null) => {
+    if (!iso) return null;
+    const diff = new Date(iso).getTime() - now.getTime();
+    const mins = Math.round(diff / 60000);
+    if (mins < 0) return { label: `${Math.abs(mins)}m overdue`, overdue: true };
+    if (mins === 0) return { label: "Due now", overdue: true };
+    if (mins < 60) return { label: `Due in ${mins}m`, overdue: false };
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return { label: `Due in ${hrs}h${rem > 0 ? ` ${rem}m` : ""}`, overdue: false };
+  };
+
   return (
     <div className="space-y-6">
 
-      {/* Two-stage cooling rule reminder */}
-      <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-1.5">
-        <div className="flex items-center gap-2 font-semibold text-sm" style={{ color: "#256984" }}>
-          <Thermometer size={15} />
-          Two-stage cooling rule (FSANZ)
-        </div>
-        <div className="text-xs text-blue-800 space-y-0.5">
-          <div>Stage 1 — Cool from 60°C to 21°C <span className="font-semibold">within 2 hours</span></div>
-          <div>Stage 2 — Cool from 21°C to 5°C within a <span className="font-semibold">further 4 hours</span></div>
+      {/* FSANZ rule banner */}
+      <div className="rounded-xl border border-[#256984]/20 bg-[#256984]/5 px-4 py-3 flex items-start gap-3">
+        <Thermometer size={16} className="text-[#256984] mt-0.5 shrink-0" />
+        <div className="text-xs text-[#256984] space-y-0.5">
+          <div className="font-semibold mb-0.5">Two-stage cooling rule (FSANZ)</div>
+          <div>Stage 1 — 60°C → 21°C <span className="font-semibold">within 2 hours</span></div>
+          <div>Stage 2 — 21°C → 5°C within a <span className="font-semibold">further 4 hours</span></div>
         </div>
       </div>
 
-      {/* Header fields */}
+      {/* Batch details */}
       <div className="space-y-3">
-        <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Batch details</h3>
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Batch details</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Batch / food item</label>
+            <label className="text-xs font-medium text-muted-foreground">Food item</label>
             <FoodSearchPicker
               value={itemName}
               onSelect={async (item) => {
                 setItemName(item.name);
                 await saveHeader("item_name", item.name);
               }}
-              placeholder="Search recipes, sub-recipes, ingredients…"
+              placeholder="Search recipes, ingredients…"
             />
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Batch quantity</label>
-            <Input
-              value={batchQty}
-              onChange={e => setBatchQty(e.target.value)}
-              onBlur={() => saveHeader("batch_qty", batchQty)}
-              placeholder="e.g. 10L"
-              className="h-10"
-            />
+            <Input value={batchQty} onChange={e => setBatchQty(e.target.value)} onBlur={() => saveHeader("batch_qty", batchQty)} placeholder="e.g. 10L" className="h-10" />
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Thermometer ID</label>
-            <Input
-              value={thermometerId}
-              onChange={e => setThermometerId(e.target.value)}
-              onBlur={() => saveHeader("thermometer_id", thermometerId)}
-              placeholder="e.g. TH-01"
-              className="h-10"
-            />
+            <Input value={thermometerId} onChange={e => setThermometerId(e.target.value)} onBlur={() => saveHeader("thermometer_id", thermometerId)} placeholder="e.g. TH-01" className="h-10" />
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Person in charge</label>
@@ -391,10 +400,7 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
               value={picStaff?.name || ""}
               onSelect={async (staff) => {
                 setPicStaff(staff);
-                await updateLog({
-                  person_in_charge_name: staff.name,
-                  person_in_charge_staff_id: staff.id,
-                });
+                await updateLog({ person_in_charge_name: staff.name, person_in_charge_staff_id: staff.id });
               }}
               placeholder="Search staff…"
             />
@@ -402,235 +408,261 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
         </div>
       </div>
 
-      {/* Cooling stages */}
+      {/* Stage cards */}
       <div className="space-y-3">
-        <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Temperature readings</h3>
-        <div className="grid gap-4 md:grid-cols-3">
-          {stages.map(stage => {
-            const isOverdue = stage.target_time && new Date(stage.target_time) < now && !stage.recorded_value && !stage.missed;
-            const isPass = stage.recorded_value && stage.within_target === true;
-            const isFail = stage.recorded_value && stage.within_target === false;
-
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Cooling stages</p>
+        <div className="space-y-3">
+          {stages.map((stage, idx) => {
+            const unlocked = isUnlocked(idx);
+            const isPass = !!(stage.recorded_value && stage.within_target === true);
+            const isFail = !!(stage.recorded_value && stage.within_target === false);
+            const isDone = !!(stage.recorded_value || stage.missed);
+            const due = !isDone && unlocked ? fmtDue(stage.target_time) : null;
+            const isActive = activeStage === stage.id;
             const defaultTime = stageTimes[stage.id] !== undefined
               ? stageTimes[stage.id]
               : toDatetimeLocal(stage.recorded_time || new Date().toISOString());
 
+            // Card border/bg colour
+            const cardCls = cn(
+              "rounded-2xl border-2 transition-all duration-200",
+              isPass && "border-green-400 bg-green-50",
+              isFail && "border-red-400 bg-red-50",
+              stage.missed && "border-gray-300 bg-gray-50",
+              !isDone && unlocked && due?.overdue && "border-orange-400 bg-orange-50",
+              !isDone && unlocked && !due?.overdue && "border-[#256984]/40 bg-[#256984]/5",
+              !unlocked && "border-gray-200 bg-gray-50 opacity-60"
+            );
+
             return (
-              <div
-                key={stage.id}
-                className={cn(
-                  "border rounded-xl p-4 space-y-3",
-                  isPass && "border-green-200 bg-green-50",
-                  isFail && "border-red-200 bg-red-50",
-                  isOverdue && !stage.missed && "border-orange-200 bg-orange-50",
-                  stage.missed && "border-gray-200 bg-gray-50",
-                  !isPass && !isFail && !isOverdue && !stage.missed && "border-border"
-                )}
-              >
-                {/* Stage header */}
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-sm">
-                      Stage {stage.stage_number} — {stage.stage_label}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      Target: <span className="font-medium">{stage.target_rule}</span>
-                    </div>
+              <div key={stage.id} className={cardCls}>
+                {/* Stage top row */}
+                <div className="flex items-center justify-between px-5 pt-4 pb-3">
+                  <div className="flex items-center gap-2">
+                    {/* Colour dot */}
+                    <div className={cn(
+                      "w-3 h-3 rounded-full shrink-0",
+                      isPass && "bg-green-500",
+                      isFail && "bg-red-500",
+                      stage.missed && "bg-gray-400",
+                      !isDone && unlocked && due?.overdue && "bg-orange-500 animate-pulse",
+                      !isDone && unlocked && !due?.overdue && "bg-[#256984]",
+                      !unlocked && "bg-gray-300"
+                    )} />
+                    <span className={cn(
+                      "text-xs font-bold uppercase tracking-widest",
+                      isPass && "text-green-700",
+                      isFail && "text-red-700",
+                      stage.missed && "text-gray-500",
+                      !isDone && unlocked && due?.overdue && "text-orange-700",
+                      !isDone && unlocked && !due?.overdue && "text-[#256984]",
+                      !unlocked && "text-gray-400"
+                    )}>
+                      Stage {stage.stage_number} · {stage.stage_label}
+                    </span>
                   </div>
-                  <div className="flex flex-col items-end gap-1">
-                    {isOverdue && !stage.missed && (
-                      <Badge variant="destructive" className="text-xs shrink-0">Overdue</Badge>
+                  <div className="flex items-center gap-2">
+                    {due && (
+                      <span className={cn(
+                        "text-xs font-semibold px-2.5 py-1 rounded-full",
+                        due.overdue ? "bg-orange-500 text-white" : "bg-[#256984]/10 text-[#256984]"
+                      )}>
+                        {due.label}
+                      </span>
                     )}
-                    {stage.missed && (
-                      <Badge variant="secondary" className="text-xs shrink-0">Missed</Badge>
-                    )}
-                    {isPass && (
-                      <Badge className="text-xs shrink-0 bg-green-600 hover:bg-green-600">Pass</Badge>
-                    )}
-                    {isFail && (
-                      <Badge variant="destructive" className="text-xs shrink-0">Fail</Badge>
-                    )}
+                    {isPass && <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-green-500 text-white">Pass</span>}
+                    {isFail && <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-red-500 text-white">Fail</span>}
+                    {stage.missed && <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-400 text-white">Missed</span>}
                   </div>
                 </div>
 
-                {/* Recorded value or actions */}
-                {stage.recorded_value ? (
-                  <div className="space-y-3">
-                    <div className={cn(
-                      "text-3xl font-bold tabular-nums",
-                      isPass ? "text-green-700" : "text-red-700"
-                    )}>
-                      {stage.recorded_value}°C
-                    </div>
-                    {isPass && (
-                      <div className="flex items-center gap-1 text-xs text-green-700">
-                        <CheckCircle2 size={12} /> Within target
+                {/* Stage body */}
+                <div className="px-5 pb-4 space-y-3">
+                  {/* Recorded — show big temp + metadata */}
+                  {stage.recorded_value && (
+                    <div className="space-y-2">
+                      <div className="flex items-baseline gap-3">
+                        <span className={cn("text-5xl font-bold tabular-nums", isPass ? "text-green-600" : "text-red-600")}>
+                          {stage.recorded_value}°C
+                        </span>
+                        <div className="space-y-0.5">
+                          <div className={cn("flex items-center gap-1 text-sm font-medium", isPass ? "text-green-700" : "text-red-700")}>
+                            {isPass ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                            {isPass ? "Within target" : "Outside target"}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Target: {stage.target_rule}
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    {isFail && (
-                      <div className="flex items-center gap-1 text-xs text-red-700">
-                        <AlertCircle size={12} /> Outside target — corrective action needed
+
+                      {/* Time + who */}
+                      <div className="flex flex-wrap gap-4 text-sm">
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-medium text-muted-foreground">Time recorded</p>
+                          <Input
+                            type="datetime-local"
+                            className="h-8 text-xs w-48"
+                            value={defaultTime}
+                            onChange={e => {
+                              const iso = e.target.value ? new Date(e.target.value).toISOString() : "";
+                              setStageTimes(prev => ({ ...prev, [stage.id]: iso }));
+                            }}
+                            onBlur={async () => {
+                              if (stageTimes[stage.id]) {
+                                await updateStage(stage.id, { recorded_time: stageTimes[stage.id] });
+                              }
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-medium text-muted-foreground">Probed by</p>
+                          <StaffSearchPicker
+                            value={stagePic[stage.id] !== undefined ? (stagePic[stage.id]?.name || "") : (stage.recorded_by_name || "")}
+                            onSelect={async (staff) => {
+                              setStagePic(prev => ({ ...prev, [stage.id]: staff }));
+                              await updateStage(stage.id, { recorded_by_name: staff.name, recorded_by_staff_id: staff.id });
+                            }}
+                            placeholder="Search staff…"
+                          />
+                        </div>
                       </div>
-                    )}
-                    {/* Editable time after recording */}
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Time recorded</label>
-                      <Input
-                        type="datetime-local"
-                        className="h-9 text-xs"
-                        value={defaultTime}
-                        onChange={e => {
-                          const iso = e.target.value ? new Date(e.target.value).toISOString() : "";
-                          setStageTimes(prev => ({ ...prev, [stage.id]: iso }));
-                        }}
-                      />
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground px-2 -ml-2"
+                        onClick={() => { setActiveStage(stage.id); setPadOpen(stage.id); }}
+                      >
+                        <RotateCcw size={11} className="mr-1" /> Re-record
+                      </Button>
                     </div>
-                    {/* Staff picker after recording */}
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Recorded by</label>
-                      <StaffSearchPicker
-                        value={
-                          stagePic[stage.id] !== undefined
-                            ? (stagePic[stage.id]?.name || "")
-                            : (stage.recorded_by_name || "")
-                        }
-                        onSelect={staff => setStagePic(prev => ({ ...prev, [stage.id]: staff }))}
-                        placeholder="Search staff…"
-                      />
+                  )}
+
+                  {/* Missed */}
+                  {stage.missed && (
+                    <div className="text-sm text-gray-600">
+                      <span className="font-medium">Reason: </span>{stage.missed_reason || "Not specified"}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs text-muted-foreground px-2"
-                      onClick={() => setPadOpen(stage.id)}
-                    >
-                      <RotateCcw size={12} className="mr-1" />
-                      Re-record
-                    </Button>
-                  </div>
-                ) : stage.missed ? (
-                  <div className="text-xs text-muted-foreground pt-1">
-                    Reason: {stage.missed_reason || "Not specified"}
-                  </div>
-                ) : (
-                  <div className="space-y-2 pt-1">
-                    <Button
-                      className="w-full h-12 font-medium"
-                      style={{ backgroundColor: "#256984" }}
-                      onClick={() => setPadOpen(stage.id)}
-                    >
-                      <Thermometer size={16} className="mr-2" />
-                      Take reading
-                    </Button>
-                    <Popover
-                      open={missedPopover === stage.id}
-                      onOpenChange={o => {
-                        setMissedPopover(o ? stage.id : null);
-                        if (!o) setMissedReason("");
-                      }}
-                    >
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="w-full h-9 text-xs text-muted-foreground"
-                        >
-                          Mark as missed
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-72 space-y-3 p-4">
-                        <p className="text-sm font-medium">Why was this reading missed?</p>
-                        <Select value={missedReason} onValueChange={setMissedReason}>
-                          <SelectTrigger className="h-10">
-                            <SelectValue placeholder="Select reason…" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {MISSED_REASONS.map(r => (
-                              <SelectItem key={r} value={r}>{r}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          className="w-full h-10"
-                          style={{ backgroundColor: "#256984" }}
-                          onClick={() => handleMarkMissed(stage)}
-                          disabled={!missedReason}
-                        >
-                          Confirm
-                        </Button>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                )}
+                  )}
+
+                  {/* Not yet recorded + unlocked — show entry UI */}
+                  {!stage.recorded_value && !stage.missed && unlocked && (
+                    <div className="space-y-3">
+                      {/* Due time line */}
+                      {stage.target_time && (
+                        <div className="flex items-center gap-1.5 text-sm">
+                          <Clock size={13} className={due?.overdue ? "text-orange-500" : "text-muted-foreground"} />
+                          <span className={due?.overdue ? "font-semibold text-orange-700" : "text-muted-foreground"}>
+                            Target by {fmtTime(stage.target_time)} · {stage.target_rule}
+                          </span>
+                        </div>
+                      )}
+
+                      {!isActive ? (
+                        // Collapsed — big Take reading button
+                        <div className="flex gap-2">
+                          <Button
+                            className="flex-1 h-14 text-base font-semibold"
+                            style={{ backgroundColor: "#256984" }}
+                            onClick={() => {
+                              setActiveStage(stage.id);
+                              setPadOpen(stage.id);
+                            }}
+                          >
+                            <Thermometer size={18} className="mr-2" />
+                            + Take reading
+                          </Button>
+                          <Popover
+                            open={missedPopover === stage.id}
+                            onOpenChange={o => {
+                              setMissedPopover(o ? stage.id : null);
+                              if (!o) setMissedReason("");
+                            }}
+                          >
+                            <PopoverTrigger asChild>
+                              <Button variant="outline" className="h-14 px-4 text-xs text-muted-foreground">
+                                Missed
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-72 space-y-3 p-4">
+                              <p className="text-sm font-medium">Why was this reading missed?</p>
+                              <Select value={missedReason} onValueChange={setMissedReason}>
+                                <SelectTrigger className="h-10">
+                                  <SelectValue placeholder="Select reason…" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {MISSED_REASONS.map(r => (
+                                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                className="w-full h-10"
+                                style={{ backgroundColor: "#256984" }}
+                                onClick={() => handleMarkMissed(stage)}
+                                disabled={!missedReason}
+                              >
+                                Confirm
+                              </Button>
+                            </PopoverContent>
+                          </Popover>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {/* Locked */}
+                  {!isDone && !unlocked && (
+                    <p className="text-xs text-gray-400 italic">
+                      Will unlock once Stage {stage.stage_number - 1} is complete.
+                    </p>
+                  )}
+                </div>
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* Corrective action — shown when any stage fails or data already exists */}
+      {/* Corrective action */}
       {(anyFailed || hasExistingCA) && (
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <AlertTriangle size={15} className="text-red-600" />
-            <h3 className="font-semibold text-sm text-red-700 uppercase tracking-wide">Corrective action required</h3>
+            <p className="text-xs font-semibold text-red-700 uppercase tracking-widest">Corrective action required</p>
           </div>
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+          <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-5 space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Batch affected</label>
-                <Input
-                  value={caBatch}
-                  onChange={e => setCaBatch(e.target.value)}
-                  placeholder="Batch name or ID"
-                  className="h-10 bg-white"
-                />
+                <Input value={caBatch} onChange={e => setCaBatch(e.target.value)} placeholder="Batch name or ID" className="h-10 bg-white" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Reviewed by</label>
-                <Input
-                  value={caReviewedBy}
-                  onChange={e => setCaReviewedBy(e.target.value)}
-                  placeholder="Name of reviewer"
-                  className="h-10 bg-white"
-                />
+                <Input value={caReviewedBy} onChange={e => setCaReviewedBy(e.target.value)} placeholder="Name of reviewer" className="h-10 bg-white" />
               </div>
               <div className="space-y-1 sm:col-span-2">
                 <label className="text-xs font-medium text-muted-foreground">Action taken</label>
-                <Textarea
-                  value={caTaken}
-                  onChange={e => setCaTaken(e.target.value)}
-                  placeholder="Describe the corrective action taken…"
-                  className="min-h-[80px] bg-white"
-                />
+                <Textarea value={caTaken} onChange={e => setCaTaken(e.target.value)} placeholder="Describe the corrective action taken…" className="min-h-[80px] bg-white" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Date</label>
-                <Input
-                  type="date"
-                  value={caDate}
-                  onChange={e => setCaDate(e.target.value)}
-                  className="h-10 bg-white"
-                />
+                <Input type="date" value={caDate} onChange={e => setCaDate(e.target.value)} className="h-10 bg-white" />
               </div>
             </div>
-            <Button
-              className="h-10 font-medium"
-              style={{ backgroundColor: "#256984" }}
-              onClick={saveCA}
-              disabled={caSaving}
-            >
+            <Button className="h-10 font-medium" style={{ backgroundColor: "#256984" }} onClick={saveCA} disabled={caSaving}>
               {caSaving ? "Saving…" : "Save corrective action"}
             </Button>
           </div>
         </div>
       )}
 
-      {/* Number pad modal */}
+      {/* Number pad */}
       {padOpen && (
         <NumberPadModal
           open={!!padOpen}
-          onClose={() => setPadOpen(null)}
+          onClose={() => { setPadOpen(null); setActiveStage(null); }}
           unit="°C"
           title="Enter temperature"
           onConfirm={(v) => {
