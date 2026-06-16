@@ -7364,6 +7364,17 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         recipe_id: 'recipe_id', recipeId: 'recipe_id',
         batch_id: 'batch_id', batchId: 'batch_id',
         source: 'source',
+        // cooling log header fields
+        item_name: 'item_name', itemName: 'item_name',
+        created_by_name: 'created_by_name', createdByName: 'created_by_name',
+        batch_qty: 'batch_qty', batchQty: 'batch_qty',
+        thermometer_id: 'thermometer_id', thermometerId: 'thermometer_id',
+        person_in_charge_name: 'person_in_charge_name', personInChargeName: 'person_in_charge_name',
+        person_in_charge_staff_id: 'person_in_charge_staff_id', personInChargeStaffId: 'person_in_charge_staff_id',
+        corrective_action_batch: 'corrective_action_batch', correctiveActionBatch: 'corrective_action_batch',
+        corrective_action_taken: 'corrective_action_taken', correctiveActionTaken: 'corrective_action_taken',
+        corrective_action_reviewed_by: 'corrective_action_reviewed_by', correctiveActionReviewedBy: 'corrective_action_reviewed_by',
+        corrective_action_date: 'corrective_action_date', correctiveActionDate: 'corrective_action_date',
       };
 
       for (const [k, v] of Object.entries(body)) {
@@ -7422,6 +7433,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (body.missed !== undefined) updates.missed = body.missed;
       if (body.missed_reason !== undefined) updates.missed_reason = body.missed_reason;
       if (body.missedReason !== undefined) updates.missed_reason = body.missedReason;
+      if (body.recorded_by_name !== undefined) updates.recorded_by_name = body.recorded_by_name;
+      if (body.recordedByName !== undefined) updates.recorded_by_name = body.recordedByName;
 
       const { data: stage, error } = await supabase.from('compliance_log_stages').update(updates).eq('id', stageId).select().single();
       if (error) throw error;

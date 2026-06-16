@@ -56,6 +56,16 @@ interface ComplianceLog {
   cook_recorded_time: string | null;
   cook_recorded_by_staff_id: number | null;
   wastage_total_value: number | null;
+  // cooling header fields
+  item_name: string | null;
+  batch_qty: string | null;
+  thermometer_id: string | null;
+  person_in_charge_name: string | null;
+  person_in_charge_staff_id: number | null;
+  corrective_action_batch: string | null;
+  corrective_action_taken: string | null;
+  corrective_action_reviewed_by: string | null;
+  corrective_action_date: string | null;
   stages: CoolingStage[];
   supplierLines: SupplierLine[];
   wastageLines: WastageLine[];
@@ -72,6 +82,7 @@ interface CoolingStage {
   recorded_time: string | null;
   recorded_value: string | null;
   recorded_by_staff_id: number | null;
+  recorded_by_name: string | null;
   within_target: boolean | null;
   missed: boolean | null;
   missed_reason: string | null;
@@ -129,30 +140,75 @@ const REVIEW_CATEGORIES_DEFAULT = [
   "Probe calibration",
 ];
 
-// ─── Cooling section ──────────────────────────────────────────────────────────
+// ─── Cooling section ────────────────────────────────────────────────────────────
 
 function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
   const { toast } = useToast();
+
+  // Header field state — editable inline
+  const [itemName, setItemName] = useState(log.item_name || "");
+  const [batchQty, setBatchQty] = useState(log.batch_qty || "");
+  const [thermometerId, setThermometerId] = useState(log.thermometer_id || "");
+  const [picStaff, setPicStaff] = useState<{ id: number; name: string } | null>(
+    log.person_in_charge_name ? { id: log.person_in_charge_staff_id ?? 0, name: log.person_in_charge_name } : null
+  );
+
+  // Stage state
   const [padOpen, setPadOpen] = useState<string | null>(null);
   const [missedPopover, setMissedPopover] = useState<string | null>(null);
   const [missedReason, setMissedReason] = useState("");
+  // Per-stage staff picker: stageId -> { id, name } | null
+  const [stagePic, setStagePic] = useState<Record<string, { id: number; name: string } | null>>({});
+  // Per-stage editable recorded_time: stageId -> ISO string
+  const [stageTimes, setStageTimes] = useState<Record<string, string>>({});
+
+  // Corrective action state
+  const [caBatch, setCaBatch] = useState(log.corrective_action_batch || "");
+  const [caTaken, setCaTaken] = useState(log.corrective_action_taken || "");
+  const [caReviewedBy, setCaReviewedBy] = useState(log.corrective_action_reviewed_by || "");
+  const [caDate, setCaDate] = useState(log.corrective_action_date || "");
+  const [caSaving, setCaSaving] = useState(false);
+
+  const stages = log.stages || [];
+  const now = new Date();
+
+  const anyFailed = stages.some(s => s.within_target === false);
+  const hasExistingCA = !!(log.corrective_action_batch || log.corrective_action_taken);
+
+  const updateLog = async (updates: Record<string, unknown>) => {
+    await apiRequest("PUT", `/api/compliance/logs/${log.id}`, updates);
+    onRefresh();
+  };
 
   const updateStage = async (stageId: string, updates: Record<string, unknown>) => {
     await apiRequest("POST", `/api/compliance/logs/${log.id}/stages/${stageId}`, updates);
     onRefresh();
   };
 
+  const saveHeader = async (field: string, value: string | number | null) => {
+    if (value === (log as any)[field]) return;
+    await updateLog({ [field]: value });
+  };
+
   const handleTempConfirm = async (stage: CoolingStage, value: string) => {
     const temp = parseFloat(value);
-    let withinTarget = null;
+    let withinTarget: boolean | null = null;
     if (stage.stage_number === 1) withinTarget = temp >= 60;
     if (stage.stage_number === 2) withinTarget = temp <= 21;
     if (stage.stage_number === 3) withinTarget = temp <= 5;
+
+    const recTime = stageTimes[stage.id] || new Date().toISOString();
+    const picEntry = stagePic[stage.id];
+    const recByName = picEntry !== undefined ? (picEntry?.name ?? null) : (stage.recorded_by_name ?? null);
+    const recByStaffId = picEntry !== undefined ? (picEntry?.id ?? null) : (stage.recorded_by_staff_id ?? null);
+
     await updateStage(stage.id, {
       recordedValue: value,
-      recordedTime: new Date().toISOString(),
+      recordedTime: recTime,
       withinTarget,
       missed: false,
+      recorded_by_name: recByName,
+      recorded_by_staff_id: recByStaffId,
     });
     toast({ description: `Stage ${stage.stage_number} recorded: ${value}°C` });
   };
@@ -162,149 +218,335 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       toast({ description: "Please select a reason", variant: "destructive" });
       return;
     }
-    await updateStage(stage.id, {
-      missed: true,
-      missedReason: missedReason,
-      withinTarget: false,
-    });
+    await updateStage(stage.id, { missed: true, missedReason: missedReason, withinTarget: false });
     setMissedPopover(null);
     setMissedReason("");
     toast({ description: `Stage ${stage.stage_number} marked as missed` });
   };
 
-  const stages = log.stages || [];
-  const now = new Date();
+  const saveCA = async () => {
+    setCaSaving(true);
+    try {
+      await updateLog({
+        corrective_action_batch: caBatch,
+        corrective_action_taken: caTaken,
+        corrective_action_reviewed_by: caReviewedBy,
+        corrective_action_date: caDate,
+      });
+      toast({ description: "Corrective action saved" });
+    } finally {
+      setCaSaving(false);
+    }
+  };
+
+  // Format ISO -> datetime-local input value (local time)
+  const toDatetimeLocal = (iso: string | null) => {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } catch { return ""; }
+  };
 
   return (
-    <div className="space-y-3">
-      <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Cooling stages</h3>
-      <div className="grid gap-3 md:grid-cols-3">
-        {stages.map(stage => {
-          const isOverdue = stage.target_time && new Date(stage.target_time) < now && !stage.recorded_value && !stage.missed;
-          const isPass = stage.recorded_value && stage.within_target === true;
-          const isFail = stage.recorded_value && stage.within_target === false;
+    <div className="space-y-6">
 
-          return (
-            <div
-              key={stage.id}
-              className={cn(
-                "border rounded-xl p-4 space-y-3",
-                isPass && "border-green-200 bg-green-50",
-                isFail && "border-red-200 bg-red-50",
-                isOverdue && !stage.missed && "border-red-200 bg-red-50",
-                stage.missed && "border-gray-200 bg-gray-50",
-                !isPass && !isFail && !isOverdue && !stage.missed && "border-border"
-              )}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="font-semibold text-sm">{stage.stage_label}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    Target: <span className="font-medium">{stage.target_rule}</span>
-                  </div>
-                  {stage.target_time && (
-                    <div className="text-xs text-muted-foreground">
-                      Due by {format(parseISO(stage.target_time), "HH:mm")}
-                    </div>
-                  )}
-                </div>
-                {isOverdue && !stage.missed && (
-                  <Badge variant="destructive" className="text-xs shrink-0">Overdue</Badge>
+      {/* Two-stage cooling rule reminder */}
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 space-y-1.5">
+        <div className="flex items-center gap-2 font-semibold text-sm" style={{ color: "#256984" }}>
+          <Thermometer size={15} />
+          Two-stage cooling rule (FSANZ)
+        </div>
+        <div className="text-xs text-blue-800 space-y-0.5">
+          <div>Stage 1 — Cool from 60°C to 21°C <span className="font-semibold">within 2 hours</span></div>
+          <div>Stage 2 — Cool from 21°C to 5°C within a <span className="font-semibold">further 4 hours</span></div>
+        </div>
+      </div>
+
+      {/* Header fields */}
+      <div className="space-y-3">
+        <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Batch details</h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Batch / food item</label>
+            <Input
+              value={itemName}
+              onChange={e => setItemName(e.target.value)}
+              onBlur={() => saveHeader("item_name", itemName)}
+              placeholder="e.g. Chicken broth"
+              className="h-10"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Batch quantity</label>
+            <Input
+              value={batchQty}
+              onChange={e => setBatchQty(e.target.value)}
+              onBlur={() => saveHeader("batch_qty", batchQty)}
+              placeholder="e.g. 10L"
+              className="h-10"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Thermometer ID</label>
+            <Input
+              value={thermometerId}
+              onChange={e => setThermometerId(e.target.value)}
+              onBlur={() => saveHeader("thermometer_id", thermometerId)}
+              placeholder="e.g. TH-01"
+              className="h-10"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Person in charge</label>
+            <StaffSearchPicker
+              value={picStaff}
+              onChange={async (staff) => {
+                setPicStaff(staff);
+                await updateLog({
+                  person_in_charge_name: staff?.name ?? null,
+                  person_in_charge_staff_id: staff?.id ?? null,
+                });
+              }}
+              placeholder="Search staff…"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Cooling stages */}
+      <div className="space-y-3">
+        <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Temperature readings</h3>
+        <div className="grid gap-4 md:grid-cols-3">
+          {stages.map(stage => {
+            const isOverdue = stage.target_time && new Date(stage.target_time) < now && !stage.recorded_value && !stage.missed;
+            const isPass = stage.recorded_value && stage.within_target === true;
+            const isFail = stage.recorded_value && stage.within_target === false;
+
+            const defaultTime = stageTimes[stage.id] !== undefined
+              ? stageTimes[stage.id]
+              : toDatetimeLocal(stage.recorded_time || new Date().toISOString());
+
+            return (
+              <div
+                key={stage.id}
+                className={cn(
+                  "border rounded-xl p-4 space-y-3",
+                  isPass && "border-green-200 bg-green-50",
+                  isFail && "border-red-200 bg-red-50",
+                  isOverdue && !stage.missed && "border-orange-200 bg-orange-50",
+                  stage.missed && "border-gray-200 bg-gray-50",
+                  !isPass && !isFail && !isOverdue && !stage.missed && "border-border"
                 )}
-                {stage.missed && (
-                  <Badge variant="secondary" className="text-xs shrink-0">Missed</Badge>
+              >
+                {/* Stage header */}
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="font-semibold text-sm">
+                      Stage {stage.stage_number} — {stage.stage_label}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Target: <span className="font-medium">{stage.target_rule}</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    {isOverdue && !stage.missed && (
+                      <Badge variant="destructive" className="text-xs shrink-0">Overdue</Badge>
+                    )}
+                    {stage.missed && (
+                      <Badge variant="secondary" className="text-xs shrink-0">Missed</Badge>
+                    )}
+                    {isPass && (
+                      <Badge className="text-xs shrink-0 bg-green-600 hover:bg-green-600">Pass</Badge>
+                    )}
+                    {isFail && (
+                      <Badge variant="destructive" className="text-xs shrink-0">Fail</Badge>
+                    )}
+                  </div>
+                </div>
+
+                {/* Editable time + staff — always shown unless missed */}
+                {!stage.missed && (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Time recorded</label>
+                      <Input
+                        type="datetime-local"
+                        className="h-9 text-xs"
+                        value={defaultTime}
+                        onChange={e => {
+                          const iso = e.target.value ? new Date(e.target.value).toISOString() : "";
+                          setStageTimes(prev => ({ ...prev, [stage.id]: iso }));
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">Recorded by</label>
+                      <StaffSearchPicker
+                        value={
+                          stagePic[stage.id] !== undefined
+                            ? stagePic[stage.id]
+                            : (stage.recorded_by_name
+                                ? { id: stage.recorded_by_staff_id ?? 0, name: stage.recorded_by_name }
+                                : null)
+                        }
+                        onChange={staff => setStagePic(prev => ({ ...prev, [stage.id]: staff }))}
+                        placeholder="Search staff…"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Recorded value or actions */}
+                {stage.recorded_value ? (
+                  <div className="space-y-1 pt-1">
+                    <div className={cn(
+                      "text-3xl font-bold tabular-nums",
+                      isPass ? "text-green-700" : "text-red-700"
+                    )}>
+                      {stage.recorded_value}°C
+                    </div>
+                    {stage.recorded_by_name && (
+                      <div className="text-xs text-muted-foreground">By {stage.recorded_by_name}</div>
+                    )}
+                    {isPass && (
+                      <div className="flex items-center gap-1 text-xs text-green-700">
+                        <CheckCircle2 size={12} /> Within target
+                      </div>
+                    )}
+                    {isFail && (
+                      <div className="flex items-center gap-1 text-xs text-red-700">
+                        <AlertCircle size={12} /> Outside target — corrective action needed
+                      </div>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs text-muted-foreground mt-1 px-2"
+                      onClick={() => setPadOpen(stage.id)}
+                    >
+                      <RotateCcw size={12} className="mr-1" />
+                      Re-record
+                    </Button>
+                  </div>
+                ) : stage.missed ? (
+                  <div className="text-xs text-muted-foreground pt-1">
+                    Reason: {stage.missed_reason || "Not specified"}
+                  </div>
+                ) : (
+                  <div className="space-y-2 pt-1">
+                    <Button
+                      className="w-full h-12 font-medium"
+                      style={{ backgroundColor: "#256984" }}
+                      onClick={() => setPadOpen(stage.id)}
+                    >
+                      <Thermometer size={16} className="mr-2" />
+                      Take reading
+                    </Button>
+                    <Popover
+                      open={missedPopover === stage.id}
+                      onOpenChange={o => {
+                        setMissedPopover(o ? stage.id : null);
+                        if (!o) setMissedReason("");
+                      }}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-full h-9 text-xs text-muted-foreground"
+                        >
+                          Mark as missed
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-72 space-y-3 p-4">
+                        <p className="text-sm font-medium">Why was this reading missed?</p>
+                        <Select value={missedReason} onValueChange={setMissedReason}>
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Select reason…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {MISSED_REASONS.map(r => (
+                              <SelectItem key={r} value={r}>{r}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          className="w-full h-10"
+                          style={{ backgroundColor: "#256984" }}
+                          onClick={() => handleMarkMissed(stage)}
+                          disabled={!missedReason}
+                        >
+                          Confirm
+                        </Button>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
                 )}
               </div>
-
-              {stage.recorded_value ? (
-                <div className="space-y-1">
-                  <div className={cn(
-                    "text-2xl font-bold tabular-nums",
-                    isPass ? "text-green-700" : "text-red-700"
-                  )}>
-                    {stage.recorded_value}°C
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {stage.recorded_time && format(parseISO(stage.recorded_time), "HH:mm d MMM")}
-                  </div>
-                  {isPass && (
-                    <div className="flex items-center gap-1 text-xs text-green-700">
-                      <CheckCircle2 size={12} /> Within target
-                    </div>
-                  )}
-                  {isFail && (
-                    <div className="flex items-center gap-1 text-xs text-red-700">
-                      <AlertCircle size={12} /> Outside target
-                    </div>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs text-muted-foreground mt-1 px-2"
-                    onClick={() => setPadOpen(stage.id)}
-                  >
-                    <RotateCcw size={12} className="mr-1" />
-                    Re-record
-                  </Button>
-                </div>
-              ) : stage.missed ? (
-                <div className="text-xs text-muted-foreground">
-                  Reason: {stage.missed_reason || "Not specified"}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <Button
-                    className="w-full h-12 font-medium"
-                    style={{ backgroundColor: "#256984" }}
-                    onClick={() => setPadOpen(stage.id)}
-                  >
-                    <Thermometer size={16} className="mr-2" />
-                    Take reading
-                  </Button>
-                  <Popover
-                    open={missedPopover === stage.id}
-                    onOpenChange={o => {
-                      setMissedPopover(o ? stage.id : null);
-                      if (!o) setMissedReason("");
-                    }}
-                  >
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="w-full h-9 text-xs text-muted-foreground"
-                      >
-                        Mark as missed
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-72 space-y-3 p-4">
-                      <p className="text-sm font-medium">Why was this reading missed?</p>
-                      <Select value={missedReason} onValueChange={setMissedReason}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue placeholder="Select reason…" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {MISSED_REASONS.map(r => (
-                            <SelectItem key={r} value={r}>{r}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        className="w-full h-10"
-                        style={{ backgroundColor: "#256984" }}
-                        onClick={() => handleMarkMissed(stage)}
-                        disabled={!missedReason}
-                      >
-                        Confirm
-                      </Button>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
+
+      {/* Corrective action — shown when any stage fails or data already exists */}
+      {(anyFailed || hasExistingCA) && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-red-600" />
+            <h3 className="font-semibold text-sm text-red-700 uppercase tracking-wide">Corrective action required</h3>
+          </div>
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Batch affected</label>
+                <Input
+                  value={caBatch}
+                  onChange={e => setCaBatch(e.target.value)}
+                  placeholder="Batch name or ID"
+                  className="h-10 bg-white"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Reviewed by</label>
+                <Input
+                  value={caReviewedBy}
+                  onChange={e => setCaReviewedBy(e.target.value)}
+                  placeholder="Name of reviewer"
+                  className="h-10 bg-white"
+                />
+              </div>
+              <div className="space-y-1 sm:col-span-2">
+                <label className="text-xs font-medium text-muted-foreground">Action taken</label>
+                <Textarea
+                  value={caTaken}
+                  onChange={e => setCaTaken(e.target.value)}
+                  placeholder="Describe the corrective action taken…"
+                  className="min-h-[80px] bg-white"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Date</label>
+                <Input
+                  type="date"
+                  value={caDate}
+                  onChange={e => setCaDate(e.target.value)}
+                  className="h-10 bg-white"
+                />
+              </div>
+            </div>
+            <Button
+              className="h-10 font-medium"
+              style={{ backgroundColor: "#256984" }}
+              onClick={saveCA}
+              disabled={caSaving}
+            >
+              {caSaving ? "Saving…" : "Save corrective action"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Number pad modal */}
       {padOpen && (
