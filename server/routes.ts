@@ -7713,6 +7713,53 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
+  // ── GET /api/compliance/chemicals/pdf ──────────────────────────────────────
+  app.get('/api/compliance/chemicals/pdf', async (req: any, res: any) => {
+    try {
+      const { execFile } = await import('child_process');
+      const os = await import('os');
+      const fs = await import('fs');
+
+      // Fetch all active chemicals from Supabase
+      const { data: chemicals, error } = await supabase
+        .from('chemicals_register')
+        .select('*')
+        .eq('active', true)
+        .order('product_name', { ascending: true });
+      if (error) throw error;
+
+      const tmpPath = path.join(os.tmpdir(), `chemicals_${Date.now()}.pdf`);
+      const scriptPath = path.join(__dirname, 'generate_chemicals_pdf.py');
+      const jsonArg = JSON.stringify(chemicals || []);
+
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          'python3',
+          [scriptPath, jsonArg, tmpPath],
+          { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
+          (err: any, stdout: string, stderr: string) => {
+            if (err) {
+              console.error('[chemicals/pdf] stderr:', stderr);
+              reject(new Error(stderr || err.message));
+            } else {
+              resolve();
+            }
+          }
+        );
+      });
+
+      const pdfBuffer = fs.readFileSync(tmpPath);
+      fs.unlinkSync(tmpPath);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="Chemicals-Safety-Register.pdf"');
+      res.send(pdfBuffer);
+    } catch (e: any) {
+      console.error('[chemicals/pdf] error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {

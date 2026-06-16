@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { FlaskConical, Pencil, ExternalLink, Plus } from "lucide-react";
+import { FlaskConical, Pencil, ExternalLink, Plus, FileDown } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -122,32 +122,38 @@ function ChemicalModal({
       : { ...EMPTY_FORM }
   );
 
-  // Reset form when modal opens
-  const handleOpen = (o: boolean) => {
-    if (o) {
+  // Reset form whenever the chemical prop changes (covers switching between edit targets)
+  useEffect(() => {
+    if (open) {
       setForm(
         chemical
           ? {
               product_name: chemical.product_name,
-              chemform_product_code: chemical.chemform_product_code,
+              chemform_product_code: chemical.chemform_product_code ?? null,
               supplier: chemical.supplier,
-              supplier_url: chemical.supplier_url,
+              supplier_url: chemical.supplier_url ?? null,
               category: chemical.category,
               food_contact_safe: chemical.food_contact_safe,
               no_rinse: chemical.no_rinse,
-              ghs_hazard_class: chemical.ghs_hazard_class,
-              dilution_instructions: chemical.dilution_instructions,
-              storage_location: chemical.storage_location,
-              areas_of_use: chemical.areas_of_use,
-              sds_url: chemical.sds_url,
-              info_sheet_url: chemical.info_sheet_url,
-              sds_date: chemical.sds_date,
-              last_reviewed: chemical.last_reviewed,
-              notes: chemical.notes,
+              ghs_hazard_class: chemical.ghs_hazard_class ?? null,
+              dilution_instructions: chemical.dilution_instructions ?? null,
+              storage_location: chemical.storage_location ?? null,
+              areas_of_use: chemical.areas_of_use ?? null,
+              sds_url: chemical.sds_url ?? null,
+              info_sheet_url: chemical.info_sheet_url ?? null,
+              sds_date: chemical.sds_date ?? null,
+              last_reviewed: chemical.last_reviewed ?? null,
+              notes: chemical.notes ?? null,
             }
           : { ...EMPTY_FORM }
       );
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chemical, open]);
+
+  // handleOpen kept for Dialog onOpenChange
+  const handleOpen = (o: boolean) => {
+    if (!o) onClose();
   };
 
   const setField = (key: keyof ChemicalFormData, value: any) =>
@@ -431,6 +437,31 @@ export default function ChemicalsRegister() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [modalOpen, setModalOpen] = useState(false);
   const [editChemical, setEditChemical] = useState<Chemical | null>(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    setPdfLoading(true);
+    try {
+      const res = await apiRequest("GET", "/api/compliance/chemicals/pdf");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(err.error || "Failed to generate PDF");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Chemicals-Safety-Register.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast({ title: "PDF Error", description: e.message, variant: "destructive" });
+    } finally {
+      setPdfLoading(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     let list = chemicals;
@@ -497,14 +528,25 @@ export default function ChemicalsRegister() {
             </a>
           </p>
         </div>
-        <Button
-          onClick={openAdd}
-          className="h-12 px-5 gap-2"
-          style={{ backgroundColor: "#256984" }}
-        >
-          <Plus size={16} />
-          Add Chemical
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={handleDownloadPdf}
+            disabled={pdfLoading}
+            variant="outline"
+            className="h-12 px-4 gap-2 border-[#256984] text-[#256984] hover:bg-[#256984]/10"
+          >
+            <FileDown size={16} />
+            {pdfLoading ? "Generating..." : "Print Safety Sheet"}
+          </Button>
+          <Button
+            onClick={openAdd}
+            className="h-12 px-5 gap-2"
+            style={{ backgroundColor: "#256984" }}
+          >
+            <Plus size={16} />
+            Add Chemical
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
