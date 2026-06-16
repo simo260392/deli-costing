@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -30,6 +30,17 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -139,6 +150,81 @@ const REVIEW_CATEGORIES_DEFAULT = [
   "Pest control",
   "Probe calibration",
 ];
+
+// ─── Food item smartsearch ────────────────────────────────────────────────────
+
+interface FoodItem { id: string; name: string; type: string; }
+
+function FoodSearchPicker({
+  value,
+  onSelect,
+  placeholder = "Search recipes, sub-recipes, ingredients…",
+}: {
+  value: string;
+  onSelect: (item: FoodItem) => void;
+  placeholder?: string;
+}) {
+  const [query, setQuery] = useState(value || "");
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const { data: results = [] } = useQuery<FoodItem[]>({
+    queryKey: ["/api/compliance/food-search", query],
+    queryFn: () =>
+      query.length >= 1
+        ? apiRequest("GET", `/api/compliance/food-search?q=${encodeURIComponent(query)}`).then(r => r.json())
+        : Promise.resolve([]),
+    enabled: query.length >= 1,
+  });
+
+  useEffect(() => { setQuery(value || ""); }, [value]);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <Input
+        value={query}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        placeholder={placeholder}
+        className="h-10"
+        autoComplete="off"
+      />
+      {open && results.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-popover border border-border rounded-lg shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+          {results.map(item => (
+            <button
+              key={item.id}
+              className="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-muted transition-colors border-b border-border last:border-0"
+              onMouseDown={() => {
+                setQuery(item.name);
+                setOpen(false);
+                onSelect(item);
+              }}
+            >
+              <span className="text-sm font-medium">{item.name}</span>
+              <span className="text-xs text-muted-foreground shrink-0">{item.type}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && query.length >= 1 && results.length === 0 && (
+        <div className="absolute z-50 top-full mt-1 left-0 right-0 bg-popover border border-border rounded-lg shadow-lg px-4 py-3 text-sm text-muted-foreground">
+          No matches for "{query}"
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Cooling section ────────────────────────────────────────────────────────────
 
@@ -270,12 +356,13 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Batch / food item</label>
-            <Input
+            <FoodSearchPicker
               value={itemName}
-              onChange={e => setItemName(e.target.value)}
-              onBlur={() => saveHeader("item_name", itemName)}
-              placeholder="e.g. Chicken broth"
-              className="h-10"
+              onSelect={async (item) => {
+                setItemName(item.name);
+                await saveHeader("item_name", item.name);
+              }}
+              placeholder="Search recipes, sub-recipes, ingredients…"
             />
           </div>
           <div className="space-y-1">
@@ -1362,7 +1449,36 @@ export default function ComplianceLogEntry() {
 
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-2xl font-bold">{typeLabel}</h1>
-          <StatusPill status={status} />
+          <div className="flex items-center gap-2">
+            <StatusPill status={status} />
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-9 w-9 text-muted-foreground hover:text-red-600 hover:bg-red-50">
+                  <Trash2 size={17} />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this log?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete the {typeLabel.toLowerCase()} and all recorded data. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-red-600 hover:bg-red-700 text-white"
+                    onClick={async () => {
+                      await apiRequest("DELETE", `/api/compliance/logs/${logId}`);
+                      navigate("/compliance");
+                    }}
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </div>
 

@@ -7308,6 +7308,19 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         batch_qty: body.batch_qty ?? body.batchQty ?? null,
       }).select().single();
       if (error) throw error;
+
+      // For cooling logs, create the 3 stages automatically
+      if (log && log.log_type === 'cooling') {
+        const now = new Date();
+        const stage2Time = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+        const stage3Time = new Date(now.getTime() + 6 * 60 * 60 * 1000);
+        await supabase.from('compliance_log_stages').insert([
+          { log_id: log.id, stage_number: 1, stage_label: 'Start', target_time: now.toISOString(), target_rule: '>=60 deg C', recorded_time: now.toISOString() },
+          { log_id: log.id, stage_number: 2, stage_label: '@ 2 hours', target_time: stage2Time.toISOString(), target_rule: '<=21 deg C' },
+          { log_id: log.id, stage_number: 3, stage_label: '@ 4 hours', target_time: stage3Time.toISOString(), target_rule: '<=5 deg C' },
+        ]);
+      }
+
       res.json(log);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -7333,6 +7346,37 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       log.derivedStatus = deriveComplianceStatus(log, stages || [], supplierLines || []);
 
       res.json(log);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── GET /api/compliance/food-search — search recipes/sub-recipes/ingredients ─
+  app.get('/api/compliance/food-search', async (req: any, res: any) => {
+    try {
+      const q = (req.query.q || '').toString().toLowerCase().trim();
+      if (!q || q.length < 1) return res.json([]);
+
+      const [{ data: recipes }, { data: subRecipes }, { data: ingredients }] = await Promise.all([
+        supabase.from('recipes').select('id, name').ilike('name', `%${q}%`).limit(8),
+        supabase.from('sub_recipes').select('id, name').ilike('name', `%${q}%`).limit(8),
+        supabase.from('ingredients').select('id, name').ilike('name', `%${q}%`).limit(8),
+      ]);
+
+      const results: { id: string; name: string; type: string }[] = [
+        ...(recipes || []).map((r: any) => ({ id: `recipe-${r.id}`, name: r.name, type: 'Recipe' })),
+        ...(subRecipes || []).map((s: any) => ({ id: `sub-${s.id}`, name: s.name, type: 'Sub-recipe' })),
+        ...(ingredients || []).map((i: any) => ({ id: `ing-${i.id}`, name: i.name, type: 'Ingredient' })),
+      ];
+
+      // Sort: exact matches first, then starts-with, then contains
+      results.sort((a, b) => {
+        const aStart = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStart = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStart - bStart || a.name.localeCompare(b.name);
+      });
+
+      res.json(results.slice(0, 15));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
