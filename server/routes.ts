@@ -7719,30 +7719,22 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     try {
       const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
 
-      // Get all active flex products
-      const { data: products, error: pErr } = await supabase
-        .from('flex_products')
-        .select('id, name, sku, status, categories_json, computed_allergens_json')
-        .eq('status', 'active')
-        .order('name');
-      if (pErr) throw pErr;
-
-      // Get all costings for allergen data
-      const { data: costings, error: cErr } = await supabase
-        .from('flex_product_costings')
-        .select('flex_product_id, computed_allergens_json');
-      if (cErr) throw cErr;
+      // Use storage (SQLite) for flex_products and flex_product_costings
+      const products = await storage.getFlexProducts();
+      const costings = await storage.getAllFlexProductCostings();
 
       const costingMap: Record<number, string[]> = {};
-      for (const c of costings || []) {
-        try { costingMap[c.flex_product_id] = JSON.parse(c.computed_allergens_json || '[]'); } catch { costingMap[c.flex_product_id] = []; }
+      for (const c of costings) {
+        try { costingMap[c.flexProductId] = JSON.parse(c.computedAllergensJson || '[]'); } catch { costingMap[c.flexProductId] = []; }
       }
 
-      const rows = (products || []).map((p: any) => {
+      const activeProducts = products.filter((p: any) => p.status === 'active');
+
+      const rows = activeProducts.map((p: any) => {
         // Prefer costing-computed allergens (from actual recipe), fall back to flex sync
-        const allergens: string[] = costingMap[p.id] ||
-          (() => { try { return JSON.parse(p.computed_allergens_json || '[]'); } catch { return []; } })();
-        const categories: string[] = (() => { try { return JSON.parse(p.categories_json || '[]').map((c: any) => c.name || c); } catch { return []; } })();
+        const allergens: string[] = costingMap[p.id] ??
+          (() => { try { return JSON.parse(p.flexAllergensJson || '[]'); } catch { return []; } })();
+        const categories: string[] = (() => { try { return JSON.parse(p.categoriesJson || '[]').map((c: any) => c.name || c); } catch { return []; } })();
         return {
           id: p.id,
           name: p.name,
@@ -7753,8 +7745,12 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         };
       });
 
+      // Sort alphabetically by name
+      rows.sort((a: any, b: any) => a.name.localeCompare(b.name));
+
       res.json({ allergens: ALLERGENS, products: rows });
     } catch (e: any) {
+      console.error('[allergen-matrix]', e.message);
       res.status(500).json({ error: e.message });
     }
   });
