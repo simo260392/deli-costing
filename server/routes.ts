@@ -7713,6 +7713,52 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
+  // ── GET /api/compliance/allergen-matrix ─────────────────────────────────────
+  // Returns all active products with their computed allergens for the matrix page.
+  app.get('/api/compliance/allergen-matrix', async (_req: any, res: any) => {
+    try {
+      const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
+
+      // Get all active flex products
+      const { data: products, error: pErr } = await supabase
+        .from('flex_products')
+        .select('id, name, sku, status, categories_json, computed_allergens_json')
+        .eq('status', 'active')
+        .order('name');
+      if (pErr) throw pErr;
+
+      // Get all costings for allergen data
+      const { data: costings, error: cErr } = await supabase
+        .from('flex_product_costings')
+        .select('flex_product_id, computed_allergens_json');
+      if (cErr) throw cErr;
+
+      const costingMap: Record<number, string[]> = {};
+      for (const c of costings || []) {
+        try { costingMap[c.flex_product_id] = JSON.parse(c.computed_allergens_json || '[]'); } catch { costingMap[c.flex_product_id] = []; }
+      }
+
+      const rows = (products || []).map((p: any) => {
+        // Prefer costing-computed allergens (from actual recipe), fall back to flex sync
+        const allergens: string[] = costingMap[p.id] ||
+          (() => { try { return JSON.parse(p.computed_allergens_json || '[]'); } catch { return []; } })();
+        const categories: string[] = (() => { try { return JSON.parse(p.categories_json || '[]').map((c: any) => c.name || c); } catch { return []; } })();
+        return {
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          categories,
+          allergens: allergens.filter((a: string) => ALLERGENS.includes(a)),
+          hasCosting: !!costingMap[p.id],
+        };
+      });
+
+      res.json({ allergens: ALLERGENS, products: rows });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── GET /api/compliance/chemicals/pdf ──────────────────────────────────────
   app.get('/api/compliance/chemicals/pdf', async (req: any, res: any) => {
     try {
