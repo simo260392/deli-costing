@@ -7596,6 +7596,123 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
+  // ── GET /api/compliance/chemicals ─────────────────────────────────────────
+  app.get('/api/compliance/chemicals', async (req: any, res: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('chemicals_register')
+        .select('*')
+        .eq('active', true)
+        .order('category')
+        .order('product_name');
+      if (error) throw error;
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── POST /api/compliance/chemicals ────────────────────────────────────────
+  app.post('/api/compliance/chemicals', async (req: any, res: any) => {
+    try {
+      const body = req.body || {};
+      const { data, error } = await supabase
+        .from('chemicals_register')
+        .insert({
+          product_name: body.product_name,
+          chemform_product_code: body.chemform_product_code || null,
+          supplier: body.supplier || null,
+          supplier_url: body.supplier_url || null,
+          category: body.category || 'other',
+          food_contact_safe: body.food_contact_safe ?? false,
+          no_rinse: body.no_rinse ?? false,
+          ghs_hazard_class: body.ghs_hazard_class || null,
+          dilution_instructions: body.dilution_instructions || null,
+          storage_location: body.storage_location || null,
+          areas_of_use: body.areas_of_use || null,
+          sds_url: body.sds_url || null,
+          info_sheet_url: body.info_sheet_url || null,
+          sds_date: body.sds_date || null,
+          last_reviewed: body.last_reviewed || null,
+          notes: body.notes || null,
+          active: true,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── GET /api/compliance/chemicals/:id ─────────────────────────────────────
+  app.get('/api/compliance/chemicals/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { data, error } = await supabase
+        .from('chemicals_register')
+        .select('*')
+        .eq('id', id)
+        .single();
+      if (error || !data) return res.status(404).json({ error: 'Not found' });
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── PUT /api/compliance/chemicals/:id ─────────────────────────────────────
+  app.put('/api/compliance/chemicals/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const body = req.body || {};
+      const { data, error } = await supabase
+        .from('chemicals_register')
+        .update({
+          product_name: body.product_name,
+          chemform_product_code: body.chemform_product_code ?? null,
+          supplier: body.supplier ?? null,
+          supplier_url: body.supplier_url ?? null,
+          category: body.category,
+          food_contact_safe: body.food_contact_safe ?? false,
+          no_rinse: body.no_rinse ?? false,
+          ghs_hazard_class: body.ghs_hazard_class ?? null,
+          dilution_instructions: body.dilution_instructions ?? null,
+          storage_location: body.storage_location ?? null,
+          areas_of_use: body.areas_of_use ?? null,
+          sds_url: body.sds_url ?? null,
+          info_sheet_url: body.info_sheet_url ?? null,
+          sds_date: body.sds_date ?? null,
+          last_reviewed: body.last_reviewed ?? null,
+          notes: body.notes ?? null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── DELETE /api/compliance/chemicals/:id (soft delete) ────────────────────
+  app.delete('/api/compliance/chemicals/:id', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { error } = await supabase
+        .from('chemicals_register')
+        .update({ active: false, updated_at: new Date().toISOString() })
+        .eq('id', id);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {

@@ -29,6 +29,7 @@ import Compliance from "@/pages/Compliance";
 import ComplianceLogEntry from "@/pages/ComplianceLogEntry";
 import ComplianceAllergenMatrix from "@/pages/ComplianceAllergenMatrix";
 import AllergenStatement from "@/pages/AllergenStatement";
+import ChemicalsRegister from "@/pages/ChemicalsRegister";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -115,6 +116,7 @@ function AuthenticatedApp() {
         <Route path="/compliance" component={Compliance} />
         <Route path="/compliance/allergens-matrix" component={ComplianceAllergenMatrix} />
         <Route path="/compliance/allergen-statement" component={AllergenStatement} />
+        <Route path="/compliance/chemicals" component={ChemicalsRegister} />
         <Route path="/compliance/:logType/:logId" component={ComplianceLogEntry} />
         <Route component={NotFound} />
       </Switch>

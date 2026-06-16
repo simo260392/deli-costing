@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -58,6 +58,7 @@ const foodHrefs = new Set(foodSubItems.map(i => i.href));
 const complianceSubItems = [
   { href: "/compliance",                    label: "Records Hub",        icon: ClipboardCheck, slug: "compliance" },
   { href: "/compliance/allergens-matrix",   label: "Allergens Matrix",   icon: Leaf,           slug: "compliance" },
+  { href: "/compliance/chemicals",          label: "Chemicals Register", icon: FlaskConical,   slug: "compliance" },
   { href: "/compliance/allergen-statement", label: "Allergen Statement", icon: FileText,       slug: "compliance" },
 ];
 
