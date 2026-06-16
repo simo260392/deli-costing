@@ -366,9 +366,26 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
                   </div>
                 </div>
 
-                {/* Editable time + staff — always shown unless missed */}
-                {!stage.missed && (
-                  <>
+                {/* Recorded value or actions */}
+                {stage.recorded_value ? (
+                  <div className="space-y-3">
+                    <div className={cn(
+                      "text-3xl font-bold tabular-nums",
+                      isPass ? "text-green-700" : "text-red-700"
+                    )}>
+                      {stage.recorded_value}°C
+                    </div>
+                    {isPass && (
+                      <div className="flex items-center gap-1 text-xs text-green-700">
+                        <CheckCircle2 size={12} /> Within target
+                      </div>
+                    )}
+                    {isFail && (
+                      <div className="flex items-center gap-1 text-xs text-red-700">
+                        <AlertCircle size={12} /> Outside target — corrective action needed
+                      </div>
+                    )}
+                    {/* Editable time after recording */}
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">Time recorded</label>
                       <Input
@@ -381,6 +398,7 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
                         }}
                       />
                     </div>
+                    {/* Staff picker after recording */}
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">Recorded by</label>
                       <StaffSearchPicker
@@ -393,35 +411,10 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
                         placeholder="Search staff…"
                       />
                     </div>
-                  </>
-                )}
-
-                {/* Recorded value or actions */}
-                {stage.recorded_value ? (
-                  <div className="space-y-1 pt-1">
-                    <div className={cn(
-                      "text-3xl font-bold tabular-nums",
-                      isPass ? "text-green-700" : "text-red-700"
-                    )}>
-                      {stage.recorded_value}°C
-                    </div>
-                    {stage.recorded_by_name && (
-                      <div className="text-xs text-muted-foreground">By {stage.recorded_by_name}</div>
-                    )}
-                    {isPass && (
-                      <div className="flex items-center gap-1 text-xs text-green-700">
-                        <CheckCircle2 size={12} /> Within target
-                      </div>
-                    )}
-                    {isFail && (
-                      <div className="flex items-center gap-1 text-xs text-red-700">
-                        <AlertCircle size={12} /> Outside target — corrective action needed
-                      </div>
-                    )}
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-8 text-xs text-muted-foreground mt-1 px-2"
+                      className="h-8 text-xs text-muted-foreground px-2"
                       onClick={() => setPadOpen(stage.id)}
                     >
                       <RotateCcw size={12} className="mr-1" />
@@ -1439,12 +1432,12 @@ export default function ComplianceLogEntry() {
           </div>
 
           {/* Spacer for sign-off bar */}
-          <div className="h-24" />
+          {logType !== "cooling" && <div className="h-24" />}
         </div>
       </div>
 
       {/* Sign-off bar */}
-      <SignOffBar log={log} onRefresh={() => refetch()} />
+      {logType !== "cooling" && <SignOffBar log={log} onRefresh={() => refetch()} />}
     </div>
   );
 }
