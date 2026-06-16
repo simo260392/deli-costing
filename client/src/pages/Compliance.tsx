@@ -36,6 +36,13 @@ interface ComplianceLog {
   cook_recorded_time: string | null;
   wastage_total_value: number | null;
   created_at: string;
+  // display fields
+  item_name: string | null;
+  created_by_name: string | null;
+  batch_qty: string | null;
+  updated_at: string | null;
+  stageCount: number;
+  stagesCompleted: number;
 }
 
 interface AuditStatus {
@@ -90,6 +97,21 @@ export function StatusPill({ status }: { status: string }) {
 }
 
 // ─── Log row summary helpers ──────────────────────────────────────────────────
+
+const LOG_TYPE_DISPLAY: Record<string, string> = {
+  cooling: "Cooling",
+  cooking: "Cooking",
+  thawing: "Thawing",
+  supplier: "Supplier Delivery",
+  wastage: "Wastage",
+  review: "Weekly Review",
+};
+
+function logItemName(log: ComplianceLog): string | null {
+  if (log.item_name) return log.item_name;
+  if (log.log_type === "thawing") return log.thaw_item || null;
+  return null;
+}
 
 function logTitle(log: ComplianceLog): string {
   if (log.log_type === "supplier") return log.supplier_id ? `Supplier #${log.supplier_id}` : "Supplier Delivery";
@@ -413,45 +435,103 @@ export default function Compliance() {
                   <div
                     key={log.id}
                     className={cn(
-                      "bg-card border border-border rounded-xl p-4 flex items-center gap-4 border-l-4",
+                      "bg-card border border-border rounded-xl border-l-4 overflow-hidden cursor-pointer hover:shadow-sm transition-shadow",
                       borderColor
                     )}
+                    onClick={() => navigate(`/compliance/${log.log_type}/${log.id}`)}
                   >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-sm">{logTitle(log)}</span>
-                        {log.batch_id && (
-                          <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">
-                            {log.batch_id}
+                    <div className="p-4 flex items-start gap-4">
+                      <div className="flex-1 min-w-0">
+                        {/* Log type label + auto badge */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            {LOG_TYPE_DISPLAY[log.log_type] || log.log_type}
                           </span>
-                        )}
-                        {log.source === "production_auto" && (
-                          <Badge variant="secondary" className="text-xs">Auto</Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 mt-1 flex-wrap">
-                        {logKeyReadings(log) && (
-                          <span className="text-xs text-muted-foreground">{logKeyReadings(log)}</span>
-                        )}
-                        {log.signed_at && (
-                          <span className="text-xs text-muted-foreground">
-                            Signed off {format(parseISO(log.signed_at), "HH:mm")}
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                          {log.source === "production_auto" && (
+                            <Badge variant="secondary" className="text-xs py-0">Auto</Badge>
+                          )}
+                        </div>
 
-                    <div className="flex items-center gap-3 shrink-0">
-                      <StatusPill status={status} />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-10 px-3 gap-1.5"
-                        onClick={() => navigate(`/compliance/${log.log_type}/${log.id}`)}
-                      >
-                        <Edit2 size={14} />
-                        Edit
-                      </Button>
+                        {/* Item name — main identifier */}
+                        <div className="mt-0.5">
+                          {logItemName(log) ? (
+                            <span className="font-semibold text-sm text-foreground">{logItemName(log)}</span>
+                          ) : log.log_type === "wastage" ? (
+                            <span className="font-semibold text-sm text-foreground">Wastage Sheet</span>
+                          ) : log.log_type === "review" ? (
+                            <span className="font-semibold text-sm text-foreground">Weekly Review</span>
+                          ) : (
+                            <span className="text-sm text-muted-foreground italic">No item specified</span>
+                          )}
+                        </div>
+
+                        {/* Meta row */}
+                        <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                          {log.created_by_name && (
+                            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#256984] inline-block" />
+                              {log.created_by_name}
+                            </span>
+                          )}
+                          {log.batch_qty && (
+                            <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                              {log.batch_qty}
+                            </span>
+                          )}
+                          {logKeyReadings(log) && (
+                            <span className="text-xs text-muted-foreground">{logKeyReadings(log)}</span>
+                          )}
+                          {log.signed_at && (
+                            <span className="text-xs text-muted-foreground">
+                              Signed {format(parseISO(log.signed_at), "h:mm a")}
+                            </span>
+                          )}
+                          {(log.updated_at || log.created_at) && (
+                            <span className="text-xs text-muted-foreground">
+                              Edited {format(parseISO(log.updated_at || log.created_at), "h:mm a")}
+                            </span>
+                          )}
+                          {log.batch_id && log.source !== "production_auto" && (
+                            <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">
+                              {log.batch_id}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Stage progress — cooling/thawing only */}
+                        {(log.log_type === "cooling" || log.log_type === "thawing") && (log.stageCount || 0) > 0 && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <div className="flex gap-1">
+                              {Array.from({ length: log.stageCount }).map((_, i) => (
+                                <div
+                                  key={i}
+                                  className={cn(
+                                    "h-1.5 w-6 rounded-full",
+                                    i < (log.stagesCompleted || 0) ? "bg-[#256984]" : "bg-muted"
+                                  )}
+                                />
+                              ))}
+                            </div>
+                            <span className="text-xs text-muted-foreground">
+                              Stage {log.stagesCompleted || 0} of {log.stageCount}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Right: status + edit */}
+                      <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                        <StatusPill status={status} />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 px-3 gap-1.5"
+                          onClick={(e) => { e.stopPropagation(); navigate(`/compliance/${log.log_type}/${log.id}`); }}
+                        >
+                          <Edit2 size={13} />
+                          Edit
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );

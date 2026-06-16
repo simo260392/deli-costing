@@ -7232,16 +7232,43 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const { data: logs, error } = await query;
       if (error) throw error;
 
+      // Pre-fetch recipes + suppliers for name resolution
+      const allRecipes = await storage.getRecipes();
+      const allSubRecipes = await storage.getSubRecipes();
+      const allSuppliers = await storage.getSuppliers();
+      const recipeMap: Record<number, string> = {};
+      const subRecipeMap: Record<number, string> = {};
+      const supplierMap: Record<number, string> = {};
+      for (const r of allRecipes) recipeMap[r.id] = r.name;
+      for (const sr of allSubRecipes) subRecipeMap[sr.id] = sr.name;
+      for (const s of allSuppliers) supplierMap[s.id] = s.name;
+
       // For in_progress logs, fetch stages/supplier lines and derive status
       const result = await Promise.all((logs || []).map(async (log: any) => {
+        // Resolve item_name if not already stored
+        if (!log.item_name) {
+          if (log.log_type === 'cooling' || log.log_type === 'cooking') {
+            log.item_name = log.recipe_id ? (recipeMap[log.recipe_id] || subRecipeMap[log.recipe_id] || null) : null;
+          } else if (log.log_type === 'supplier') {
+            log.item_name = log.supplier_id ? (supplierMap[log.supplier_id] || null) : null;
+          } else if (log.log_type === 'thawing') {
+            log.item_name = log.thaw_item || null;
+          }
+        }
+
         if (log.status !== 'pass' && log.status !== 'closed') {
           const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', log.id).order('stage_number');
           const { data: supplierLines } = log.log_type === 'supplier'
             ? await supabase.from('compliance_supplier_lines').select('*').eq('log_id', log.id)
             : { data: [] };
           log.derivedStatus = deriveComplianceStatus(log, stages || [], supplierLines || []);
+          // Attach stage count for progress display
+          log.stageCount = (stages || []).length;
+          log.stagesCompleted = (stages || []).filter((s: any) => s.recorded_value || s.missed).length;
         } else {
           log.derivedStatus = log.status;
+          log.stageCount = 0;
+          log.stagesCompleted = 0;
         }
         return log;
       }));
@@ -7275,6 +7302,10 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         cook_recorded_time: body.cook_recorded_time ?? body.cookRecordedTime ?? null,
         cook_recorded_by_staff_id: body.cook_recorded_by_staff_id ?? body.cookRecordedByStaffId ?? null,
         wastage_total_value: body.wastage_total_value ?? body.wastageTotalValue ?? null,
+        // New display fields
+        item_name: body.item_name ?? body.itemName ?? null,
+        created_by_name: body.created_by_name ?? body.createdByName ?? null,
+        batch_qty: body.batch_qty ?? body.batchQty ?? null,
       }).select().single();
       if (error) throw error;
       res.json(log);
