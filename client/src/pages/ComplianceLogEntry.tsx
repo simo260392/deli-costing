@@ -1503,6 +1503,7 @@ export default function ComplianceLogEntry() {
                     onClick={async () => {
                       await apiRequest("DELETE", `/api/compliance/logs/${logId}`);
                       await qc.invalidateQueries({ queryKey: ["/api/compliance/logs"] });
+                      await qc.invalidateQueries({ queryKey: ["/api/compliance/audit-status"] });
                       navigate("/compliance");
                     }}
                   >
