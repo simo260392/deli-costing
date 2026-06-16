@@ -7728,12 +7728,35 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         try { costingMap[c.flexProductId] = JSON.parse(c.computedAllergensJson || '[]'); } catch { costingMap[c.flexProductId] = []; }
       }
 
+      // Map Flex dietary codes → FSANZ allergen names
+      const FLEX_CODE_TO_FSANZ: Record<string, string[]> = {
+        'CG': ['Gluten'],
+        'CD': ['Dairy'],
+        'CE': ['Eggs'],
+        'CN': ['Tree Nuts'],
+        'CS': ['Fish', 'Crustacea', 'Molluscs'],  // Flex "Seafood" covers all three
+        'CX': ['Sesame'],
+        'CY': ['Soy'],
+        'CU': ['Sulphites'],
+        'CP': ['Peanuts'],
+      };
+      const flexCodesToFsanz = (codes: string[]): string[] => {
+        const out = new Set<string>();
+        for (const code of codes) {
+          for (const fsanz of (FLEX_CODE_TO_FSANZ[code] || [])) out.add(fsanz);
+        }
+        return Array.from(out);
+      };
+
       const activeProducts = products.filter((p: any) => p.status === 'active');
 
       const rows = activeProducts.map((p: any) => {
-        // Prefer costing-computed allergens (from actual recipe), fall back to flex sync
-        const allergens: string[] = costingMap[p.id] ??
-          (() => { try { return JSON.parse(p.flexAllergensJson || '[]'); } catch { return []; } })();
+        // Use costing-computed allergens (FSANZ names) if non-empty; otherwise
+        // fall back to Flex codes translated to FSANZ names.
+        const costingAllergens: string[] = costingMap[p.id] || [];
+        const flexCodes: string[] = (() => { try { return JSON.parse(p.flexAllergensJson || '[]'); } catch { return []; } })();
+        const flexAllergens = flexCodesToFsanz(flexCodes);
+        const allergens: string[] = costingAllergens.length > 0 ? costingAllergens : flexAllergens;
         const categories: string[] = (() => { try { return JSON.parse(p.categoriesJson || '[]').map((c: any) => c.name || c); } catch { return []; } })();
         return {
           id: p.id,
