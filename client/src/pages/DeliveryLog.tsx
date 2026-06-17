@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
@@ -199,6 +200,7 @@ function LogTempDialog({
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(existing?.delivery_photo_url ?? null);
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [showZeroBoxConfirm, setShowZeroBoxConfirm] = useState(false);
 
   async function handlePhotoUpload(file: File) {
     setPhotoUploading(true);
@@ -263,9 +265,12 @@ function LogTempDialog({
     onError: () => toast({ title: "Failed to save", variant: "destructive" }),
   });
 
-  const canSave = !!form.driver && !!photoUrl;
+  // Wholesale orders require grey_collected to be filled (can be 0 but must be entered)
+  const wholesaleBoxesFilled = !order.is_wholesale || form.grey_collected !== "";
+  const canSave = !!form.driver && !!photoUrl && wholesaleBoxesFilled;
 
   return (
+    <>
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -312,15 +317,18 @@ function LogTempDialog({
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs">Collected today <span className="text-red-500">*</span></Label>
+                  <Label className="text-xs flex items-center gap-1">
+                    Collected today <span className="text-red-500">*</span>
+                    {form.grey_collected === "" && <span className="text-red-500 font-normal ml-auto">Required</span>}
+                  </Label>
                   <Input
                     type="number"
                     min={0}
                     step={1}
-                    placeholder="0"
+                    placeholder="Enter amount…"
                     value={form.grey_collected}
                     onChange={e => setForm(p => ({ ...p, grey_collected: e.target.value }))}
-                    className="h-9 text-center font-semibold text-base"
+                    className={cn("h-9 text-center font-semibold text-base", form.grey_collected === "" && "border-red-300 focus-visible:ring-red-400")}
                   />
                 </div>
               </div>
@@ -397,13 +405,43 @@ function LogTempDialog({
             size="sm"
             className={cn("text-white", canSave ? "bg-[#256984] hover:bg-[#1e5570]" : "bg-muted text-muted-foreground cursor-not-allowed")}
             disabled={save.isPending || !canSave}
-            onClick={() => canSave && save.mutate()}
+            onClick={() => {
+              if (!canSave) return;
+              // Wholesale: if driver entered 0 boxes, ask for confirmation
+              if (order.is_wholesale && Number(form.grey_collected) === 0) {
+                setShowZeroBoxConfirm(true);
+              } else {
+                save.mutate();
+              }
+            }}
           >
             {save.isPending ? "Saving…" : existing ? "Update" : "Save"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* Zero boxes confirmation */}
+    <AlertDialog open={showZeroBoxConfirm} onOpenChange={setShowZeroBoxConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>No grey boxes collected?</AlertDialogTitle>
+          <AlertDialogDescription>
+            You have entered 0 grey boxes collected for this wholesale customer. Are you sure no boxes were returned on this delivery?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Go back</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-[#256984] hover:bg-[#1e5570] text-white"
+            onClick={() => { setShowZeroBoxConfirm(false); save.mutate(); }}
+          >
+            Yes, save with 0 boxes
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 

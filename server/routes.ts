@@ -7925,6 +7925,23 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // ── Pre-Start Vehicle Checks ──────────────────────────────────────────────
 
+  // GET /api/prestart-checks/today-drivers — returns unique drivers who have a prestart check for today (AWST)
+  app.get('/api/prestart-checks/today-drivers', asyncRoute(async (req: any, res: any) => {
+    const todayAWST = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { data, error } = await supabase
+      .from('driver_prestart_checks')
+      .select('driver_name, vehicle, check_time, fit_to_drive')
+      .eq('check_date', todayAWST)
+      .order('check_time', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    // Deduplicate by driver_name (keep latest)
+    const seen = new Map<string, any>();
+    for (const row of (data || [])) {
+      seen.set(row.driver_name, row);
+    }
+    res.json({ ok: true, date: todayAWST, drivers: Array.from(seen.values()) });
+  }));
+
   // GET /api/prestart-checks?date=YYYY-MM-DD
   app.get('/api/prestart-checks', asyncRoute(async (req: any, res: any) => {
     const { date } = req.query;
@@ -7966,6 +7983,66 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // DELETE /api/prestart-checks/:id
   app.delete('/api/prestart-checks/:id', asyncRoute(async (req: any, res: any) => {
     const { error } = await supabase.from('driver_prestart_checks').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // ── End-of-Day Driver Checks ──────────────────────────────────────────────
+
+  // GET /api/endofday-checks?date=YYYY-MM-DD
+  app.get('/api/endofday-checks', asyncRoute(async (req: any, res: any) => {
+    const { date } = req.query;
+    let query = supabase.from('driver_endofday_checks').select('*').order('created_at', { ascending: false });
+    if (date) query = query.eq('check_date', date);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, checks: data || [] });
+  }));
+
+  // POST /api/endofday-checks
+  app.post('/api/endofday-checks', asyncRoute(async (req: any, res: any) => {
+    const {
+      check_date, check_time, driver_name, driver_staff_id,
+      vehicle, fit_for_duty, fit_for_duty_note,
+      incidents_occurred, incident_details,
+      fuel_above_50, fuel_photo_url,
+      vehicle_damage, vehicle_damage_details,
+      containers_returned, containers_note,
+      fridge_cleaned,
+      cockpit_photo_url, cargo_photo_url,
+    } = req.body;
+    if (!check_date || !driver_name || !vehicle) {
+      return res.status(400).json({ error: 'check_date, driver_name and vehicle are required' });
+    }
+    const timeNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
+      .toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const { data, error } = await supabase.from('driver_endofday_checks').insert({
+      check_date,
+      check_time: check_time || timeNow,
+      driver_name,
+      driver_staff_id: driver_staff_id || null,
+      vehicle,
+      fit_for_duty: fit_for_duty ?? true,
+      fit_for_duty_note: fit_for_duty_note || null,
+      incidents_occurred: incidents_occurred ?? false,
+      incident_details: incident_details || null,
+      fuel_above_50: fuel_above_50 ?? true,
+      fuel_photo_url: fuel_photo_url || null,
+      vehicle_damage: vehicle_damage ?? false,
+      vehicle_damage_details: vehicle_damage_details || null,
+      containers_returned: containers_returned ?? true,
+      containers_note: containers_note || null,
+      fridge_cleaned: fridge_cleaned ?? true,
+      cockpit_photo_url: cockpit_photo_url || null,
+      cargo_photo_url: cargo_photo_url || null,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, check: data });
+  }));
+
+  // DELETE /api/endofday-checks/:id
+  app.delete('/api/endofday-checks/:id', asyncRoute(async (req: any, res: any) => {
+    const { error } = await supabase.from('driver_endofday_checks').delete().eq('id', req.params.id);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ok: true });
   }));
