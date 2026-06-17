@@ -6961,7 +6961,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // POST /api/delivery-log  — save or update a delivery log entry
   app.post("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
-    const { order_id, client, delivery_date, delivery_time, food_type, driver, notes, logged_by, is_wholesale, grey_boxes_balance, grey_boxes_collected, hot_dispatch_temp, hot_delivery_temp, cold_dispatch_temp, cold_delivery_temp } = req.body;
+    const { order_id, client, delivery_date, delivery_time, food_type, driver, notes, logged_by, is_wholesale, grey_boxes_balance, grey_boxes_collected, hot_dispatch_temp, hot_delivery_temp, cold_dispatch_temp, cold_delivery_temp, delivery_photo_url } = req.body;
     if (!order_id || !delivery_date) return res.status(400).json({ error: 'order_id and delivery_date required' });
     // Calculate overall compliance across all provided temps
     const tempChecks: boolean[] = [];
@@ -6984,6 +6984,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       is_wholesale: is_wholesale ?? false,
       grey_boxes_balance:   grey_boxes_balance   ?? null,
       grey_boxes_collected: grey_boxes_collected ?? null,
+      delivery_photo_url: delivery_photo_url ?? null,
     };
     if (existing) {
       result = await supabase.from('delivery_logs').update(payload).eq('id', existing.id).select().single();
@@ -7921,6 +7922,53 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ── Pre-Start Vehicle Checks ──────────────────────────────────────────────
+
+  // GET /api/prestart-checks?date=YYYY-MM-DD
+  app.get('/api/prestart-checks', asyncRoute(async (req: any, res: any) => {
+    const { date } = req.query;
+    let query = supabase.from('driver_prestart_checks').select('*').order('created_at', { ascending: false });
+    if (date) query = query.eq('check_date', date);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, checks: data || [] });
+  }));
+
+  // POST /api/prestart-checks
+  app.post('/api/prestart-checks', asyncRoute(async (req: any, res: any) => {
+    const {
+      check_date, check_time, driver_name, driver_staff_id,
+      vehicle, fit_to_drive, fit_to_drive_note,
+      seatbelts_ok, lights_mirrors_ok, tyres_ok, existing_damage,
+      fridge_at_temp, fridge_temp,
+      cockpit_photo_url, storage_photo_url,
+    } = req.body;
+    if (!check_date || !driver_name || !vehicle) {
+      return res.status(400).json({ error: 'check_date, driver_name and vehicle are required' });
+    }
+    const { data, error } = await supabase.from('driver_prestart_checks').insert({
+      check_date, check_time: check_time || new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Australia/Perth' }),
+      driver_name, driver_staff_id: driver_staff_id || null,
+      vehicle, fit_to_drive: fit_to_drive ?? true, fit_to_drive_note: fit_to_drive_note || null,
+      seatbelts_ok: seatbelts_ok ?? true,
+      lights_mirrors_ok: lights_mirrors_ok ?? true,
+      tyres_ok: tyres_ok ?? true,
+      existing_damage: existing_damage || null,
+      fridge_at_temp: fridge_at_temp ?? null, fridge_temp: fridge_temp || null,
+      cockpit_photo_url: cockpit_photo_url || null,
+      storage_photo_url: storage_photo_url || null,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, check: data });
+  }));
+
+  // DELETE /api/prestart-checks/:id
+  app.delete('/api/prestart-checks/:id', asyncRoute(async (req: any, res: any) => {
+    const { error } = await supabase.from('driver_prestart_checks').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
 
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.

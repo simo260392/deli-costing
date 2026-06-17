@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical, Car
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -32,7 +32,8 @@ const midNavItems = [
 
 // Deliveries sub-items
 const deliveriesSubItems = [
-  { href: "/deliveries",   label: "Grey Box Tracker",    icon: Package,  slug: "deliveries" },
+  { href: "/deliveries",      label: "Grey Box Tracker",   icon: Package, slug: "deliveries" },
+  { href: "/prestart-check",  label: "Pre-Start Check",    icon: Car,     slug: "prestart-check" },
 ];
 
 // Wholesale group sub-items

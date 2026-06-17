@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import {
   Truck, Thermometer, CheckCircle2, XCircle, Clock,
   RefreshCw, Download, History, AlertTriangle, Trash2,
-  Flame, Snowflake, Package, Search, User
+  Flame, Snowflake, Package, Search, User, Camera
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,6 +48,7 @@ interface DeliveryLogEntry {
   notes: string | null;
   logged_by: string | null;
   is_wholesale: boolean;
+  delivery_photo_url: string | null;
   grey_boxes_balance: number | null;
   grey_boxes_collected: number | null;
   created_at: string;
@@ -194,6 +195,30 @@ function LogTempDialog({
 
   const f = (key: keyof typeof form) => (v: string) => setForm(p => ({ ...p, [key]: v }));
 
+  // Delivery photo
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(existing?.delivery_photo_url ?? null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+
+  async function handlePhotoUpload(file: File) {
+    setPhotoUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      const res = await fetch("/api/upload-photo", {
+        method: "POST",
+        headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
+        body: fd,
+      });
+      const data = await res.json();
+      if (data.url) setPhotoUrl(data.url);
+    } catch {
+      toast({ title: "Photo upload failed", variant: "destructive" });
+    } finally {
+      setPhotoUploading(false);
+    }
+  }
+
   // Overall compliance: any non-null temp must be compliant
   const allTemps = [
     form.hot_dispatch  !== "" ? Number(form.hot_dispatch)  >= 60 : null,
@@ -227,6 +252,7 @@ function LogTempDialog({
         is_wholesale: order.is_wholesale,
         grey_boxes_balance:   order.grey_box_balance ?? null,
         grey_boxes_collected: form.grey_collected !== "" ? Number(form.grey_collected) : null,
+        delivery_photo_url: photoUrl,
       }).then(r => r.json());
     },
     onSuccess: (data) => {
@@ -237,7 +263,7 @@ function LogTempDialog({
     onError: () => toast({ title: "Failed to save", variant: "destructive" }),
   });
 
-  const canSave = !!form.driver;
+  const canSave = !!form.driver && !!photoUrl;
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
@@ -318,6 +344,49 @@ function LogTempDialog({
               value={form.notes}
               onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
             />
+          </div>
+
+          {/* ── Delivery Photo (required) ── */}
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1 text-sm">
+              <Camera size={13} className="text-[#256984]" />
+              Delivery photo <span className="text-red-500 ml-0.5">*</span>
+              {!photoUrl && <span className="text-xs text-red-500 font-normal ml-auto">Required to submit</span>}
+            </Label>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handlePhotoUpload(f); }}
+            />
+            {photoUrl ? (
+              <div className="relative rounded-xl overflow-hidden border border-emerald-300">
+                <img src={photoUrl} alt="Delivery" className="w-full h-44 object-cover" />
+                <button
+                  className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-1.5 transition-colors"
+                  onClick={() => photoInputRef.current?.click()}
+                >
+                  <Camera size={13} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => photoInputRef.current?.click()}
+                disabled={photoUploading}
+                className="w-full h-32 rounded-xl border-2 border-dashed border-border hover:border-[#256984] bg-muted/30 hover:bg-[#256984]/5 transition-colors flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-[#256984]"
+              >
+                {photoUploading ? (
+                  <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Camera size={22} />
+                    <span className="text-xs font-medium">Take photo of delivery at site</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
 
         </div>

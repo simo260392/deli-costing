@@ -30,6 +30,7 @@ import ComplianceLogEntry from "@/pages/ComplianceLogEntry";
 import ComplianceAllergenMatrix from "@/pages/ComplianceAllergenMatrix";
 import AllergenStatement from "@/pages/AllergenStatement";
 import ChemicalsRegister from "@/pages/ChemicalsRegister";
+import PrestartCheck from "@/pages/PrestartCheck";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -47,8 +48,9 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "custom-pricing", path: "/custom-pricing" },
   { slug: "settings", path: "/settings" },
   { slug: "wholesale", path: "/wholesale" },
-  { slug: "deliveries",   path: "/deliveries" },
-  { slug: "delivery-log", path: "/delivery-log" },
+  { slug: "deliveries",     path: "/deliveries" },
+  { slug: "delivery-log",   path: "/delivery-log" },
+  { slug: "prestart-check", path: "/prestart-check" },
   { slug: "wages", path: "/wages" },
   { slug: "safety", path: "/safety" },
   { slug: "compliance", path: "/compliance" },
@@ -85,8 +87,9 @@ function AuthenticatedApp() {
   const isAdmin = staff.accessLevel.name === "Admin";
 
   if (!isAdmin && !allowedPages.includes(currentSlug) && currentSlug !== "") {
-    // Find first allowed page and redirect
-    const firstAllowed = PAGE_SLUGS.find((p) => allowedPages.includes(p.slug));
+    // Redirect to first allowed page, respecting the order defined in the user's pagesJson
+    const firstSlug = allowedPages.find((slug: string) => PAGE_SLUGS.some(p => p.slug === slug));
+    const firstAllowed = PAGE_SLUGS.find(p => p.slug === firstSlug);
     if (firstAllowed) {
       navigate(firstAllowed.path);
     }
@@ -112,6 +115,7 @@ function AuthenticatedApp() {
         <Route path="/safety" component={SafetyDashboard} />
         <Route path="/deliveries" component={Deliveries} />
         <Route path="/delivery-log" component={DeliveryLog} />
+        <Route path="/prestart-check" component={PrestartCheck} />
         <Route path="/stock-order" component={StockOrder} />
         <Route path="/compliance" component={Compliance} />
         <Route path="/compliance/allergens-matrix" component={ComplianceAllergenMatrix} />
