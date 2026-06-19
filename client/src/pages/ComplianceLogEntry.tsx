@@ -1071,6 +1071,8 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
   const [invoiceNumber, setInvoiceNumber] = useState(log.invoice_number ?? "");
   const [padOpen, setPadOpen] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [batchModal, setBatchModal] = useState<{ batches: any[] } | null>(null);
   const invoicePhotoRef = useRef<HTMLInputElement>(null);
 
   // Auto-save delivery datetime on first load if it was empty
@@ -1337,6 +1339,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
         <Button
           className="w-full h-12 text-base font-semibold gap-2"
           style={{ backgroundColor: "#256984" }}
+          disabled={submitting}
           onClick={async () => {
             if (!startedBy) {
               toast({ description: "Please select who started this log before submitting.", variant: "destructive" });
@@ -1350,15 +1353,94 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
               toast({ description: "Please add at least one item before submitting.", variant: "destructive" });
               return;
             }
-            await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { status: "pass" });
-            toast({ description: "Delivery logged successfully." });
-            onComplete();
+            setSubmitting(true);
+            try {
+              await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { status: "pass" });
+              // Auto-create batches for meat-category ingredients
+              const batchRes = await apiRequest("POST", `/api/compliance/logs/${log.id}/create-batches`, {
+                created_by: startedBy,
+              }).then(r => r.json());
+              if (batchRes.batches && batchRes.batches.length > 0) {
+                setBatchModal({ batches: batchRes.batches });
+              } else {
+                toast({ description: "Delivery logged successfully." });
+                onComplete();
+              }
+            } finally {
+              setSubmitting(false);
+            }
           }}
         >
-          <CheckCircle2 size={18} />
+          {submitting ? (
+            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <CheckCircle2 size={18} />
+          )}
           Submit Delivery
         </Button>
       </div>
+
+      {/* Batch labels modal */}
+      {batchModal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            {/* Header */}
+            <div className="bg-[#256984] px-6 py-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Batch Traceability</p>
+              <h2 className="text-lg font-bold text-white mt-0.5">
+                {batchModal.batches.length} Batch Label{batchModal.batches.length > 1 ? "s" : ""} Created
+              </h2>
+              <p className="text-xs text-white/70 mt-1">
+                Meat ingredients detected — print and attach to each box
+              </p>
+            </div>
+
+            {/* Batch list */}
+            <div className="px-6 py-4 space-y-3 max-h-64 overflow-y-auto">
+              {batchModal.batches.map((b: any) => (
+                <div key={b.batch_id} className="border rounded-xl p-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-sm">{b.product_name}</p>
+                    <p className="font-mono text-xs text-muted-foreground">{b.batch_id}</p>
+                    {b.total_weight_kg && (
+                      <p className="text-xs text-muted-foreground">{b.total_weight_kg} kg</p>
+                    )}
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                    RAW
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Actions */}
+            <div className="px-6 pb-6 pt-2 space-y-2">
+              <Button
+                className="w-full h-11 gap-2 font-semibold"
+                style={{ backgroundColor: "#256984" }}
+                onClick={() => {
+                  // Open batch manager with these batch IDs for printing
+                  const ids = batchModal.batches.map((b: any) => b.batch_id).join(",");
+                  window.open(`/batch-manager?print=${encodeURIComponent(ids)}`, "_blank");
+                }}
+              >
+                Print Labels
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full h-11"
+                onClick={() => {
+                  setBatchModal(null);
+                  toast({ description: "Delivery logged. Labels saved to Batch Manager." });
+                  onComplete();
+                }}
+              >
+                Skip — Print Later
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

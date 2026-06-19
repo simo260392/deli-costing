@@ -7595,6 +7595,81 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   });
 
+  // ── POST /api/compliance/logs/:id/create-batches ─────────────────────────
+  // Called on Submit Delivery — auto-creates parent batches for meat-category ingredients
+  app.post('/api/compliance/logs/:id/create-batches', async (req: any, res: any) => {
+    try {
+      const { id } = req.params;
+      const { created_by } = req.body || {};
+
+      // Load the log + supplier lines
+      const { data: log, error: logErr } = await supabase.from('compliance_logs').select('*').eq('id', id).single();
+      if (logErr || !log) return res.status(404).json({ error: 'Log not found' });
+
+      const { data: lines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id);
+      if (!lines || lines.length === 0) return res.json({ batches: [] });
+
+      // Only lines with an ingredient_id
+      const meatLines: any[] = [];
+      const MEAT_CATS = ['meat', 'poultry', 'chicken', 'beef', 'pork', 'lamb', 'seafood', 'fish'];
+      for (const line of lines) {
+        if (!line.ingredient_id) continue;
+        const { data: ing } = await supabase.from('ingredients').select('id, name, category').eq('id', line.ingredient_id).single();
+        if (!ing) continue;
+        const cat = (ing.category || '').toLowerCase();
+        if (MEAT_CATS.some(m => cat.includes(m))) {
+          meatLines.push({ line, ing });
+        }
+      }
+
+      if (meatLines.length === 0) return res.json({ batches: [] });
+
+      // Generate batch IDs and create records
+      const today = new Date();
+      const awstOffset = 8 * 60 * 60 * 1000;
+      const awstNow = new Date(today.getTime() + awstOffset);
+      const dateStr = awstNow.toISOString().slice(2, 10).replace(/-/g, ''); // YYMMDD
+
+      const createdBatches: any[] = [];
+      for (const { line, ing } of meatLines) {
+        // Build product code from ingredient name (first 4 chars of each word, max 8 chars)
+        const words = ing.name.toUpperCase().replace(/[^A-Z0-9 ]/g, '').split(' ').filter(Boolean);
+        const productCode = words.map((w: string) => w.slice(0, 4)).join('').slice(0, 8);
+        const prefix = `${productCode}-RAW-${dateStr}-`;
+
+        // Get next sequence number
+        const { data: existing } = await supabase.from('product_batches').select('batch_id').like('batch_id', `${prefix}%`);
+        let maxSeq = 0;
+        for (const row of (existing || [])) {
+          const parts = row.batch_id.split('-');
+          const seq = parseInt(parts[parts.length - 1]) || 0;
+          if (seq > maxSeq) maxSeq = seq;
+        }
+        const batchId = `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
+
+        const { data: batch, error: batchErr } = await supabase.from('product_batches').insert({
+          batch_id: batchId,
+          batch_type: 'parent',
+          product_name: ing.name,
+          product_code: productCode,
+          stage: 'raw',
+          ingredient_id: ing.id,
+          total_weight_kg: line.qty ? parseFloat(line.qty) || null : null,
+          created_by: created_by || log.created_by_name || 'System',
+          status: 'active',
+        }).select().single();
+
+        if (!batchErr && batch) {
+          createdBatches.push(batch);
+        }
+      }
+
+      return res.json({ batches: createdBatches });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── POST /api/compliance/logs/:id/wastage-lines ───────────────────────────
   app.post('/api/compliance/logs/:id/wastage-lines', async (req: any, res: any) => {
     try {

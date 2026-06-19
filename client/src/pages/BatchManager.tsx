@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -663,6 +664,28 @@ export default function BatchManager() {
   const [tab, setTab] = useState<"list" | "create-parent" | "create-child">("list");
   const [qrBatch, setQrBatch] = useState<Batch | null>(null);
   const [createdBatch, setCreatedBatch] = useState<Batch | null>(null);
+  const [printBatches, setPrintBatches] = useState<Batch[]>([]);
+  const [, navigate] = useLocation();
+
+  // Handle ?print=BATCH1,BATCH2 from supplier delivery submit
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const printParam = params.get("print");
+    if (printParam) {
+      const ids = printParam.split(",").map(s => s.trim()).filter(Boolean);
+      // Fetch each batch and queue for printing
+      Promise.all(ids.map(id =>
+        fetch(`/api/batches/${encodeURIComponent(id)}`, {
+          headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" }
+        }).then(r => r.json()).catch(() => null)
+      )).then(results => {
+        const valid = results.filter(Boolean) as Batch[];
+        if (valid.length > 0) setPrintBatches(valid);
+      });
+      // Clean up URL
+      window.history.replaceState({}, "", "/batch-manager");
+    }
+  }, []);
 
   const { data: batches = [], isLoading, refetch } = useQuery<Batch[]>({
     queryKey: ["/api/batches", { type: "parent" }],
@@ -830,6 +853,54 @@ export default function BatchManager() {
 
       {/* QR Modal */}
       {qrBatch && <QRModal batch={qrBatch} onClose={() => setQrBatch(null)} />}
+
+      {/* Auto-print modal — triggered from supplier delivery submit */}
+      {printBatches.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="bg-[#256984] px-6 py-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Batch Traceability</p>
+              <h2 className="text-lg font-bold text-white mt-0.5">
+                {printBatches.length} Batch Label{printBatches.length > 1 ? "s" : ""} Ready
+              </h2>
+              <p className="text-xs text-white/70 mt-1">Print and attach to each box</p>
+            </div>
+            <div className="px-6 py-4 space-y-3 max-h-64 overflow-y-auto">
+              {printBatches.map(b => (
+                <div key={b.batch_id} className="border rounded-xl p-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-sm">{b.product_name}</p>
+                    <p className="font-mono text-xs text-muted-foreground">{b.batch_id}</p>
+                    {b.total_weight_kg && <p className="text-xs text-muted-foreground">{b.total_weight_kg} kg</p>}
+                  </div>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">RAW</span>
+                </div>
+              ))}
+            </div>
+            <div className="px-6 pb-6 pt-2 space-y-2">
+              <Button
+                className="w-full h-11 gap-2 font-semibold"
+                style={{ backgroundColor: "#256984" }}
+                onClick={() => {
+                  // Open each batch in QR modal for printing one by one
+                  setQrBatch(printBatches[0]);
+                  setPrintBatches(prev => prev.slice(1));
+                }}
+              >
+                <Printer size={16} />
+                Print Labels ({printBatches.length})
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full h-11"
+                onClick={() => setPrintBatches([])}
+              >
+                Skip — Print Later
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
