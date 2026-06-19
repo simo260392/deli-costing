@@ -1057,7 +1057,7 @@ function IngredientSearch({
 
 // ─── Supplier section ─────────────────────────────────────────────────────────
 
-function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
+function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: ComplianceLog; onRefresh: () => void; onComplete: () => void; startedBy: string | null }) {
   const { toast } = useToast();
 
   // Auto-populate with current AWST datetime if not set
@@ -1338,6 +1338,10 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
           className="w-full h-12 text-base font-semibold gap-2"
           style={{ backgroundColor: "#256984" }}
           onClick={async () => {
+            if (!startedBy) {
+              toast({ description: "Please select who started this log before submitting.", variant: "destructive" });
+              return;
+            }
             if (!log.supplier_id) {
               toast({ description: "Please select a supplier before submitting.", variant: "destructive" });
               return;
@@ -1348,7 +1352,7 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
             }
             await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { status: "pass" });
             toast({ description: "Delivery logged successfully." });
-            onRefresh();
+            onComplete();
           }}
         >
           <CheckCircle2 size={18} />
@@ -1854,7 +1858,9 @@ export default function ComplianceLogEntry() {
 
           {/* Started by */}
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Started by</label>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Started by <span className="text-red-500">*</span>
+            </label>
             <StaffSearchPicker
               value={startedByStaff?.name || ""}
               onSelect={async (staff) => {
@@ -1880,7 +1886,7 @@ export default function ComplianceLogEntry() {
             <ThawingFields log={log} onRefresh={() => refetch()} />
           )}
           {logType === "supplier" && (
-            <SupplierFields log={log} onRefresh={() => refetch()} />
+            <SupplierFields log={log} onRefresh={() => refetch()} onComplete={() => navigate("/compliance")} startedBy={startedByStaff?.name ?? null} />
           )}
           {logType === "wastage" && (
             <WastageFields log={log} onRefresh={() => refetch()} />
