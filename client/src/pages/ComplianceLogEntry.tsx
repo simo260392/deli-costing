@@ -1331,6 +1331,30 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
           }}
         />
       )}
+
+      {/* Submit Delivery */}
+      <div className="pt-2">
+        <Button
+          className="w-full h-12 text-base font-semibold gap-2"
+          style={{ backgroundColor: "#256984" }}
+          onClick={async () => {
+            if (!log.supplier_id) {
+              toast({ description: "Please select a supplier before submitting.", variant: "destructive" });
+              return;
+            }
+            if (!lines.length) {
+              toast({ description: "Please add at least one item before submitting.", variant: "destructive" });
+              return;
+            }
+            await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { status: "pass" });
+            toast({ description: "Delivery logged successfully." });
+            onRefresh();
+          }}
+        >
+          <CheckCircle2 size={18} />
+          Submit Delivery
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1670,6 +1694,12 @@ export default function ComplianceLogEntry() {
   const [editDate, setEditDate] = useState(log?.entry_date || "");
   const [editTime, setEditTime] = useState(log?.log_time || "");
 
+  // Suppliers list for status bar name lookup
+  const { data: suppliersList = [] } = useQuery<{ id: number; name: string }[]>({
+    queryKey: ["/api/suppliers"],
+    queryFn: () => apiRequest("GET", "/api/suppliers").then(r => r.json()),
+  });
+
   useEffect(() => {
     if (log) {
       setNotes(log.notes || "");
@@ -1773,91 +1803,124 @@ export default function ComplianceLogEntry() {
       <div className="flex-1 overflow-y-auto">
         <div className="p-6 space-y-6 max-w-3xl">
 
-          {/* Summary card */}
-          <div className="border rounded-xl p-4 bg-muted/30 space-y-3">
+          {/* ── Colour-coded status bar ──────────────────────────────────── */}
+          {(() => {
+            const s = log.derivedStatus || log.status || "in_progress";
+            const supplierName = logType === "supplier" && log.supplier_id
+              ? (suppliersList.find((x: any) => x.id === log.supplier_id)?.name ?? null)
+              : null;
 
-            {/* Date / time row */}
-            <div className="flex items-center gap-2 flex-wrap">
-              {!editingDateTime ? (
-                <>
-                  {log.entry_date && (
-                    <Badge variant="secondary">
-                      {format(parseISO(log.entry_date), "d MMM yyyy")}
-                      {log.log_time ? ` · ${log.log_time}` : ""}
-                    </Badge>
-                  )}
-                  <button
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors border border-transparent hover:border-border"
-                    onClick={() => setEditingDateTime(true)}
-                  >
-                    <Pencil size={11} />
-                    Edit date/time
-                  </button>
-                </>
-              ) : (
-                <div className="flex items-center gap-2 flex-wrap w-full">
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-xs text-muted-foreground font-medium">Date</label>
-                    <Input
-                      type="date"
-                      value={editDate}
-                      onChange={e => setEditDate(e.target.value)}
-                      className="h-9 w-40 text-sm"
-                    />
+            type Scheme = { bar: string; text: string; sub: string; badge: string; label: string };
+            const schemes: Record<string, Scheme> = {
+              in_progress:   { bar: "bg-[#256984]",   text: "text-white",          sub: "text-white/70",  badge: "bg-white/20 text-white", label: "In Progress" },
+              action_needed: { bar: "bg-amber-500",   text: "text-white",          sub: "text-amber-100", badge: "bg-white/20 text-white", label: "Needs Attention" },
+              pass:          { bar: "bg-green-600",   text: "text-white",          sub: "text-green-100", badge: "bg-white/20 text-white", label: "Complete" },
+              closed:        { bar: "bg-gray-500",    text: "text-white",          sub: "text-gray-200",  badge: "bg-white/20 text-white", label: "Closed" },
+            };
+            const c: Scheme = schemes[s] ?? schemes.in_progress;
+
+            return (
+              <div className={`rounded-xl px-5 py-4 ${c.bar}`}>
+                <div className="flex items-start justify-between gap-3">
+
+                  {/* Left column */}
+                  <div className="flex-1 min-w-0 space-y-1.5">
+
+                    {/* Log type label */}
+                    <p className={`text-[11px] font-semibold uppercase tracking-widest ${c.sub}`}>
+                      {typeLabel}
+                    </p>
+
+                    {/* Date / time — view or edit inline */}
+                    {!editingDateTime ? (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-sm font-bold ${c.text}`}>
+                          {log.entry_date
+                            ? format(parseISO(log.entry_date), "d MMM yyyy")
+                            : "No date set"}
+                          {log.log_time ? ` · ${log.log_time}` : ""}
+                        </span>
+                        <button
+                          className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:bg-white/15 transition-colors ${c.sub}`}
+                          onClick={() => setEditingDateTime(true)}
+                        >
+                          <Pencil size={10} />
+                          Edit
+                        </button>
+                        {log.batch_id && (
+                          <span className={`font-mono text-xs px-2 py-0.5 rounded bg-white/15 ${c.text}`}>
+                            {log.batch_id}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-end gap-2 flex-wrap">
+                        <div className="flex flex-col gap-0.5">
+                          <label className={`text-[10px] font-medium ${c.sub}`}>Date</label>
+                          <Input
+                            type="date"
+                            value={editDate}
+                            onChange={e => setEditDate(e.target.value)}
+                            className="h-9 w-40 text-sm bg-white/90 text-gray-900 border-0"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <label className={`text-[10px] font-medium ${c.sub}`}>Time</label>
+                          <Input
+                            type="time"
+                            value={editTime}
+                            onChange={e => setEditTime(e.target.value)}
+                            className="h-9 w-32 text-sm bg-white/90 text-gray-900 border-0"
+                          />
+                        </div>
+                        <Button
+                          size="sm"
+                          className="h-9 px-3 gap-1 bg-white/20 hover:bg-white/30 text-white border-0 shadow-none"
+                          onClick={async () => {
+                            await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
+                              entry_date: editDate,
+                              log_time: editTime || null,
+                            });
+                            await refetch();
+                            setEditingDateTime(false);
+                            toast({ description: "Date & time updated" });
+                          }}
+                        >
+                          <Check size={13} />
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-9 px-3 bg-transparent hover:bg-white/10 text-white border-0 shadow-none"
+                          onClick={() => {
+                            setEditDate(log.entry_date || "");
+                            setEditTime(log.log_time || "");
+                            setEditingDateTime(false);
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Supplier name (supplier log only) */}
+                    {supplierName && (
+                      <p className={`text-sm font-semibold ${c.text}`}>{supplierName}</p>
+                    )}
                   </div>
-                  <div className="flex flex-col gap-0.5">
-                    <label className="text-xs text-muted-foreground font-medium">Time</label>
-                    <Input
-                      type="time"
-                      value={editTime}
-                      onChange={e => setEditTime(e.target.value)}
-                      className="h-9 w-32 text-sm"
-                    />
+
+                  {/* Right: status pill */}
+                  <div className="flex-shrink-0 pt-1">
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${c.badge}`}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-white/80 inline-block" />
+                      {c.label}
+                    </span>
                   </div>
-                  <div className="flex items-end gap-1.5 pb-0">
-                    <Button
-                      size="sm"
-                      className="h-9 px-3 gap-1"
-                      style={{ backgroundColor: "#256984" }}
-                      onClick={async () => {
-                        await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
-                          entry_date: editDate,
-                          log_time: editTime || null,
-                        });
-                        await refetch();
-                        setEditingDateTime(false);
-                        toast({ description: "Date & time updated" });
-                      }}
-                    >
-                      <Check size={13} />
-                      Save
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-9 px-3"
-                      onClick={() => {
-                        setEditDate(log.entry_date || "");
-                        setEditTime(log.log_time || "");
-                        setEditingDateTime(false);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
+
                 </div>
-              )}
-              {!editingDateTime && log.batch_id && (
-                <Badge variant="outline" className="font-mono text-xs">{log.batch_id}</Badge>
-              )}
-              {!editingDateTime && log.source && (
-                <Badge variant={log.source === "production_auto" ? "default" : "secondary"} className="text-xs">
-                  {log.source === "production_auto" ? "Auto-created" : "Manual"}
-                </Badge>
-              )}
-            </div>
-
-          </div>
+              </div>
+            );
+          })()}
 
           <Separator />
 
