@@ -1689,10 +1689,6 @@ export default function ComplianceLogEntry() {
   const [notesChanged, setNotesChanged] = useState(false);
   const [startedByStaff, setStartedByStaff] = useState<{ id: number; name: string } | null>(null);
 
-  // Date/time editing state
-  const [editingDateTime, setEditingDateTime] = useState(false);
-  const [editDate, setEditDate] = useState(log?.entry_date || "");
-  const [editTime, setEditTime] = useState(log?.log_time || "");
 
   // Suppliers list for status bar name lookup
   const { data: suppliersList = [] } = useQuery<{ id: number; name: string }[]>({
@@ -1703,8 +1699,6 @@ export default function ComplianceLogEntry() {
   useEffect(() => {
     if (log) {
       setNotes(log.notes || "");
-      setEditDate(log.entry_date || "");
-      setEditTime(log.log_time || "");
       if (log.created_by_name && !startedByStaff) {
         setStartedByStaff({ id: 0, name: log.created_by_name });
       }
@@ -1831,81 +1825,15 @@ export default function ComplianceLogEntry() {
                       {typeLabel}
                     </p>
 
-                    {/* Date / time — view or edit inline */}
-                    {!editingDateTime ? (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-sm font-bold ${c.text}`}>
-                          {log.entry_date
-                            ? format(parseISO(log.entry_date), "d MMM yyyy")
-                            : "No date set"}
-                          {log.log_time ? ` · ${log.log_time}` : ""}
-                        </span>
-                        <button
-                          className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded hover:bg-white/15 transition-colors ${c.sub}`}
-                          onClick={() => setEditingDateTime(true)}
-                        >
-                          <Pencil size={10} />
-                          Edit
-                        </button>
-                        {log.batch_id && (
-                          <span className={`font-mono text-xs px-2 py-0.5 rounded bg-white/15 ${c.text}`}>
-                            {log.batch_id}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex items-end gap-2 flex-wrap">
-                        <div className="flex flex-col gap-0.5">
-                          <label className={`text-[10px] font-medium ${c.sub}`}>Date</label>
-                          <Input
-                            type="date"
-                            value={editDate}
-                            onChange={e => setEditDate(e.target.value)}
-                            className="h-9 w-40 text-sm bg-white/90 text-gray-900 border-0"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-0.5">
-                          <label className={`text-[10px] font-medium ${c.sub}`}>Time</label>
-                          <Input
-                            type="time"
-                            value={editTime}
-                            onChange={e => setEditTime(e.target.value)}
-                            className="h-9 w-32 text-sm bg-white/90 text-gray-900 border-0"
-                          />
-                        </div>
-                        <Button
-                          size="sm"
-                          className="h-9 px-3 gap-1 bg-white/20 hover:bg-white/30 text-white border-0 shadow-none"
-                          onClick={async () => {
-                            await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
-                              entry_date: editDate,
-                              log_time: editTime || null,
-                            });
-                            await refetch();
-                            setEditingDateTime(false);
-                            toast({ description: "Date & time updated" });
-                          }}
-                        >
-                          <Check size={13} />
-                          Save
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="h-9 px-3 bg-transparent hover:bg-white/10 text-white border-0 shadow-none"
-                          onClick={() => {
-                            setEditDate(log.entry_date || "");
-                            setEditTime(log.log_time || "");
-                            setEditingDateTime(false);
-                          }}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    )}
-
                     {/* Supplier name (supplier log only) */}
                     {supplierName && (
-                      <p className={`text-sm font-semibold ${c.text}`}>{supplierName}</p>
+                      <p className={`text-base font-bold ${c.text}`}>{supplierName}</p>
+                    )}
+
+                    {log.batch_id && (
+                      <span className={`font-mono text-xs px-2 py-0.5 rounded bg-white/15 ${c.text}`}>
+                        {log.batch_id}
+                      </span>
                     )}
                   </div>
 
