@@ -7398,6 +7398,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         signed_at: 'signed_at', signedAt: 'signed_at',
         supplier_id: 'supplier_id', supplierId: 'supplier_id',
         delivery_datetime: 'delivery_datetime', deliveryDatetime: 'delivery_datetime',
+        invoice_number: 'invoice_number', invoiceNumber: 'invoice_number',
+        invoice_photo_url: 'invoice_photo_url', invoicePhotoUrl: 'invoice_photo_url',
         thaw_item: 'thaw_item', thawItem: 'thaw_item',
         thaw_weight_qty: 'thaw_weight_qty', thawWeightQty: 'thaw_weight_qty',
         thaw_location: 'thaw_location', thawLocation: 'thaw_location',
@@ -7513,6 +7515,35 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   });
 
   // ── POST /api/compliance/logs/:id/supplier-lines ──────────────────────────
+  // POST /api/compliance/scan-invoice — upload invoice photo, extract invoice number via OCR
+  const invoicePhotoUpload = multer({ dest: 'uploads/pdf-cache/' });
+  app.post('/api/compliance/scan-invoice', invoicePhotoUpload.single('photo'), async (req: any, res: any) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+      const { execFile } = await import('child_process');
+      const parsePath = path.join(__dirname, 'parse_invoice.py');
+      const parsed: any = await new Promise((resolve) => {
+        execFile(
+          'python3', [parsePath, req.file.path, req.file.originalname || 'invoice.jpg'],
+          { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
+          (_err: any, stdout: string) => {
+            const jsonStart = stdout.indexOf('{');
+            const jsonEnd = stdout.lastIndexOf('}');
+            if (jsonStart !== -1 && jsonEnd !== -1) {
+              try { return resolve(JSON.parse(stdout.slice(jsonStart, jsonEnd + 1))); } catch {}
+            }
+            resolve({ invoiceNumber: null });
+          }
+        );
+      });
+      const fs2 = await import('fs');
+      fs2.default.unlink(req.file.path, () => {});
+      res.json({ ok: true, invoiceNumber: parsed.invoiceNumber || null });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/compliance/logs/:id/supplier-lines', async (req: any, res: any) => {
     try {
       const body = req.body || {};
@@ -7544,6 +7575,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (body.packagingOk !== undefined) updates.packaging_ok = body.packagingOk;
       if (body.use_by_ok !== undefined) updates.use_by_ok = body.use_by_ok;
       if (body.useByOk !== undefined) updates.use_by_ok = body.useByOk;
+      if (body.ingredient_id !== undefined) updates.ingredient_id = body.ingredient_id;
+      if (body.ingredientId !== undefined) updates.ingredient_id = body.ingredientId;
       const { data: line, error } = await supabase.from('compliance_supplier_lines').update(updates).eq('id', req.params.lineId).select().single();
       if (error) throw error;
       res.json(line);

@@ -14,7 +14,7 @@ import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 import { StatusPill } from "./Compliance";
 import {
   ChevronRight, AlertCircle, CheckCircle2, Clock, Thermometer,
-  Trash2, Plus, AlertTriangle, RotateCcw, Pencil, Check
+  Trash2, Plus, AlertTriangle, RotateCcw, Pencil, Check, Camera, ScanLine, Search
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -79,6 +79,8 @@ interface ComplianceLog {
   corrective_action_reviewed_by: string | null;
   corrective_action_date: string | null;
   stages: CoolingStage[];
+  invoice_number: string | null;
+  invoice_photo_url: string | null;
   supplierLines: SupplierLine[];
   wastageLines: WastageLine[];
   reviewCategories: ReviewCategory[];
@@ -107,6 +109,7 @@ interface SupplierLine {
   temp_on_arrival: number | null;
   packaging_ok: boolean | null;
   use_by_ok: boolean | null;
+  ingredient_id: number | null;
 }
 
 interface WastageLine {
@@ -988,15 +991,98 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   );
 }
 
+
+// ─── Ingredient smartsearch ──────────────────────────────────────────────────
+function IngredientSearch({
+  value, ingredientId, onChange
+}: {
+  value: string;
+  ingredientId: number | null;
+  onChange: (name: string, id: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  const { data: ingredients = [] } = useQuery<{ id: number; name: string; unit: string }[]>({
+    queryKey: ["/api/ingredients"],
+    queryFn: () => apiRequest("GET", "/api/ingredients").then(r => r.json()),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = ingredients.filter(i =>
+    i.name.toLowerCase().includes(query.toLowerCase())
+  ).slice(0, 12);
+
+  return (
+    <div className="relative" ref={ref}>
+      <div className="relative">
+        <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          placeholder="Search ingredients…"
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true); if (!e.target.value) onChange("", null); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => { setTimeout(() => setOpen(false), 150); if (!ingredientId && query) onChange(query, null); }}
+          className="pl-8 h-10 text-sm"
+        />
+      </div>
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 w-full bg-popover border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {filtered.map(i => (
+            <button
+              key={i.id}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-muted/60 flex items-center justify-between gap-2"
+              onMouseDown={e => { e.preventDefault(); onChange(i.name, i.id); setQuery(i.name); setOpen(false); }}
+            >
+              <span>{i.name}</span>
+              <span className="text-xs text-muted-foreground">{i.unit}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Supplier section ─────────────────────────────────────────────────────────
 
 function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
   const { toast } = useToast();
+
+  // Auto-populate with current AWST datetime if not set
+  const nowAWST = () => {
+    const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 16);
+  };
   const [deliveryDatetime, setDeliveryDatetime] = useState(
-    log.delivery_datetime ? log.delivery_datetime.slice(0, 16) : ""
+    log.delivery_datetime ? log.delivery_datetime.slice(0, 16) : nowAWST()
   );
+  const [invoiceNumber, setInvoiceNumber] = useState(log.invoice_number ?? "");
   const [padOpen, setPadOpen] = useState<string | null>(null);
   const [savingHeader, setSavingHeader] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const invoicePhotoRef = useRef<HTMLInputElement>(null);
+
+  // Auto-save delivery datetime on first load if it was empty
+  useEffect(() => {
+    if (!log.delivery_datetime) {
+      apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
+        deliveryDatetime: new Date(deliveryDatetime).toISOString(),
+      }).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { data: suppliers = [] } = useQuery<{ id: number; name: string }[]>({
     queryKey: ["/api/suppliers"],
@@ -1008,6 +1094,7 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
     try {
       await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
         deliveryDatetime: deliveryDatetime ? new Date(deliveryDatetime).toISOString() : null,
+        invoiceNumber: invoiceNumber || null,
       });
       onRefresh();
       toast({ description: "Delivery details saved" });
@@ -1015,6 +1102,30 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
       toast({ description: "Failed to save", variant: "destructive" });
     } finally {
       setSavingHeader(false);
+    }
+  };
+
+  const handleInvoiceScan = async (file: File) => {
+    setScanning(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      const res = await fetch("/api/compliance/scan-invoice", {
+        method: "POST",
+        headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
+        body: fd,
+      });
+      const data = await res.json();
+      if (data.invoiceNumber) {
+        setInvoiceNumber(data.invoiceNumber);
+        toast({ description: `Invoice #${data.invoiceNumber} detected` });
+      } else {
+        toast({ description: "Could not extract invoice number — enter manually", variant: "destructive" });
+      }
+    } catch {
+      toast({ description: "Scan failed", variant: "destructive" });
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -1077,6 +1188,41 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
             />
           </div>
         </div>
+
+        {/* Invoice number + scan */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Invoice number</label>
+          <div className="flex gap-2">
+            <Input
+              value={invoiceNumber}
+              onChange={e => setInvoiceNumber(e.target.value)}
+              placeholder="e.g. INV-00123"
+              className="h-11 flex-1"
+            />
+            <input
+              ref={invoicePhotoRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleInvoiceScan(f); }}
+            />
+            <Button
+              variant="outline"
+              className="h-11 gap-1.5 shrink-0"
+              onClick={() => invoicePhotoRef.current?.click()}
+              disabled={scanning}
+            >
+              {scanning ? (
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <><Camera size={14} /><span className="text-xs">Scan</span></>
+              )}
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">Take a photo of the invoice to auto-extract the number, or type it in.</p>
+        </div>
+
         <Button
           variant="outline"
           size="sm"
@@ -1098,12 +1244,11 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
           <div key={line.id} className="border rounded-xl p-4 space-y-3">
             <div className="grid gap-3 md:grid-cols-3">
               <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Item</label>
-                <Input
-                  defaultValue={line.item}
-                  onBlur={e => updateLine(line.id, { item: e.target.value })}
-                  className="h-10"
-                  placeholder="Item name"
+                <label className="text-xs text-muted-foreground">Ingredient</label>
+                <IngredientSearch
+                  value={line.item}
+                  ingredientId={line.ingredient_id}
+                  onChange={(name, id) => updateLine(line.id, { item: name, ingredientId: id })}
                 />
               </div>
               <div className="space-y-1">
