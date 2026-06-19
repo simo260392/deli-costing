@@ -239,7 +239,7 @@ function BatchIdField({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =>
 
   const { data: childBatches = [] } = useQuery<any[]>({
     queryKey: ["/api/batches", { type: "child", status: "active" }],
-    queryFn: () => apiRequest("GET", "/api/batches?type=child&status=active"),
+    queryFn: () => apiRequest("GET", "/api/batches?type=child&status=active").then(r => r.json()),
     staleTime: 30000,
   });
 
