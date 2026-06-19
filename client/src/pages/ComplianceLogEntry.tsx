@@ -1857,20 +1857,23 @@ export default function ComplianceLogEntry() {
               )}
             </div>
 
-            {/* Started by — required for all log types */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Started by</label>
-              <StaffSearchPicker
-                value={startedByStaff?.name || ""}
-                onSelect={async (staff) => {
-                  setStartedByStaff(staff);
-                  await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
-                    created_by_name: staff.name,
-                  });
-                }}
-                placeholder="Search staff…"
-              />
-            </div>
+          </div>
+
+          <Separator />
+
+          {/* Started by */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Started by</label>
+            <StaffSearchPicker
+              value={startedByStaff?.name || ""}
+              onSelect={async (staff) => {
+                setStartedByStaff(staff);
+                await apiRequest("PUT", `/api/compliance/logs/${logId}`, {
+                  created_by_name: staff.name,
+                });
+              }}
+              placeholder="Search staff…"
+            />
           </div>
 
           <Separator />
