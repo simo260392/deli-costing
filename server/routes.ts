@@ -7288,7 +7288,15 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const body = req.body || {};
       const { data: log, error } = await supabase.from('compliance_logs').insert({
         log_type: body.log_type || body.logType,
-        entry_date: body.entry_date || body.entryDate || new Date().toISOString().slice(0, 10),
+        entry_date: body.entry_date || body.entryDate || (() => {
+          // Default to AWST date (UTC+8)
+          const awst = new Date(Date.now() + 8 * 60 * 60 * 1000);
+          return awst.toISOString().slice(0, 10);
+        })(),
+        log_time: body.log_time || body.logTime || (() => {
+          const awst = new Date(Date.now() + 8 * 60 * 60 * 1000);
+          return awst.toISOString().slice(11, 16);
+        })(),
         recipe_id: body.recipe_id ?? body.recipeId ?? null,
         batch_id: body.batch_id ?? body.batchId ?? null,
         source: body.source || 'manual',

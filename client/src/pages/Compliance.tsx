@@ -199,13 +199,19 @@ export default function Compliance() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (logType: LogType) =>
-      apiRequest("POST", "/api/compliance/logs", {
+    mutationFn: (logType: LogType) => {
+      // Use AWST (UTC+8) for both date and time
+      const awst = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      const awstDate = awst.toISOString().slice(0, 10);
+      const awstTime = awst.toISOString().slice(11, 16); // HH:MM
+      return apiRequest("POST", "/api/compliance/logs", {
         log_type: logType,
-        entry_date: dateParams.date || dateParams.dateFrom || todayStr,
+        entry_date: dateParams.date || dateParams.dateFrom || awstDate,
+        log_time: awstTime,
         source: "manual",
         status: "in_progress",
-      }).then(r => r.json()),
+      }).then(r => r.json());
+    },
     onSuccess: (newLog: ComplianceLog) => {
       navigate(`/compliance/${newLog.log_type}/${newLog.id}`);
     },
