@@ -6961,7 +6961,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // POST /api/delivery-log  — save or update a delivery log entry
   app.post("/api/delivery-log", asyncRoute(async (req: any, res: any) => {
-    const { order_id, client, delivery_date, delivery_time, food_type, driver, notes, logged_by, is_wholesale, grey_boxes_balance, grey_boxes_collected, hot_dispatch_temp, hot_delivery_temp, cold_dispatch_temp, cold_delivery_temp, delivery_photo_url } = req.body;
+    const { order_id, client, delivery_date, delivery_time, food_type, driver, notes, logged_by, is_wholesale, grey_boxes_balance, grey_boxes_collected, hot_dispatch_temp, hot_delivery_temp, cold_dispatch_temp, cold_delivery_temp, delivery_photo_url, total_weight_kg, num_boxes } = req.body;
     if (!order_id || !delivery_date) return res.status(400).json({ error: 'order_id and delivery_date required' });
     // Calculate overall compliance across all provided temps
     const tempChecks: boolean[] = [];
@@ -6985,6 +6985,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       grey_boxes_balance:   grey_boxes_balance   ?? null,
       grey_boxes_collected: grey_boxes_collected ?? null,
       delivery_photo_url: delivery_photo_url ?? null,
+      total_weight_kg: total_weight_kg ?? null,
+      num_boxes: num_boxes ?? null,
     };
     if (existing) {
       result = await supabase.from('delivery_logs').update(payload).eq('id', existing.id).select().single();
@@ -8260,6 +8262,106 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
 
   // ── Global Express error handler ──────────────────────────────────────────
+  // ── BATCH TRACEABILITY ROUTES ───────────────────────────────────────────────
+
+  // GET /api/batches — list all batches, optional ?type=parent|child&status=active
+  app.get('/api/batches', asyncRoute(async (req: any, res: any) => {
+    let query = supabase.from('product_batches').select('*').order('created_at', { ascending: false });
+    if (req.query.type) query = query.eq('batch_type', req.query.type);
+    if (req.query.status) query = query.eq('status', req.query.status);
+    if (req.query.ingredient_id) query = query.eq('ingredient_id', Number(req.query.ingredient_id));
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data || []);
+  }));
+
+  // GET /api/batches/next-id — generate next available batch ID (must be before /:batchId)
+  app.get('/api/batches/next-id', asyncRoute(async (req: any, res: any) => {
+    const { product_code, stage, date } = req.query as Record<string, string>;
+    if (!product_code || !stage || !date) return res.status(400).json({ error: 'product_code, stage, date required' });
+    const shortDate = date.slice(2);
+    const stageCode = stage === 'raw' ? 'RAW' : stage === 'cooked' ? 'CKD' : 'FRZ';
+    const prefix = `${product_code.toUpperCase()}-${stageCode}-${shortDate}-`;
+    const { data } = await supabase.from('product_batches').select('batch_id').like('batch_id', `${prefix}%`);
+    let maxSeq = 0;
+    for (const row of (data || [])) {
+      const parts = row.batch_id.split('-');
+      const seq = parseInt(parts[parts.length - 1]) || 0;
+      if (seq > maxSeq) maxSeq = seq;
+    }
+    const nextSeq = String(maxSeq + 1).padStart(3, '0');
+    return res.json({ batch_id: `${prefix}${nextSeq}` });
+  }));
+
+  // GET /api/batches/by-ingredient/:ingredientId — get parent batches for a meat ingredient
+  app.get('/api/batches/by-ingredient/:ingredientId', asyncRoute(async (req: any, res: any) => {
+    const { data, error } = await supabase.from('product_batches').select('*').eq('ingredient_id', Number(req.params.ingredientId)).eq('batch_type', 'parent').eq('status', 'active').order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data || []);
+  }));
+
+  // GET /api/batches/:batchId — get single batch with full traceability chain
+  app.get('/api/batches/:batchId', asyncRoute(async (req: any, res: any) => {
+    const { batchId } = req.params;
+    const { data: batch, error } = await supabase.from('product_batches').select('*').eq('batch_id', batchId).single();
+    if (error || !batch) return res.status(404).json({ error: 'Batch not found' });
+
+    let children: any[] = [];
+    if (batch.batch_type === 'parent') {
+      const { data: c } = await supabase.from('product_batches').select('*').eq('parent_batch_id', batchId);
+      children = c || [];
+    }
+
+    const { data: compLogs } = await supabase.from('compliance_logs').select('*').eq('batch_id', batchId).order('created_at');
+
+    let deliveryLog = null;
+    if (batch.delivery_log_id) {
+      const { data: dl } = await supabase.from('delivery_logs').select('*').eq('id', batch.delivery_log_id).single();
+      deliveryLog = dl;
+    }
+
+    return res.json({ ...batch, children, compliance_logs: compLogs || [], delivery_log: deliveryLog });
+  }));
+
+  // POST /api/batches — create a new batch (parent or child)
+  app.post('/api/batches', asyncRoute(async (req: any, res: any) => {
+    const body = req.body;
+    if (!body.batch_id || !body.batch_type || !body.product_name || !body.created_by) {
+      return res.status(400).json({ error: 'batch_id, batch_type, product_name, created_by required' });
+    }
+    const { data, error } = await supabase.from('product_batches').insert({
+      batch_id: body.batch_id,
+      batch_type: body.batch_type,
+      parent_batch_id: body.parent_batch_id || null,
+      product_name: body.product_name,
+      product_code: body.product_code || '',
+      stage: body.stage || 'raw',
+      ingredient_id: body.ingredient_id || null,
+      sub_recipe_id: body.sub_recipe_id || null,
+      delivery_log_id: body.delivery_log_id || null,
+      total_weight_kg: body.total_weight_kg || null,
+      num_boxes: body.num_boxes || null,
+      weight_per_box_kg: body.weight_per_box_kg || null,
+      notes: body.notes || '',
+      created_by: body.created_by,
+      use_by_date: body.use_by_date || null,
+      status: 'active',
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }));
+
+  // PUT /api/batches/:batchId — update batch (status, use_by_date, freezer info etc)
+  app.put('/api/batches/:batchId', asyncRoute(async (req: any, res: any) => {
+    const { batchId } = req.params;
+    const allowed = ['status', 'use_by_date', 'frozen_at', 'freezer_unit', 'notes', 'total_weight_kg', 'num_boxes', 'weight_per_box_kg', 'delivery_log_id'];
+    const updates: any = {};
+    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+    const { data, error } = await supabase.from('product_batches').update(updates).eq('batch_id', batchId).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }));
+
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {
     console.error("[Express global error]", err?.message || err);

@@ -227,6 +227,137 @@ function FoodSearchPicker({
   );
 }
 
+// ─── Batch ID Field (for Cooling Log) ────────────────────────────────────────
+
+function BatchIdField({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
+  const { toast } = useToast();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [noIdReason, setNoIdReason] = useState("");
+  const [noIdOpen, setNoIdOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const { data: childBatches = [] } = useQuery<any[]>({
+    queryKey: ["/api/batches", { type: "child", status: "active" }],
+    queryFn: () => apiRequest("GET", "/api/batches?type=child&status=active"),
+    staleTime: 30000,
+  });
+
+  const filtered = (childBatches as any[]).filter((b: any) =>
+    b.batch_id.toLowerCase().includes(query.toLowerCase()) ||
+    (b.product_name || "").toLowerCase().includes(query.toLowerCase())
+  );
+
+  const updateLog = async (updates: Record<string, unknown>) => {
+    await apiRequest("PUT", `/api/compliance/logs/${log.id}`, updates);
+    onRefresh();
+  };
+
+  const handleSelect = async (batchId: string) => {
+    setOpen(false);
+    setQuery("");
+    await updateLog({ batch_id: batchId });
+    toast({ description: `Batch ID linked: ${batchId}` });
+  };
+
+  const handleSaveNoIdReason = async () => {
+    if (!noIdReason.trim()) return;
+    setSaving(true);
+    try {
+      const existingNotes = log.notes || "";
+      const prefix = "No batch ID reason: ";
+      const cleaned = existingNotes.replace(/No batch ID reason: [^\n]*/g, "").trim();
+      const newNotes = [cleaned, `${prefix}${noIdReason}`].filter(Boolean).join("\n");
+      await updateLog({ notes: newNotes });
+      setNoIdOpen(false);
+      setNoIdReason("");
+      toast({ description: "Reason saved" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async () => {
+    await updateLog({ batch_id: null });
+    toast({ description: "Batch ID cleared" });
+  };
+
+  return (
+    <div className="space-y-1 mb-3">
+      <label className="text-xs font-medium text-muted-foreground">Batch ID</label>
+      {log.batch_id ? (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-xs font-mono font-bold">
+            <CheckCircle2 size={12} />
+            {log.batch_id}
+          </span>
+          <button
+            onClick={handleClear}
+            className="text-xs text-muted-foreground hover:text-red-500 underline transition-colors"
+          >
+            Clear
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="relative">
+            <Input
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+              onFocus={() => setOpen(true)}
+              placeholder="Search child batch ID or product…"
+              className="h-10"
+            />
+            {open && (
+              <div className="absolute z-30 top-full mt-1 left-0 right-0 bg-white border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                {filtered.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">No active child batches found</div>
+                ) : (
+                  filtered.slice(0, 8).map((b: any) => (
+                    <button
+                      key={b.batch_id}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-[#256984]/10 transition-colors flex items-center gap-2"
+                      onMouseDown={() => handleSelect(b.batch_id)}
+                    >
+                      <span className="font-mono text-xs font-bold text-[#256984]">{b.batch_id}</span>
+                      <span className="text-muted-foreground text-xs">{b.product_name}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>No batch ID?</span>
+            <Popover open={noIdOpen} onOpenChange={setNoIdOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 text-xs px-2">Give reason</Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-72 p-3 space-y-2">
+                <p className="text-xs font-semibold">Reason for no batch ID</p>
+                <Textarea
+                  value={noIdReason}
+                  onChange={(e) => setNoIdReason(e.target.value)}
+                  placeholder="e.g. Batch not yet assigned, pre-existing stock…"
+                  className="h-20 text-xs resize-none"
+                />
+                <Button
+                  size="sm"
+                  onClick={handleSaveNoIdReason}
+                  disabled={saving || !noIdReason.trim()}
+                  className="w-full bg-[#256984] hover:bg-[#256984]/90 text-white h-7 text-xs"
+                >
+                  {saving ? "Saving…" : "Save reason"}
+                </Button>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Cooling section ────────────────────────────────────────────────────────────
 
 function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
@@ -236,10 +367,6 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   const [itemName, setItemName] = useState(log.item_name || "");
   const [batchQty, setBatchQty] = useState(log.batch_qty || "");
   const [thermometerId, setThermometerId] = useState(log.thermometer_id || "");
-  const [picStaff, setPicStaff] = useState<{ id: number; name: string } | null>(
-    log.person_in_charge_name ? { id: log.person_in_charge_staff_id ?? 0, name: log.person_in_charge_name } : null
-  );
-
   // Stage state — per stage: which is open for entry, staff picker, time edits
   const [activeStage, setActiveStage] = useState<string | null>(null);
   const [stagePic, setStagePic] = useState<Record<string, { id: number; name: string } | null>>({});
@@ -375,6 +502,9 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       {/* Batch details */}
       <div className="space-y-3">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Batch details</p>
+        {/* Batch ID field */}
+        <BatchIdField log={log} onRefresh={onRefresh} />
+
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Food item</label>
@@ -394,17 +524,6 @@ function CoolingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Thermometer ID</label>
             <Input value={thermometerId} onChange={e => setThermometerId(e.target.value)} onBlur={() => saveHeader("thermometer_id", thermometerId)} placeholder="e.g. TH-01" className="h-10" />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Person in charge</label>
-            <StaffSearchPicker
-              value={picStaff?.name || ""}
-              onSelect={async (staff) => {
-                setPicStaff(staff);
-                await updateLog({ person_in_charge_name: staff.name, person_in_charge_staff_id: staff.id });
-              }}
-              placeholder="Search staff…"
-            />
           </div>
         </div>
       </div>
