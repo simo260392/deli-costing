@@ -1062,11 +1062,31 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
 
   // Auto-populate with current AWST datetime if not set
   const nowAWST = () => {
-    const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
-    return d.toISOString().slice(0, 16);
+    // Format current time as AWST (UTC+8) for datetime-local input (YYYY-MM-DDTHH:MM)
+    const now = new Date();
+    const awstFormatter = new Intl.DateTimeFormat("en-AU", {
+      timeZone: "Australia/Perth",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    const parts = Object.fromEntries(awstFormatter.formatToParts(now).map(p => [p.type, p.value]));
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`;
   };
+
+  // Convert a stored UTC ISO string to AWST datetime-local format
+  const toAWST = (iso: string) => {
+    const d = new Date(iso);
+    const awstFormatter = new Intl.DateTimeFormat("en-AU", {
+      timeZone: "Australia/Perth",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+    const parts = Object.fromEntries(awstFormatter.formatToParts(d).map(p => [p.type, p.value]));
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour === "24" ? "00" : parts.hour}:${parts.minute}`;
+  };
+
   const [deliveryDatetime, setDeliveryDatetime] = useState(
-    log.delivery_datetime ? log.delivery_datetime.slice(0, 16) : nowAWST()
+    log.delivery_datetime ? toAWST(log.delivery_datetime) : nowAWST()
   );
   const [invoiceNumber, setInvoiceNumber] = useState(log.invoice_number ?? "");
   const [padOpen, setPadOpen] = useState<string | null>(null);
@@ -1078,8 +1098,12 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
   // Auto-save delivery datetime on first load if it was empty
   useEffect(() => {
     if (!log.delivery_datetime) {
+      // Parse the AWST datetime-local string as Perth time and convert to UTC ISO
+      const awstStr = nowAWST();
+      // datetime-local is already in AWST — append +08:00 offset before parsing
+      const utcIso = new Date(awstStr + ":00+08:00").toISOString();
       apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
-        deliveryDatetime: new Date(deliveryDatetime).toISOString(),
+        deliveryDatetime: utcIso,
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1175,7 +1199,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
               type="datetime-local"
               value={deliveryDatetime}
               onChange={e => setDeliveryDatetime(e.target.value)}
-              onBlur={e => saveHeaderField({ deliveryDatetime: e.target.value ? new Date(e.target.value).toISOString() : null })}
+              onBlur={e => saveHeaderField({ deliveryDatetime: e.target.value ? new Date(e.target.value + ":00+08:00").toISOString() : null })}
               className="h-11"
             />
           </div>
