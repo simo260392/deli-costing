@@ -8047,6 +8047,77 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json({ ok: true });
   }));
 
+  // ── Fridge Temperature Logs ──────────────────────────────────────────────
+
+  // GET /api/fridge-logs?date=YYYY-MM-DD&location=osborne_park|cbd_store
+  app.get('/api/fridge-logs', asyncRoute(async (req: any, res: any) => {
+    const { date, location } = req.query;
+    const todayAWST = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    let query = supabase
+      .from('fridge_temperature_logs')
+      .select('*')
+      .eq('log_date', date || todayAWST)
+      .order('log_time', { ascending: true });
+    if (location) query = query.eq('location', location);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, logs: data || [] });
+  }));
+
+  // POST /api/fridge-logs
+  app.post('/api/fridge-logs', asyncRoute(async (req: any, res: any) => {
+    const { log_date, log_time, location, unit_name, temperature, recorded_by, notes, source } = req.body;
+    if (!log_date || !log_time || !location || !unit_name || temperature === undefined || !recorded_by) {
+      return res.status(400).json({ error: 'log_date, log_time, location, unit_name, temperature and recorded_by are required' });
+    }
+    const { data, error } = await supabase.from('fridge_temperature_logs').insert({
+      log_date,
+      log_time,
+      location,
+      unit_name,
+      temperature: parseFloat(temperature),
+      recorded_by,
+      notes: notes || null,
+      source: source || 'manual',
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, log: data });
+  }));
+
+  // DELETE /api/fridge-logs/:id
+  app.delete('/api/fridge-logs/:id', asyncRoute(async (req: any, res: any) => {
+    const { error } = await supabase.from('fridge_temperature_logs').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // GET /api/fridge-logs/export?date=YYYY-MM-DD&location=...
+  // Returns CSV
+  app.get('/api/fridge-logs/export', asyncRoute(async (req: any, res: any) => {
+    const { date, location } = req.query;
+    const todayAWST = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    let query = supabase
+      .from('fridge_temperature_logs')
+      .select('*')
+      .eq('log_date', date || todayAWST)
+      .order('log_time', { ascending: true });
+    if (location) query = query.eq('location', location);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    const rows = data || [];
+    const locationLabel = location === 'cbd_store' ? 'CBD Store' : 'Osborne Park Production Kitchen';
+    const csvLines = [
+      `Fridge Temperature Log — ${locationLabel} — ${date || todayAWST}`,
+      '',
+      'Time,Unit,Temperature (°C),Recorded By,Source,Notes',
+      ...rows.map((r: any) =>
+        `${r.log_time},"${r.unit_name}",${r.temperature},"${r.recorded_by}",${r.source},"${r.notes || ''}"`)
+    ];
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="fridge-log-${date || todayAWST}-${location || 'all'}.csv"`);
+    res.send(csvLines.join('\n'));
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.
   app.use((err: any, _req: any, res: any, _next: any) => {
