@@ -452,7 +452,8 @@ export default function BatchTraceability() {
     setBatch(null);
     setSearchedId(trimmed);
     try {
-      const data = await apiRequest("GET", `/api/batches/${encodeURIComponent(trimmed)}`);
+      const res = await apiRequest("GET", `/api/batches/${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
       setBatch(data);
       setHistory((h) => [trimmed, ...h.filter((x) => x !== trimmed)].slice(0, 5));
     } catch {

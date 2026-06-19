@@ -198,10 +198,11 @@ function CreateParentForm({ onSuccess }: { onSuccess: () => void }) {
       const dateClean = date.replace(/-/g, "");
       setLoadingId(true);
       try {
-        const data = await apiRequest(
+        const res = await apiRequest(
           "GET",
           `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=raw&date=${dateClean}`
         );
+        const data = await res.json();
         setBatchId(data.batch_id);
       } catch {
         toast({ description: "Could not generate batch ID", variant: "destructive" });
@@ -443,7 +444,7 @@ function CreateChildForm({ onSuccess }: { onSuccess: () => void }) {
 
   const { data: parentBatches = [] } = useQuery<Batch[]>({
     queryKey: ["/api/batches", { type: "parent", status: "active" }],
-    queryFn: () => apiRequest("GET", "/api/batches?type=parent&status=active"),
+    queryFn: () => apiRequest("GET", "/api/batches?type=parent&status=active").then(r => r.json()),
     staleTime: 30000,
   });
 
@@ -459,10 +460,11 @@ function CreateChildForm({ onSuccess }: { onSuccess: () => void }) {
       const dateClean = date.replace(/-/g, "");
       setLoadingId(true);
       try {
-        const data = await apiRequest(
+        const res = await apiRequest(
           "GET",
           `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=cooked&date=${dateClean}`
         );
+        const data = await res.json();
         setBatchId(data.batch_id);
       } catch {
         toast({ description: "Could not generate batch ID", variant: "destructive" });
@@ -664,7 +666,7 @@ export default function BatchManager() {
 
   const { data: batches = [], isLoading, refetch } = useQuery<Batch[]>({
     queryKey: ["/api/batches", { type: "parent" }],
-    queryFn: () => apiRequest("GET", "/api/batches?type=parent"),
+    queryFn: () => apiRequest("GET", "/api/batches?type=parent").then(r => r.json()),
     staleTime: 30000,
   });
 
