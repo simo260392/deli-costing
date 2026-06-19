@@ -53,10 +53,10 @@ interface AuditStatus {
 type LogType = "cooling" | "cooking" | "thawing" | "supplier" | "wastage" | "review";
 
 const LOG_TABS: { key: LogType; label: string }[] = [
-  { key: "cooling",  label: "Cooling" },
-  { key: "cooking",  label: "Cooking" },
-  { key: "thawing",  label: "Thawing" },
   { key: "supplier", label: "Supplier Delivery" },
+  { key: "thawing",  label: "Thawing" },
+  { key: "cooking",  label: "Cooking" },
+  { key: "cooling",  label: "Cooling" },
   { key: "wastage",  label: "Wastage" },
   { key: "review",   label: "Review" },
 ];
@@ -164,7 +164,7 @@ export default function Compliance() {
   const [singleDate, setSingleDate] = useState<Date>(today);
   const [dateRange, setDateRange] = useState<DateRange>({ from: undefined, to: undefined });
 
-  const [activeTab, setActiveTab] = useState<LogType>("cooling");
+  const [activeTab, setActiveTab] = useState<LogType>("supplier");
 
   // Compute the date params for API
   function getDateParams(): Record<string, string> {
