@@ -31,6 +31,7 @@ import ComplianceAllergenMatrix from "@/pages/ComplianceAllergenMatrix";
 import AllergenStatement from "@/pages/AllergenStatement";
 import ChemicalsRegister from "@/pages/ChemicalsRegister";
 import FridgeLogs from "@/pages/FridgeLogs";
+import FridgeSettings from "@/pages/FridgeSettings";
 import PrestartCheck from "@/pages/PrestartCheck";
 import NotFound from "@/pages/not-found";
 
@@ -55,7 +56,8 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "wages", path: "/wages" },
   { slug: "safety", path: "/safety" },
   { slug: "compliance",    path: "/compliance" },
-  { slug: "fridge-logs",   path: "/compliance/fridge-logs" },
+  { slug: "fridge-logs",      path: "/compliance/fridge-logs" },
+  { slug: "fridge-settings",  path: "/compliance/fridge-settings" },
 ];
 
 function pathToSlug(path: string): string {
@@ -123,6 +125,7 @@ function AuthenticatedApp() {
         <Route path="/compliance/allergens-matrix" component={ComplianceAllergenMatrix} />
         <Route path="/compliance/allergen-statement" component={AllergenStatement} />
         <Route path="/compliance/fridge-logs" component={FridgeLogs} />
+        <Route path="/compliance/fridge-settings" component={FridgeSettings} />
         <Route path="/compliance/chemicals" component={ChemicalsRegister} />
         <Route path="/compliance/:logType/:logId" component={ComplianceLogEntry} />
         <Route component={NotFound} />

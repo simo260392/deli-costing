@@ -8070,18 +8070,42 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     if (!log_date || !log_time || !location || !unit_name || temperature === undefined || !recorded_by) {
       return res.status(400).json({ error: 'log_date, log_time, location, unit_name, temperature and recorded_by are required' });
     }
+    const temp = parseFloat(temperature);
     const { data, error } = await supabase.from('fridge_temperature_logs').insert({
-      log_date,
-      log_time,
-      location,
-      unit_name,
-      temperature: parseFloat(temperature),
+      log_date, log_time, location, unit_name,
+      temperature: temp,
       recorded_by,
       notes: notes || null,
       source: source || 'manual',
     }).select().single();
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ ok: true, log: data });
+
+    // ── Alert check: look up unit settings and fire alert if out of range ──
+    const { data: unit } = await supabase
+      .from('fridge_units')
+      .select('*')
+      .eq('location', location)
+      .eq('unit_name', unit_name)
+      .single();
+
+    let alert = null;
+    if (unit && temp > unit.max_temp) {
+      // Create alert record
+      const { data: alertRow } = await supabase.from('fridge_alerts').insert({
+        log_id: data.id,
+        location,
+        unit_name,
+        temperature: temp,
+        max_temp: unit.max_temp,
+        log_date,
+        log_time,
+        resolved: false,
+        whatsapp_sent: false,
+      }).select().single();
+      alert = alertRow;
+    }
+
+    res.json({ ok: true, log: data, alert: alert || null });
   }));
 
   // DELETE /api/fridge-logs/:id
@@ -8117,6 +8141,123 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.setHeader('Content-Disposition', `attachment; filename="fridge-log-${date || todayAWST}-${location || 'all'}.csv"`);
     res.send(csvLines.join('\n'));
   }));
+
+
+  // ── Fridge Units (settings) ─────────────────────────────────────────────────
+
+  app.get('/api/fridge-units', asyncRoute(async (req: any, res: any) => {
+    const { location } = req.query;
+    let query = supabase.from('fridge_units').select('*').order('sort_order', { ascending: true });
+    if (location) query = query.eq('location', location);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, units: data || [] });
+  }));
+
+  app.post('/api/fridge-units', asyncRoute(async (req: any, res: any) => {
+    const { location, unit_name, unit_type, min_temp, max_temp, sort_order } = req.body;
+    if (!location || !unit_name || !unit_type) return res.status(400).json({ error: 'location, unit_name and unit_type required' });
+    const { data, error } = await supabase.from('fridge_units').insert({
+      location, unit_name, unit_type,
+      min_temp: min_temp ?? -99,
+      max_temp: max_temp ?? 5,
+      sort_order: sort_order ?? 0,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, unit: data });
+  }));
+
+  app.put('/api/fridge-units/:id', asyncRoute(async (req: any, res: any) => {
+    const { unit_name, unit_type, min_temp, max_temp, active, sort_order } = req.body;
+    const updates: any = {};
+    if (unit_name  !== undefined) updates.unit_name  = unit_name;
+    if (unit_type  !== undefined) updates.unit_type  = unit_type;
+    if (min_temp   !== undefined) updates.min_temp   = parseFloat(min_temp);
+    if (max_temp   !== undefined) updates.max_temp   = parseFloat(max_temp);
+    if (active     !== undefined) updates.active     = active;
+    if (sort_order !== undefined) updates.sort_order = sort_order;
+    const { data, error } = await supabase.from('fridge_units').update(updates).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, unit: data });
+  }));
+
+  app.delete('/api/fridge-units/:id', asyncRoute(async (req: any, res: any) => {
+    const { error } = await supabase.from('fridge_units').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // ── Location Hours (settings) ───────────────────────────────────────────────
+
+  app.get('/api/fridge-location-hours', asyncRoute(async (req: any, res: any) => {
+    const { location } = req.query;
+    let query = supabase.from('fridge_location_hours').select('*').order('day_of_week', { ascending: true });
+    if (location) query = query.eq('location', location);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, hours: data || [] });
+  }));
+
+  app.put('/api/fridge-location-hours/:id', asyncRoute(async (req: any, res: any) => {
+    const { open_time, close_time, closed } = req.body;
+    const { data, error } = await supabase.from('fridge_location_hours')
+      .update({ open_time, close_time, closed })
+      .eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, hours: data });
+  }));
+
+  // ── Fridge Alerts ───────────────────────────────────────────────────────────
+
+  app.get('/api/fridge-alerts', asyncRoute(async (req: any, res: any) => {
+    const { resolved } = req.query;
+    let query = supabase.from('fridge_alerts').select('*').order('created_at', { ascending: false });
+    if (resolved === 'false') query = query.eq('resolved', false);
+    if (resolved === 'true')  query = query.eq('resolved', true);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, alerts: data || [] });
+  }));
+
+  app.put('/api/fridge-alerts/:id/resolve', asyncRoute(async (req: any, res: any) => {
+    const { resolved_by } = req.body;
+    const { data, error } = await supabase.from('fridge_alerts')
+      .update({ resolved: true, resolved_at: new Date().toISOString(), resolved_by: resolved_by || 'Unknown' })
+      .eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, alert: data });
+  }));
+
+  app.get('/api/fridge-alerts/check-after-hours', asyncRoute(async (req: any, res: any) => {
+    const nowAWST = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    const todayAWST = nowAWST.toISOString().slice(0, 10);
+    const nowTime = nowAWST.toISOString().slice(11, 16);
+    const dayOfWeek = nowAWST.getUTCDay();
+    const { data: alerts, error: aErr } = await supabase
+      .from('fridge_alerts').select('*').eq('resolved', false).eq('log_date', todayAWST);
+    if (aErr) return res.status(500).json({ error: aErr.message });
+    if (!alerts || alerts.length === 0) return res.json({ ok: true, afterHoursAlerts: [] });
+    const locations = [...new Set(alerts.map((a: any) => a.location))];
+    const afterHoursLocations = new Set<string>();
+    for (const loc of locations) {
+      const { data: hours } = await supabase.from('fridge_location_hours')
+        .select('*').eq('location', loc).eq('day_of_week', dayOfWeek).single();
+      if (!hours || hours.closed || nowTime < hours.open_time || nowTime > hours.close_time) {
+        afterHoursLocations.add(loc as string);
+      }
+    }
+    const afterHoursAlerts = alerts.filter((a: any) => afterHoursLocations.has(a.location));
+    res.json({ ok: true, afterHoursAlerts, nowTime, dayOfWeek });
+  }));
+
+  app.put('/api/fridge-alerts/:id/whatsapp-sent', asyncRoute(async (req: any, res: any) => {
+    const { data, error } = await supabase.from('fridge_alerts')
+      .update({ whatsapp_sent: true, whatsapp_sent_at: new Date().toISOString() })
+      .eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, alert: data });
+  }));
+
 
   // ── Global Express error handler ──────────────────────────────────────────
   // Catches any error thrown (or passed to next()) from any route handler.

@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Thermometer, Plus, Download, Trash2, RefreshCw, Building2, ChefHat } from "lucide-react";
+import { Thermometer, Plus, Download, Trash2, RefreshCw, Building2, ChefHat, AlertTriangle, CheckCircle, Settings } from "lucide-react";
 import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -33,17 +33,22 @@ const UNITS: Record<LocationId, string[]> = {
   cbd_store:    ["Fridge 1", "Fridge 2", "Freezer 1", "Display Fridge"],
 };
 
-// Safe ranges: fridge ≤ 5°C, freezer ≤ -15°C
-function tempStatus(unitName: string, temp: number): "ok" | "warning" | "danger" {
-  const isFreezer = unitName.toLowerCase().includes("freezer");
-  if (isFreezer) {
-    if (temp <= -15) return "ok";
-    if (temp <= -10) return "warning";
+interface FridgeUnitSetting {
+  id: string; location: string; unit_name: string;
+  unit_type: string; min_temp: number; max_temp: number; active: boolean;
+}
+
+// Uses per-unit settings if available, falls back to sensible defaults
+function tempStatus(unitName: string, temp: number, unitSettings?: FridgeUnitSetting): "ok" | "warning" | "danger" {
+  if (unitSettings) {
+    if (temp <= unitSettings.max_temp) return "ok";
+    if (temp <= unitSettings.max_temp + 3) return "warning";
     return "danger";
   }
-  if (temp <= 5)  return "ok";
-  if (temp <= 8)  return "warning";
-  return "danger";
+  // fallback defaults
+  const isFreezer = unitName.toLowerCase().includes("freezer");
+  if (isFreezer) { if (temp <= -15) return "ok"; if (temp <= -10) return "warning"; return "danger"; }
+  if (temp <= 5) return "ok"; if (temp <= 8) return "warning"; return "danger";
 }
 
 const STATUS_STYLES = {
@@ -57,16 +62,16 @@ const STATUS_LABELS = { ok: "OK", warning: "Borderline", danger: "Out of Range" 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface FridgeLog {
-  id: string;
-  log_date: string;
-  log_time: string;
-  location: string;
-  unit_name: string;
-  temperature: number;
-  recorded_by: string;
-  notes: string | null;
-  source: string;
-  created_at: string;
+  id: string; log_date: string; log_time: string; location: string;
+  unit_name: string; temperature: number; recorded_by: string;
+  notes: string | null; source: string; created_at: string;
+}
+
+interface FridgeAlert {
+  id: string; log_id: string; location: string; unit_name: string;
+  temperature: number; max_temp: number; log_date: string; log_time: string;
+  resolved: boolean; resolved_at: string | null; resolved_by: string | null;
+  whatsapp_sent: boolean; created_at: string;
 }
 
 // ─── Add Log Dialog ───────────────────────────────────────────────────────────
@@ -224,6 +229,23 @@ export default function FridgeLogs() {
   });
   const logs: FridgeLog[] = (data as any)?.logs ?? [];
 
+  // ── Fetch unit settings (for per-unit alert ranges) ──
+  const { data: unitsData } = useQuery({
+    queryKey: ["fridge-units", location],
+    queryFn: () => apiRequest("GET", `/api/fridge-units?location=${location}`),
+  });
+  const unitSettings: FridgeUnitSetting[] = (unitsData as any)?.units ?? [];
+  const unitMap = new Map<string, FridgeUnitSetting>(unitSettings.map(u => [u.unit_name, u]));
+
+  // ── Fetch unresolved alerts for today ──
+  const { data: alertsData, refetch: refetchAlerts } = useQuery({
+    queryKey: ["fridge-alerts", date],
+    queryFn: () => apiRequest("GET", `/api/fridge-alerts?resolved=false`),
+    refetchInterval: 60000,
+  });
+  const allAlerts: FridgeAlert[] = (alertsData as any)?.alerts ?? [];
+  const activeAlerts = allAlerts.filter(a => a.location === location && a.log_date === date);
+
   // ── Delete ──
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/fridge-logs/${id}`),
@@ -231,6 +253,17 @@ export default function FridgeLogs() {
       qc.invalidateQueries({ queryKey: ["fridge-logs", date, location] });
       setDeleteId(null);
       toast({ title: "Reading deleted" });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  // ── Resolve alert ──
+  const resolveMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      apiRequest("PUT", `/api/fridge-alerts/${id}/resolve`, { resolved_by: name }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["fridge-alerts"] });
+      toast({ title: "Alert resolved" });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -309,6 +342,9 @@ export default function FridgeLogs() {
             <Plus size={13} className="mr-1" />
             Log Reading
           </Button>
+          <Button variant="ghost" size="sm" onClick={() => window.location.href = "/compliance/fridge-settings"} className="text-gray-400 hover:text-[#256984]">
+            <Settings size={14} />
+          </Button>
         </div>
       </div>
 
@@ -368,6 +404,40 @@ export default function FridgeLogs() {
         )}
       </div>
 
+      {/* Active alerts banner */}
+      {activeAlerts.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-2">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle size={15} className="text-red-600" />
+            <span className="font-semibold text-red-700 text-sm">
+              {activeAlerts.length} unresolved temperature alert{activeAlerts.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          {activeAlerts.map(alert => (
+            <div key={alert.id} className="flex items-center justify-between bg-white rounded-lg border border-red-100 px-3 py-2">
+              <div className="flex items-center gap-3">
+                <Thermometer size={14} className="text-red-500" />
+                <div>
+                  <span className="font-semibold text-sm text-gray-800">{alert.unit_name}</span>
+                  <span className="text-red-600 font-bold text-sm ml-2">{alert.temperature > 0 ? "+" : ""}{alert.temperature}°C</span>
+                  <span className="text-gray-400 text-xs ml-2">(max {alert.max_temp}°C)</span>
+                  <span className="text-gray-400 text-xs ml-2">at {alert.log_time}</span>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs border-green-300 text-green-700 hover:bg-green-50"
+                onClick={() => resolveMutation.mutate({ id: alert.id, name: "Manager" })}
+                disabled={resolveMutation.isPending}
+              >
+                <CheckCircle size={11} className="mr-1" /> Resolve
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Content */}
       {isLoading ? (
         <div className="text-center py-12 text-gray-400 text-sm">Loading…</div>
@@ -382,7 +452,7 @@ export default function FridgeLogs() {
           {UNITS[location].filter(u => byUnit.has(u)).map(unitName => {
             const unitLogs = byUnit.get(unitName)!;
             const latestTemp = unitLogs[unitLogs.length - 1].temperature;
-            const latestStatus = tempStatus(unitName, latestTemp);
+            const latestStatus = tempStatus(unitName, latestTemp, unitMap.get(unitName));
             return (
               <div key={unitName} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
                 {/* Unit header */}
@@ -412,7 +482,7 @@ export default function FridgeLogs() {
                   </thead>
                   <tbody>
                     {unitLogs.map((log, idx) => {
-                      const status = tempStatus(log.unit_name, log.temperature);
+                      const status = tempStatus(log.unit_name, log.temperature, unitMap.get(log.unit_name));
                       return (
                         <tr
                           key={log.id}
