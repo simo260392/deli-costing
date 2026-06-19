@@ -28,12 +28,15 @@ export function NumberPadModal({
       setValue(v => v.slice(0, -1));
     } else if (key === "clear") {
       setValue("");
+    } else if (key === "±") {
+      setValue(v => v.startsWith("-") ? v.slice(1) : v ? "-" + v : "-");
     } else if (key === ".") {
       if (!value.includes(".")) setValue(v => v + ".");
     } else {
       // Prevent multiple leading zeros
-      if (value === "0" && key !== ".") {
-        setValue(key);
+      const digits = value.replace("-", "");
+      if (digits === "0" && key !== ".") {
+        setValue(value.startsWith("-") ? "-" + key : key);
       } else {
         setValue(v => v + key);
       }
@@ -96,8 +99,15 @@ export function NumberPadModal({
             </div>
           ))}
 
-          {/* Clear + Confirm row */}
-          <div className="grid grid-cols-2 gap-2 mt-1">
+          {/* ± / Clear / Confirm row */}
+          <div className="grid grid-cols-3 gap-2 mt-1">
+            <Button
+              variant="outline"
+              className="h-14 text-xl font-semibold rounded-xl border-border"
+              onClick={() => handleKey("±")}
+            >
+              ±
+            </Button>
             <Button
               variant="ghost"
               className="h-14 text-base font-medium text-muted-foreground rounded-xl"
@@ -108,10 +118,10 @@ export function NumberPadModal({
             <Button
               className="h-14 text-base font-semibold rounded-xl"
               style={{ backgroundColor: "#256984" }}
-              disabled={!value}
+              disabled={!value || value === "-"}
               onClick={handleConfirm}
             >
-              Confirm
+              ✓
             </Button>
           </div>
         </div>
