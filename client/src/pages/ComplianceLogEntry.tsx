@@ -106,6 +106,8 @@ interface SupplierLine {
   id: string;
   item: string;
   qty: string;
+  num_boxes: number | null;
+  weight_kg: number | null;
   temp_on_arrival: number | null;
   packaging_ok: boolean | null;
   use_by_ok: boolean | null;
@@ -1249,8 +1251,8 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
         )}
         {lines.map((line: SupplierLine) => (
           <div key={line.id} className="border rounded-xl p-4 space-y-3">
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="space-y-1">
+            <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
+              <div className="space-y-1 col-span-2 md:col-span-1">
                 <label className="text-xs text-muted-foreground">Ingredient</label>
                 <IngredientSearch
                   value={line.item}
@@ -1259,12 +1261,25 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Qty</label>
+                <label className="text-xs text-muted-foreground">No. of boxes <span className="text-red-500">*</span></label>
                 <Input
-                  defaultValue={line.qty}
-                  onBlur={e => updateLine(line.id, { qty: e.target.value })}
+                  type="number"
+                  min="1"
+                  defaultValue={line.num_boxes ?? ""}
+                  onBlur={e => updateLine(line.id, { numBoxes: e.target.value ? parseInt(e.target.value) : null })}
                   className="h-10"
-                  placeholder="e.g. 5kg"
+                  placeholder="e.g. 4"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Weight (kg)</label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  defaultValue={line.weight_kg ?? ""}
+                  onBlur={e => updateLine(line.id, { weightKg: e.target.value ? parseFloat(e.target.value) : null })}
+                  className="h-10"
+                  placeholder="e.g. 20"
                 />
               </div>
               <div className="space-y-1">

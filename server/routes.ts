@@ -7585,6 +7585,10 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (body.useByOk !== undefined) updates.use_by_ok = body.useByOk;
       if (body.ingredient_id !== undefined) updates.ingredient_id = body.ingredient_id;
       if (body.ingredientId !== undefined) updates.ingredient_id = body.ingredientId;
+      if (body.num_boxes !== undefined) updates.num_boxes = body.num_boxes;
+      if (body.numBoxes !== undefined) updates.num_boxes = body.numBoxes;
+      if (body.weight_kg !== undefined) updates.weight_kg = body.weight_kg;
+      if (body.weightKg !== undefined) updates.weight_kg = body.weightKg;
       const { data: line, error } = await supabase.from('compliance_supplier_lines').update(updates).eq('id', req.params.lineId).select().single();
       if (error) throw error;
       res.json(line);
@@ -7662,7 +7666,11 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           product_code: productCode,
           stage: 'raw',
           ingredient_id: ing.id,
-          total_weight_kg: line.qty ? parseFloat(line.qty) || null : null,
+          total_weight_kg: line.weight_kg ?? (line.qty ? parseFloat(line.qty) || null : null),
+          num_boxes: line.num_boxes ?? null,
+          weight_per_box_kg: (line.weight_kg && line.num_boxes && line.num_boxes > 0)
+            ? Math.round((line.weight_kg / line.num_boxes) * 100) / 100
+            : null,
           created_by: created_by || log.created_by_name || 'System',
           status: 'active',
         }).select().single();

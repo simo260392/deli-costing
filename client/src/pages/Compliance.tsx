@@ -213,6 +213,7 @@ export default function Compliance() {
       }).then(r => r.json());
     },
     onSuccess: (newLog: ComplianceLog) => {
+      qc.invalidateQueries({ queryKey: ["/api/compliance/logs"] });
       navigate(`/compliance/${newLog.log_type}/${newLog.id}`);
     },
   });
