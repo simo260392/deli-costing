@@ -1070,7 +1070,6 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
   );
   const [invoiceNumber, setInvoiceNumber] = useState(log.invoice_number ?? "");
   const [padOpen, setPadOpen] = useState<string | null>(null);
-  const [savingHeader, setSavingHeader] = useState(false);
   const [scanning, setScanning] = useState(false);
   const invoicePhotoRef = useRef<HTMLInputElement>(null);
 
@@ -1089,19 +1088,12 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
     queryFn: () => apiRequest("GET", "/api/suppliers").then(r => r.json()),
   });
 
-  const saveDelivery = async () => {
-    setSavingHeader(true);
+  const saveHeaderField = async (fields: Record<string, unknown>) => {
     try {
-      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
-        deliveryDatetime: deliveryDatetime ? new Date(deliveryDatetime).toISOString() : null,
-        invoiceNumber: invoiceNumber || null,
-      });
+      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, fields);
       onRefresh();
-      toast({ description: "Delivery details saved" });
     } catch {
-      toast({ description: "Failed to save", variant: "destructive" });
-    } finally {
-      setSavingHeader(false);
+      // silent — fields will retry on next change
     }
   };
 
@@ -1163,10 +1155,7 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Supplier</label>
             <Select
               value={log.supplier_id ? String(log.supplier_id) : ""}
-              onValueChange={async (v) => {
-                await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { supplierId: Number(v) });
-                onRefresh();
-              }}
+              onValueChange={v => saveHeaderField({ supplierId: Number(v) })}
             >
               <SelectTrigger className="h-11">
                 <SelectValue placeholder="Select supplier…" />
@@ -1184,6 +1173,7 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
               type="datetime-local"
               value={deliveryDatetime}
               onChange={e => setDeliveryDatetime(e.target.value)}
+              onBlur={e => saveHeaderField({ deliveryDatetime: e.target.value ? new Date(e.target.value).toISOString() : null })}
               className="h-11"
             />
           </div>
@@ -1196,6 +1186,7 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
             <Input
               value={invoiceNumber}
               onChange={e => setInvoiceNumber(e.target.value)}
+              onBlur={e => saveHeaderField({ invoiceNumber: e.target.value || null })}
               placeholder="e.g. INV-00123"
               className="h-11 flex-1"
             />
@@ -1222,16 +1213,6 @@ function SupplierFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () 
           </div>
           <p className="text-[11px] text-muted-foreground">Take a photo of the invoice to auto-extract the number, or type it in.</p>
         </div>
-
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-9"
-          onClick={saveDelivery}
-          disabled={savingHeader}
-        >
-          Save delivery info
-        </Button>
       </div>
 
       {/* Line items */}
@@ -1650,7 +1631,7 @@ function SignOffBar({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => v
           disabled={!canSignOff || !selectedStaff || signing}
           onClick={handleSignOff}
         >
-          Sign off
+          {log.log_type === "supplier" ? "Log Delivery" : "Sign off"}
         </Button>
       </div>
     </div>
