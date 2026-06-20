@@ -7307,8 +7307,15 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         thaw_item: body.thaw_item ?? body.thawItem ?? null,
         thaw_weight_qty: body.thaw_weight_qty ?? body.thawWeightQty ?? null,
         thaw_location: body.thaw_location ?? body.thawLocation ?? null,
-        thaw_start_time: body.thaw_start_time ?? body.thawStartTime ?? null,
+        thaw_start_time: body.thaw_start_time ?? body.thawStartTime ?? (() => {
+          // Auto-populate start time with AWST now for new thawing logs
+          if ((body.log_type || body.logType) === 'thawing') {
+            return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
+          }
+          return null;
+        })(),
         thaw_target_completion: body.thaw_target_completion ?? body.thawTargetCompletion ?? null,
+        thaw_num_boxes: body.thaw_num_boxes ?? body.thawNumBoxes ?? null,
         cook_core_temp: body.cook_core_temp ?? body.cookCoreTemp ?? null,
         cook_recorded_time: body.cook_recorded_time ?? body.cookRecordedTime ?? null,
         cook_recorded_by_staff_id: body.cook_recorded_by_staff_id ?? body.cookRecordedByStaffId ?? null,
@@ -7413,6 +7420,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         thaw_location: 'thaw_location', thawLocation: 'thaw_location',
         thaw_start_time: 'thaw_start_time', thawStartTime: 'thaw_start_time',
         thaw_target_completion: 'thaw_target_completion', thawTargetCompletion: 'thaw_target_completion',
+        thaw_num_boxes: 'thaw_num_boxes', thawNumBoxes: 'thaw_num_boxes',
         cook_core_temp: 'cook_core_temp', cookCoreTemp: 'cook_core_temp',
         cook_recorded_time: 'cook_recorded_time', cookRecordedTime: 'cook_recorded_time',
         cook_recorded_by_staff_id: 'cook_recorded_by_staff_id', cookRecordedByStaffId: 'cook_recorded_by_staff_id',

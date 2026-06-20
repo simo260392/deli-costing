@@ -64,6 +64,7 @@ interface ComplianceLog {
   thaw_location: string | null;
   thaw_start_time: string | null;
   thaw_target_completion: string | null;
+  thaw_num_boxes: number | null;
   cook_core_temp: number | null;
   cook_recorded_time: string | null;
   cook_recorded_by_staff_id: number | null;
@@ -905,28 +906,153 @@ function CookingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
 
 // ─── Thawing section ──────────────────────────────────────────────────────────
 
+interface BatchInfo {
+  id: number;
+  batch_id: string;
+  product_name: string;
+  product_code: string;
+  stage: string;
+  total_weight_kg: number | null;
+  num_boxes: number | null;
+  weight_per_box_kg: number | null;
+  created_at: string;
+  status: string;
+}
+
 function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
   const { toast } = useToast();
-  const [item, setItem] = useState(log.thaw_item || "");
-  const [weightQty, setWeightQty] = useState(log.thaw_weight_qty || "");
+
+  // Batch linking state
+  const [linkedBatch, setLinkedBatch] = useState<BatchInfo | null>(null);
+  const [manualBatchId, setManualBatchId] = useState("");
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [scanMode, setScanMode] = useState(false);
+  const [numBoxes, setNumBoxes] = useState(log.thaw_num_boxes?.toString() || "");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scanStreamRef = useRef<MediaStream | null>(null);
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Existing fields
   const [location, setLocation] = useState(log.thaw_location || "");
-  const [startTime, setStartTime] = useState(
-    log.thaw_start_time ? log.thaw_start_time.slice(0, 16) : ""
-  );
+  const [startTime, setStartTime] = useState(() => {
+    if (!log.thaw_start_time) return "";
+    const d = new Date(log.thaw_start_time);
+    const parts = new Intl.DateTimeFormat("en-AU", {
+      timeZone: "Australia/Perth",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false
+    }).formatToParts(d);
+    const p: Record<string, string> = {};
+    parts.forEach(x => { p[x.type] = x.value; });
+    const h = p.hour === "24" ? "00" : p.hour;
+    return `${p.year}-${p.month}-${p.day}T${h}:${p.minute}`;
+  });
   const [targetCompletion, setTargetCompletion] = useState(
     log.thaw_target_completion ? log.thaw_target_completion.slice(0, 16) : ""
   );
   const [saving, setSaving] = useState(false);
 
+  // Load existing linked batch on mount
+  useEffect(() => {
+    if (log.batch_id && !linkedBatch) {
+      fetchBatch(log.batch_id);
+    }
+  }, [log.batch_id]);
+
+  // Cleanup camera on unmount
+  useEffect(() => {
+    return () => stopScan();
+  }, []);
+
+  const fetchBatch = async (batchId: string) => {
+    setBatchLoading(true);
+    setBatchError("");
+    try {
+      const res = await apiRequest("GET", `/api/batches/${batchId}`);
+      const data = await res.json();
+      if (data.error) {
+        setBatchError(`Batch "${batchId}" not found`);
+        setLinkedBatch(null);
+      } else {
+        setLinkedBatch(data);
+        setBatchError("");
+      }
+    } catch {
+      setBatchError("Could not load batch details");
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const stopScan = () => {
+    if (scanIntervalRef.current) { clearInterval(scanIntervalRef.current); scanIntervalRef.current = null; }
+    if (scanStreamRef.current) { scanStreamRef.current.getTracks().forEach(t => t.stop()); scanStreamRef.current = null; }
+    setScanMode(false);
+  };
+
+  const startScan = async () => {
+    setBatchError("");
+    if (!("BarcodeDetector" in window)) {
+      setBatchError("QR scanning not supported on this browser. Please enter the Batch ID manually.");
+      return;
+    }
+    setScanMode(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } }
+      });
+      scanStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+      const detector = new (window as any).BarcodeDetector({ formats: ["qr_code"] });
+      scanIntervalRef.current = setInterval(async () => {
+        if (!videoRef.current) return;
+        try {
+          const barcodes = await detector.detect(videoRef.current);
+          if (barcodes.length > 0) {
+            const raw = barcodes[0].rawValue as string;
+            stopScan();
+            const batchId = raw.trim();
+            setManualBatchId(batchId);
+            await fetchBatch(batchId);
+          }
+        } catch {
+          // Detection frame error — keep scanning
+        }
+      }, 300);
+    } catch (e: any) {
+      setScanMode(false);
+      setBatchError("Could not access camera: " + e.message);
+    }
+  };
+
+  const handleManualLookup = async () => {
+    const id = manualBatchId.trim();
+    if (!id) return;
+    await fetchBatch(id);
+  };
+
+  const unlinkBatch = async () => {
+    setLinkedBatch(null);
+    setManualBatchId("");
+    setBatchError("");
+    setNumBoxes("");
+    await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { batchId: null, thawNumBoxes: null });
+    onRefresh();
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
       await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
-        thawItem: item,
-        thawWeightQty: weightQty,
         thawLocation: location,
-        thawStartTime: startTime ? new Date(startTime).toISOString() : null,
-        thawTargetCompletion: targetCompletion ? new Date(targetCompletion).toISOString() : null,
+        thawStartTime: startTime ? new Date(startTime + ":00+08:00").toISOString() : null,
+        thawTargetCompletion: targetCompletion ? new Date(targetCompletion + ":00+08:00").toISOString() : null,
+        batchId: linkedBatch?.batch_id || null,
+        thawNumBoxes: numBoxes ? parseInt(numBoxes) : null,
       });
       onRefresh();
       toast({ description: "Thaw details saved" });
@@ -940,21 +1066,112 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   return (
     <div className="space-y-4">
       <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Thawing details</h3>
+
+      {/* ── Batch link ── */}
       <div className="border rounded-xl p-5 space-y-4">
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item</label>
-            <Input value={item} onChange={e => setItem(e.target.value)} className="h-11" placeholder="Item being thawed" />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weight / quantity</label>
-            <Input value={weightQty} onChange={e => setWeightQty(e.target.value)} className="h-11" placeholder="e.g. 2kg" />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Location (fridge)</label>
-            <Input value={location} onChange={e => setLocation(e.target.value)} className="h-11" placeholder="Fridge name or number" />
-          </div>
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-[#256984]">Batch link</span>
+          {linkedBatch && (
+            <button onClick={unlinkBatch} className="text-xs text-muted-foreground hover:text-destructive underline">Unlink</button>
+          )}
         </div>
+
+        {/* Already linked */}
+        {linkedBatch ? (
+          <div className="rounded-lg bg-blue-50 border border-blue-200 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-sm text-[#256984]">{linkedBatch.product_name}</p>
+                <p className="text-xs text-muted-foreground font-mono mt-0.5">{linkedBatch.batch_id}</p>
+              </div>
+              <span className="text-xs rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 font-medium capitalize">{linkedBatch.stage}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-white rounded-lg p-2 text-center border border-blue-100">
+                <p className="text-muted-foreground">Total boxes</p>
+                <p className="font-semibold text-sm">{linkedBatch.num_boxes ?? "—"}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 text-center border border-blue-100">
+                <p className="text-muted-foreground">Total weight</p>
+                <p className="font-semibold text-sm">{linkedBatch.total_weight_kg != null ? `${linkedBatch.total_weight_kg}kg` : "—"}</p>
+              </div>
+              <div className="bg-white rounded-lg p-2 text-center border border-blue-100">
+                <p className="text-muted-foreground">kg / box</p>
+                <p className="font-semibold text-sm">{linkedBatch.weight_per_box_kg != null ? `${linkedBatch.weight_per_box_kg}kg` : "—"}</p>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                No. of boxes being defrosted <span className="text-red-500">*</span>
+              </label>
+              <Input
+                type="number"
+                min="1"
+                max={linkedBatch.num_boxes ?? undefined}
+                value={numBoxes}
+                onChange={e => setNumBoxes(e.target.value)}
+                className="h-11"
+                placeholder={`Max ${linkedBatch.num_boxes ?? "?"} boxes`}
+              />
+              {linkedBatch.num_boxes != null && numBoxes && parseInt(numBoxes) > linkedBatch.num_boxes && (
+                <p className="text-xs text-amber-600">Warning: exceeds batch total of {linkedBatch.num_boxes} boxes</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {scanMode ? (
+              <div className="space-y-2">
+                <div className="relative rounded-xl overflow-hidden bg-black aspect-square max-w-xs mx-auto">
+                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="w-40 h-40 border-2 border-white rounded-lg opacity-70" />
+                  </div>
+                  <p className="absolute bottom-2 left-0 right-0 text-center text-white text-xs">Point at the QR code on the box</p>
+                </div>
+                <Button variant="outline" className="w-full h-10" onClick={stopScan}>
+                  Cancel scan
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full h-11 gap-2 font-medium"
+                style={{ backgroundColor: "#256984" }}
+                onClick={startScan}
+              >
+                <ScanLine className="w-4 h-4" />
+                Scan QR code on box
+              </Button>
+            )}
+
+            <div className="flex gap-2">
+              <Input
+                value={manualBatchId}
+                onChange={e => setManualBatchId(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleManualLookup(); }}
+                className="h-11 font-mono text-sm"
+                placeholder="Or enter Batch ID manually"
+              />
+              <Button variant="outline" className="h-11 px-3" onClick={handleManualLookup} disabled={!manualBatchId.trim() || batchLoading}>
+                <Search className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {batchLoading && <p className="text-xs text-muted-foreground">Looking up batch...</p>}
+          </div>
+        )}
+
+        {batchError && (
+          <div className="flex items-center gap-2 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            {batchError}
+          </div>
+        )}
+      </div>
+
+      {/* ── Log details ── */}
+      <div className="border rounded-xl p-5 space-y-4">
+        <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Log details</h4>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Start time</label>
@@ -974,6 +1191,10 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
               className="h-11"
             />
           </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Thaw location (fridge)</label>
+            <Input value={location} onChange={e => setLocation(e.target.value)} className="h-11" placeholder="Fridge name or number" />
+          </div>
         </div>
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-xs text-blue-800 space-y-1">
           <p className="font-medium">Pass criteria</p>
@@ -992,7 +1213,6 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     </div>
   );
 }
-
 
 // ─── Ingredient smartsearch ──────────────────────────────────────────────────
 function IngredientSearch({
