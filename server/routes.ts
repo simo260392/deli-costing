@@ -4908,20 +4908,130 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
   // ─────────────────────────────────────────────────────────────────────────────
 
   // POST /api/prep/compute — compute recipe/sub-recipe totals from order line items without saving anything
-  // Body: { orders: [{type, sku, name, quantity, flexProductId?}] }
-  // Returns: { recipes: [{id, name, qty}], subRecipes: [{id, name, qty}] }
+  // Body: { orders: [{type, sku, name, quantity, flexProductId?, customerUuid?, isWholesale?, flexCategory?, forOrder?}] }
+  // Returns: { recipes: [{id, name, qty, sizes, packaging}], subRecipes: [{id, name, qty, unit}] }
   app.post("/api/prep/compute", asyncRoute(async (req, res) => {
     const { orders } = req.body;
     if (!orders?.length) return res.json({ recipes: [], subRecipes: [] });
-    const tasks = await explodePrepTasks(orders, supabase);
-    const recipes = tasks
-      .filter((t: any) => t.itemType === "recipe")
-      .map((t: any) => ({ id: t.itemId, name: t.itemName, qty: t.quantityRequired }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
-    const subRecipes = tasks
-      .filter((t: any) => t.itemType === "sub_recipe")
-      .map((t: any) => ({ id: t.itemId, name: t.itemName, qty: t.quantityRequired }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+    // Fetch wholesale packaging prefs keyed by customerUuid
+    const { data: prefsRows } = await supabase.from('wholesale_packaging_prefs').select('flex_customer_id,wrap_style,paper');
+    const prefsMap = new Map<string, { wrapStyle: string | null; paper: string | null }>();
+    for (const p of (prefsRows || [])) {
+      prefsMap.set(p.flex_customer_id, { wrapStyle: p.wrap_style, paper: p.paper });
+    }
+
+    function detectItemType(name: string, flexCategory?: string): 'wrap' | 'sandwich' | 'breakfast' | 'other' {
+      if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
+      const n = (name || '').toLowerCase();
+      if (n.includes('wrap')) return 'wrap';
+      if (n.includes('sandwich') || n.includes('focaccia') || n.includes('turkish') || n.includes('lungo') || n.includes('panini') || n.includes('reuben') || n.includes('toastie') || n.includes('baguette') || n.includes('roll')) return 'sandwich';
+      return 'other';
+    }
+
+    function getDefaultPackaging(itemType: string): { wrapStyle: string | null; paper: string | null } {
+      if (itemType === 'wrap') return { wrapStyle: 'burrito', paper: 'branded' };
+      if (itemType === 'sandwich') return { wrapStyle: null, paper: 'branded' };
+      return { wrapStyle: null, paper: null };
+    }
+
+    function packagingLabel(wrapStyle: string | null, paper: string | null, itemType: string): string {
+      const parts: string[] = [];
+      if (wrapStyle === 'burrito') parts.push('Burrito');
+      else if (wrapStyle === 'open') parts.push('Open');
+      if (paper === 'branded') parts.push('Deli greaseproof');
+      else if (paper === 'plain_white') parts.push('Plain white');
+      if (parts.length === 0) return itemType === 'breakfast' ? 'No wrap' : 'No packaging';
+      return parts.join(' · ');
+    }
+
+    const recipeResultMap = new Map<number, any>();
+    const subRecipeResultMap = new Map<number, any>();
+
+    for (const order of orders) {
+      const itemType = detectItemType(order.name || '', order.flexCategory || '');
+      const isWholesale = !!(order.isWholesale);
+      const customerUuid = order.customerUuid || null;
+      const forOrder = order.forOrder || order.name || 'Unknown';
+
+      // Determine packaging for this order line
+      const pkg = getDefaultPackaging(itemType);
+      if (isWholesale && customerUuid && prefsMap.has(customerUuid)) {
+        const pref = prefsMap.get(customerUuid)!;
+        if (pref.wrapStyle) pkg.wrapStyle = pref.wrapStyle;
+        if (pref.paper) pkg.paper = pref.paper;
+      }
+      const pkgLabel = packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
+      const qty = order.quantity || 1;
+      const sizeLabel = order.name || 'Unknown';
+
+      // Resolve flex product
+      let flexProduct: any = null;
+      if (order.sku) {
+        const { data } = await supabase.from('flex_products').select('*').eq('sku', order.sku).single();
+        flexProduct = data;
+      }
+      if (!flexProduct && order.flexProductId) {
+        const { data } = await supabase.from('flex_products').select('*').eq('id', order.flexProductId).single();
+        flexProduct = data;
+      }
+      if (!flexProduct) continue;
+
+      const { data: costing } = await supabase.from('flex_product_costings').select('*').eq('flex_product_id', flexProduct.id).single();
+      if (!costing) continue;
+      const components: any[] = JSON.parse(costing.components_json || '[]');
+
+      for (const comp of components) {
+        if (comp.type === 'recipe') {
+          const { data: recipe } = await supabase.from('recipes').select('*').eq('id', comp.id).single();
+          if (!recipe) continue;
+          const compQty = (comp.quantity || 1) * qty;
+
+          if (!recipeResultMap.has(recipe.id)) {
+            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, totalQty: 0, sizes: new Map(), packaging: new Map() });
+          }
+          const re = recipeResultMap.get(recipe.id)!;
+          re.totalQty += compQty;
+          re.sizes.set(sizeLabel, (re.sizes.get(sizeLabel) || 0) + compQty);
+          if (!re.packaging.has(pkgLabel)) re.packaging.set(pkgLabel, { qty: 0, orders: new Set() });
+          re.packaging.get(pkgLabel).qty += compQty;
+          re.packaging.get(pkgLabel).orders.add(forOrder);
+
+          // Sub-recipes within this recipe
+          const subRecipesUsed: any[] = JSON.parse((recipe as any).sub_recipes_json || '[]');
+          for (const sr of subRecipesUsed) {
+            const { data: subRecipe } = await supabase.from('sub_recipes').select('*').eq('id', sr.subRecipeId).single();
+            if (!subRecipe) continue;
+            const srQty = (sr.quantity || 0) * compQty;
+            if (!subRecipeResultMap.has(subRecipe.id)) {
+              subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).unit || '' });
+            }
+            subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
+          }
+        } else if (comp.type === 'sub_recipe') {
+          const { data: subRecipe } = await supabase.from('sub_recipes').select('*').eq('id', comp.id).single();
+          if (!subRecipe) continue;
+          const srQty = (comp.quantity || 1) * qty;
+          if (!subRecipeResultMap.has(subRecipe.id)) {
+            subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).unit || '' });
+          }
+          subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
+        }
+      }
+    }
+
+    const recipes = [...recipeResultMap.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(r => ({
+        id: r.id, name: r.name, qty: r.totalQty,
+        sizes: [...r.sizes.entries()].map(([label, qty]) => ({ label, qty })).sort((a: any, b: any) => (b.qty as number) - (a.qty as number)),
+        packaging: [...r.packaging.entries()].map(([label, v]) => ({ label, qty: (v as any).qty, orders: [...(v as any).orders] })),
+      }));
+
+    const subRecipes = [...subRecipeResultMap.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(s => ({ id: s.id, name: s.name, qty: s.totalQty, unit: s.unit }));
+
     res.json({ recipes, subRecipes });
   }));
 

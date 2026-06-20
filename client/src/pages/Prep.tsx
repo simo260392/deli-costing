@@ -1402,6 +1402,9 @@ export default function Prep() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [tab, setTab] = useState<"orders" | "prep" | "stock">("orders");
+  // Prep tab controls
+  const [prepMode, setPrepMode] = useState<"total" | "remaining">("total");
+  const [prepMobileTab, setPrepMobileTab] = useState<"subrecipes" | "recipes">("subrecipes");
 
   // Date range
   const [rangeMode, setRangeMode] = useState<"today" | "tomorrow" | "custom">("today");
@@ -1993,11 +1996,21 @@ export default function Prep() {
         name: i.name,
         quantity: i.quantity,
         forOrder: o.company || `${o.first_name} ${o.last_name}`.trim(),
+        customerUuid: o.customer_uuid || null,
+        isWholesale: o.is_wholesale || false,
+        flexCategory: (i as any).category || "",
       }))
     ),
     [flexOrders]
   );
-  const { data: prepComputed, isFetching: prepComputeFetching } = useQuery<{ recipes: {id:number;name:string;qty:number}[]; subRecipes: {id:number;name:string;qty:number}[] }>({
+
+  interface PrepRecipeSize { label: string; qty: number; }
+  interface PrepRecipePkg { label: string; qty: number; orders: string[]; }
+  interface PrepRecipe { id: number; name: string; qty: number; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
+  interface PrepSubRecipe { id: number; name: string; qty: number; unit: string; }
+  interface PrepComputed { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[]; }
+
+  const { data: prepComputed, isFetching: prepComputeFetching } = useQuery<PrepComputed>({
     queryKey: ["/api/prep/compute", prepComputeOrders],
     queryFn: async () => {
       if (prepComputeOrders.length === 0) return { recipes: [], subRecipes: [] };
@@ -2356,50 +2369,216 @@ export default function Prep() {
             </div>
           )}
 
-          {/* Computed prep list */}
+          {/* Computed prep list — new 50/50 split layout */}
           {!prepComputeFetching && prepComputed && (
             <>
-              {/* Recipes */}
-              {(prepComputed.recipes?.length ?? 0) > 0 ? (
-                <div>
-                  <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" />
-                    Recipes ({prepComputed.recipes.length})
-                  </h3>
-                  <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="divide-y divide-border/50">
-                      {prepComputed.recipes.map(item => (
-                        <div key={item.id} className="flex items-center justify-between px-4 py-3">
-                          <span className="text-sm text-foreground">{item.name}</span>
-                          <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+              {/* ── Controls bar: Total/Remaining toggle ── */}
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {prepMode === "remaining" ? "Remaining = total minus logged prep" : "Total quantities across all orders"}
+                </p>
+                <div className="flex rounded-lg border border-border overflow-hidden text-xs font-semibold">
+                  <button
+                    onClick={() => setPrepMode("total")}
+                    className={`px-3 py-1.5 transition-colors ${
+                      prepMode === "total"
+                        ? "bg-[#256984] text-white"
+                        : "bg-card text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    Total
+                  </button>
+                  <button
+                    onClick={() => setPrepMode("remaining")}
+                    className={`px-3 py-1.5 border-l border-border transition-colors ${
+                      prepMode === "remaining"
+                        ? "bg-[#256984] text-white"
+                        : "bg-card text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    Remaining
+                  </button>
                 </div>
-              ) : null}
+              </div>
 
-              {/* Sub-recipes */}
-              {(prepComputed.subRecipes?.length ?? 0) > 0 ? (
-                <div className={(prepComputed.recipes?.length ?? 0) > 0 ? "mt-2" : ""}>
+              {/* ── Mobile tab switcher (hidden on md+) ── */}
+              <div className="flex rounded-lg border border-border overflow-hidden text-sm font-semibold md:hidden">
+                <button
+                  onClick={() => setPrepMobileTab("subrecipes")}
+                  className={`flex-1 py-2 transition-colors ${
+                    prepMobileTab === "subrecipes"
+                      ? "bg-[#256984] text-white"
+                      : "bg-card text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  Sub-recipes
+                </button>
+                <button
+                  onClick={() => setPrepMobileTab("recipes")}
+                  className={`flex-1 py-2 border-l border-border transition-colors ${
+                    prepMobileTab === "recipes"
+                      ? "bg-[#256984] text-white"
+                      : "bg-card text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  Recipes
+                </button>
+              </div>
+
+              {/* ── 50/50 grid: stacked mobile, side-by-side md+ ── */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {/* ── LEFT / TAB 1: Sub-recipes ── */}
+                <div className={prepMobileTab === "subrecipes" ? "" : "hidden md:block"}>
                   <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
                     <span className="w-3 h-3 rounded-full bg-[#FCCDE2] inline-block" />
-                    Sub-recipes ({prepComputed.subRecipes.length})
+                    Sub-recipes
+                    {(prepComputed.subRecipes?.length ?? 0) > 0 && (
+                      <span className="text-xs font-normal text-muted-foreground">({prepComputed.subRecipes.length})</span>
+                    )}
                   </h3>
-                  <div className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="divide-y divide-border/50">
-                      {prepComputed.subRecipes.map(item => (
-                        <div key={item.id} className="flex items-center justify-between px-4 py-3">
-                          <span className="text-sm text-foreground">{item.name}</span>
-                          <span className="text-sm font-bold text-[#256984] tabular-nums">{item.qty}&times;</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
 
-              {/* No linked recipes */}
+                  {(prepComputed.subRecipes?.length ?? 0) === 0 ? (
+                    <div className="bg-card border border-border rounded-xl px-4 py-6 text-center text-sm text-muted-foreground">
+                      No sub-recipes for these orders
+                    </div>
+                  ) : (
+                    <div className="bg-card border border-border rounded-xl overflow-hidden">
+                      <div className="divide-y divide-border/50">
+                        {prepComputed.subRecipes.map(item => {
+                          const logged = todayLogEntries
+                            .filter(e => e.itemType === "sub_recipe" && String(e.itemId) === String(item.id))
+                            .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
+                          const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
+                          const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
+                          return (
+                            <div key={item.id} className="px-4 py-3">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm text-foreground leading-tight">{item.name}</span>
+                                <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
+                                  prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
+                                }`}>
+                                  {Number.isInteger(displayQty) ? displayQty : displayQty.toFixed(2)}
+                                  {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5"> {item.unit}</span> : null}
+                                </span>
+                              </div>
+                              {prepMode === "remaining" && item.qty > 0 && (
+                                <div className="mt-1.5">
+                                  <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width: `${pct}%`,
+                                        backgroundColor: pct >= 100 ? "#5AB693" : "#256984",
+                                      }}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                                    {Number.isInteger(logged) ? logged : logged.toFixed(2)} / {item.qty} {item.unit} done
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── RIGHT / TAB 2: Recipes ── */}
+                <div className={prepMobileTab === "recipes" ? "" : "hidden md:block"}>
+                  <h3 className="text-sm font-bold text-foreground mb-2 flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-[#256984] inline-block" />
+                    Recipes
+                    {(prepComputed.recipes?.length ?? 0) > 0 && (
+                      <span className="text-xs font-normal text-muted-foreground">({prepComputed.recipes.length})</span>
+                    )}
+                  </h3>
+
+                  {(prepComputed.recipes?.length ?? 0) === 0 ? (
+                    <div className="bg-card border border-border rounded-xl px-4 py-6 text-center text-sm text-muted-foreground">
+                      No recipes linked to these orders
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {prepComputed.recipes.map(item => {
+                        const logged = todayLogEntries
+                          .filter(e => e.itemType === "recipe" && String(e.itemId) === String(item.id))
+                          .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
+                        const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
+                        const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
+                        const hasSizes = (item.sizes?.length ?? 0) > 1;
+                        const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
+
+                        return (
+                          <div key={item.id} className="bg-card border border-border rounded-xl overflow-hidden">
+                            {/* Header row */}
+                            <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+                              <span className="text-sm font-semibold text-foreground leading-tight">{item.name}</span>
+                              <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
+                                prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
+                              }`}>
+                                {displayQty}&times;
+                              </span>
+                            </div>
+
+                            {/* Progress bar (Remaining mode) */}
+                            {prepMode === "remaining" && item.qty > 0 && (
+                              <div className="px-4 pt-2 pb-1">
+                                <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all"
+                                    style={{
+                                      width: `${pct}%`,
+                                      backgroundColor: pct >= 100 ? "#5AB693" : "#256984",
+                                    }}
+                                  />
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">{logged} / {item.qty} done</p>
+                              </div>
+                            )}
+
+                            {/* Size breakdown */}
+                            {hasSizes && (
+                              <div className="px-4 py-2 border-t border-border/30">
+                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Sizes</p>
+                                <div className="space-y-0.5">
+                                  {item.sizes.map(s => (
+                                    <div key={s.label} className="flex items-center justify-between text-xs">
+                                      <span className="text-muted-foreground truncate mr-2">{s.label}</span>
+                                      <span className="font-semibold text-foreground tabular-nums shrink-0">{s.qty}&times;</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Packaging breakdown */}
+                            {hasPkg && (
+                              <div className="px-4 py-2 border-t border-border/30">
+                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Packaging</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {item.packaging.map(p => (
+                                    <span
+                                      key={p.label}
+                                      className="inline-flex items-center gap-1 text-[10px] font-medium bg-[#256984]/10 text-[#256984] rounded-full px-2 py-0.5"
+                                    >
+                                      {p.label} &times;{p.qty}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Empty state — no recipes or sub-recipes */}
               {(prepComputed.recipes?.length ?? 0) === 0 && (prepComputed.subRecipes?.length ?? 0) === 0 && (
                 <div className="text-center py-12 text-muted-foreground">
                   <AlertCircle className="mx-auto mb-2 opacity-40" size={36} />
