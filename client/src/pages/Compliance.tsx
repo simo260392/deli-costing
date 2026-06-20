@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -158,6 +158,61 @@ interface DateRange {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
+
+// ─── Thaw countdown component (live tick) ────────────────────────────────────
+
+function ThawCountdown({ log }: { log: ComplianceLog }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (log.thaw_completed_at) return;
+    const id = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(id);
+  }, [log.thaw_completed_at]);
+
+  if (!log.thaw_target_completion) return null;
+
+  const start = log.thaw_start_time ? new Date(log.thaw_start_time).getTime() : new Date(log.created_at).getTime();
+  const target = new Date(log.thaw_target_completion).getTime();
+  const total = target - start;
+  const elapsed = now - start;
+  const pct = total > 0 ? Math.min(100, Math.round((elapsed / total) * 100)) : 100;
+  const overdue = now > target;
+  const complete = !!log.thaw_completed_at;
+
+  const barColor = complete ? "#5AB693" : overdue ? "#ef4444" : pct > 80 ? "#f59e0b" : "#256984";
+  const remaining = Math.max(0, target - now);
+  const totalSecs = Math.floor(remaining / 1000);
+  const dd = Math.floor(totalSecs / 86400);
+  const hh = Math.floor((totalSecs % 86400) / 3600);
+  const mm = Math.floor((totalSecs % 3600) / 60);
+
+  const countdownLabel = complete
+    ? "Thawing complete"
+    : overdue
+    ? `Overdue by ${dd > 0 ? `${dd}d ` : ""}${hh}h ${mm}m`
+    : dd > 0
+    ? `${dd}d ${hh}h ${mm}m remaining`
+    : `${hh}h ${mm}m remaining`;
+
+  const targetLabel = format(new Date(log.thaw_target_completion), "EEE d MMM, HH:mm");
+
+  return (
+    <div className="mt-2 space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold" style={{ color: barColor }}>
+          {countdownLabel}
+        </span>
+        <span className="text-xs text-muted-foreground">Due {targetLabel}</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${pct}%`, backgroundColor: barColor, transition: "width 0.5s" }}
+        />
+      </div>
+    </div>
+  );
+}
 
 export default function Compliance() {
   const [, navigate] = useLocation();
@@ -472,6 +527,8 @@ export default function Compliance() {
                         <div className="mt-0.5">
                           {logItemName(log) ? (
                             <span className="font-semibold text-sm text-foreground">{logItemName(log)}</span>
+                          ) : log.log_type === "thawing" && log.batch_id ? (
+                            <span className="font-semibold text-sm text-foreground font-mono">{log.batch_id}</span>
                           ) : log.log_type === "wastage" ? (
                             <span className="font-semibold text-sm text-foreground">Wastage Sheet</span>
                           ) : log.log_type === "review" ? (
@@ -534,37 +591,10 @@ export default function Compliance() {
                           </div>
                         )}
 
-                        {/* Thaw progress bar */}
-                        {log.log_type === "thawing" && log.thaw_target_completion && log.derivedStatus !== "pass" && (() => {
-                          const now = Date.now();
-                          const start = log.thaw_start_time ? new Date(log.thaw_start_time as any).getTime() : new Date(log.created_at).getTime();
-                          const target = new Date(log.thaw_target_completion).getTime();
-                          const total = target - start;
-                          const elapsed = now - start;
-                          const pct = total > 0 ? Math.min(100, Math.round((elapsed / total) * 100)) : 0;
-                          const overdue = now > target;
-                          const complete = !!log.thaw_completed_at;
-                          const barColor = complete ? "#5AB693" : overdue ? "#ef4444" : pct > 80 ? "#f59e0b" : "#256984";
-                          const targetDate = format(new Date(log.thaw_target_completion), "EEE d MMM, HH:mm");
-                          return (
-                            <div className="mt-2 space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs text-muted-foreground">
-                                  {complete ? "Thawing complete" : overdue ? "Overdue" : `Due ${targetDate}`}
-                                </span>
-                                <span className="text-xs font-medium" style={{ color: barColor }}>
-                                  {complete ? "Done" : `${pct}%`}
-                                </span>
-                              </div>
-                              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{ width: `${pct}%`, backgroundColor: barColor }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })()}
+                        {/* Thaw progress bar — live countdown */}
+                        {log.log_type === "thawing" && (
+                          <ThawCountdown log={log} />
+                        )}
                       </div>
 
                       {/* Right: status + edit */}

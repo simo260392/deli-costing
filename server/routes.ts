@@ -7232,8 +7232,29 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       }
       if (logType) query = query.eq('log_type', logType);
 
-      const { data: logs, error } = await query;
+      let { data: logs, error } = await query;
       if (error) throw error;
+
+      // For thawing tab: always include in-progress logs from any date
+      if (logType === 'thawing') {
+        const { data: inProgressThawing } = await supabase
+          .from('compliance_logs')
+          .select('*')
+          .eq('log_type', 'thawing')
+          .eq('status', 'in_progress')
+          .order('created_at', { ascending: false });
+        if (inProgressThawing && inProgressThawing.length > 0) {
+          const existingIds = new Set((logs || []).map((l: any) => l.id));
+          const extra = inProgressThawing.filter((l: any) => !existingIds.has(l.id));
+          logs = [...(logs || []), ...extra];
+          // Re-sort: in_progress first, then by created_at desc
+          logs.sort((a: any, b: any) => {
+            if (a.status === 'in_progress' && b.status !== 'in_progress') return -1;
+            if (b.status === 'in_progress' && a.status !== 'in_progress') return 1;
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          });
+        }
+      }
 
       // Pre-fetch recipes + suppliers for name resolution
       const allRecipes = await storage.getRecipes();
@@ -7249,7 +7270,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       // For in_progress logs, fetch stages/supplier lines and derive status
       const result = await Promise.all((logs || []).map(async (log: any) => {
         // Resolve item_name if not already stored
-        if (!log.item_name) {
+        if (!log.item_name || log.item_name === '') {
           if (log.log_type === 'cooling' || log.log_type === 'cooking') {
             log.item_name = log.recipe_id ? (recipeMap[log.recipe_id] || subRecipeMap[log.recipe_id] || null) : null;
           } else if (log.log_type === 'supplier') {
