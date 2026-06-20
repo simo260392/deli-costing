@@ -65,6 +65,7 @@ interface ComplianceLog {
   thaw_start_time: string | null;
   thaw_target_completion: string | null;
   thaw_num_boxes: number | null;
+  thaw_weight_kg: number | null;
   thaw_completed_at: string | null;
   cook_core_temp: number | null;
   cook_recorded_time: string | null;
@@ -919,22 +920,7 @@ interface BatchInfo {
   created_at: string;
   status: string;
 }
-// ─── Thawing section ──────────────────────────────────────────────────────────
 
-interface BatchInfo {
-  id: number;
-  batch_id: string;
-  product_name: string;
-  product_code: string;
-  stage: string;
-  total_weight_kg: number | null;
-  num_boxes: number | null;
-  weight_per_box_kg: number | null;
-  created_at: string;
-  status: string;
-}
-
-/** Format an ISO timestamp to AWST datetime-local string (YYYY-MM-DDTHH:MM) */
 function toAwstLocal(isoStr: string): string {
   const d = new Date(isoStr);
   const parts = new Intl.DateTimeFormat("en-AU", {
@@ -944,16 +930,13 @@ function toAwstLocal(isoStr: string): string {
   }).formatToParts(d);
   const p: Record<string, string> = {};
   parts.forEach(x => { p[x.type] = x.value; });
-  const h = p.hour === "24" ? "00" : p.hour;
-  return `${p.year}-${p.month}-${p.day}T${h}:${p.minute}`;
+  return `${p.year}-${p.month}-${p.day}T${p.hour === "24" ? "00" : p.hour}:${p.minute}`;
 }
 
-/** Parse a datetime-local string as AWST → UTC ISO */
 function fromAwstLocal(localStr: string): string {
   return new Date(localStr + ":00+08:00").toISOString();
 }
 
-/** Countdown display — returns { days, hours, mins, secs, overdue, totalSecs } */
 function useCountdown(targetIso: string | null) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -972,6 +955,71 @@ function useCountdown(targetIso: string | null) {
   return { days, hours, mins, secs, overdue, totalSecs };
 }
 
+// ── Batch search popup ──────────────────────────────────────────────────────
+function BatchSearchPopup({ onSelect, onClose }: { onSelect: (b: BatchInfo) => void; onClose: () => void }) {
+  const [search, setSearch] = useState("");
+  const { data: batches = [], isLoading } = useQuery<BatchInfo[]>({
+    queryKey: ["/api/batches", "parent", "active"],
+    queryFn: () => apiRequest("GET", "/api/batches?type=parent&status=active").then(r => r.json()),
+  });
+
+  const filtered = batches.filter(b =>
+    !search ||
+    b.product_name.toLowerCase().includes(search.toLowerCase()) ||
+    b.batch_id.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b">
+          <span className="font-semibold text-[#256984]">Select parent batch</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">&times;</button>
+        </div>
+        {/* Search */}
+        <div className="px-4 py-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by product or batch ID…"
+              className="h-10 pl-9"
+              autoFocus
+            />
+          </div>
+        </div>
+        {/* List */}
+        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2">
+          {isLoading && <p className="text-sm text-muted-foreground py-4 text-center">Loading batches…</p>}
+          {!isLoading && filtered.length === 0 && (
+            <p className="text-sm text-muted-foreground py-4 text-center">No active batches found</p>
+          )}
+          {filtered.map(b => (
+            <button
+              key={b.batch_id}
+              onClick={() => onSelect(b)}
+              className="w-full text-left rounded-xl border p-3 hover:border-[#256984] hover:bg-blue-50 transition-colors space-y-1"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-sm">{b.product_name}</span>
+                <span className="text-xs rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 capitalize">{b.stage}</span>
+              </div>
+              <p className="text-xs font-mono text-muted-foreground">{b.batch_id}</p>
+              <div className="flex gap-3 text-xs text-muted-foreground">
+                {b.num_boxes != null && <span>{b.num_boxes} boxes</span>}
+                {b.total_weight_kg != null && <span>{b.total_weight_kg} kg total</span>}
+                {b.weight_per_box_kg != null && <span>{b.weight_per_box_kg} kg/box</span>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () => void }) {
   const { toast } = useToast();
   const [, navigate] = useLocation();
@@ -982,17 +1030,46 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [scanMode, setScanMode] = useState(false);
-  const [numBoxes, setNumBoxes] = useState(log.thaw_num_boxes?.toString() || "");
+  const [showBatchSearch, setShowBatchSearch] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const scanStreamRef = useRef<MediaStream | null>(null);
   const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Weight / boxes being thawed ──
+  // These are the *defrost quantity* fields — how much of the batch is being thawed
+  // Either weight OR boxes must be entered. Both can be entered and they cross-calculate.
+  const [thawWeightKg, setThawWeightKg] = useState(
+    log.thaw_weight_kg != null ? String(log.thaw_weight_kg) : ""
+  );
+  const [thawBoxes, setThawBoxes] = useState(
+    log.thaw_num_boxes != null ? String(log.thaw_num_boxes) : ""
+  );
+
+  // Derived: weight per box from linked batch (for cross-calc)
+  const batchWpb = linkedBatch?.weight_per_box_kg ?? null;
+  const batchHasBoxes = linkedBatch != null && linkedBatch.num_boxes != null;
+
+  // Cross-calculate: when user enters boxes, fill weight (if wpb known); vice versa
+  const handleThawBoxesChange = (val: string) => {
+    setThawBoxes(val);
+    if (batchWpb && val) {
+      const computed = (parseFloat(val) * batchWpb).toFixed(2);
+      setThawWeightKg(computed);
+    }
+  };
+  const handleThawWeightChange = (val: string) => {
+    setThawWeightKg(val);
+    if (batchWpb && val) {
+      const computed = Math.round(parseFloat(val) / batchWpb);
+      setThawBoxes(computed > 0 ? String(computed) : "");
+    }
+  };
 
   // ── Log fields ──
   const [thawLocation, setThawLocation] = useState(log.thaw_location || "");
   const [startTime, setStartTime] = useState(() =>
     log.thaw_start_time ? toAwstLocal(log.thaw_start_time) : ""
   );
-  // thawDays: "1" | "2" | "3" | "4" | "5" | "6" | "7" derived from target_completion if set
   const [thawDays, setThawDays] = useState<string>(() => {
     if (log.thaw_start_time && log.thaw_target_completion) {
       const diff = new Date(log.thaw_target_completion).getTime() - new Date(log.thaw_start_time).getTime();
@@ -1001,7 +1078,6 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     }
     return "";
   });
-  // Derived target ISO from startTime + thawDays
   const targetIso: string | null = (() => {
     if (!startTime || !thawDays) return null;
     try {
@@ -1012,17 +1088,14 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   })();
 
   // ── Completed ──
-  const [completedAt, setCompletedAt] = useState<string | null>(
-    log.thaw_completed_at || null
-  );
+  const [completedAt, setCompletedAt] = useState<string | null>(log.thaw_completed_at || null);
   const alreadyCompleted = !!completedAt;
 
-  // ── Saving / submitting ──
+  // ── Saving states ──
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [markingComplete, setMarkingComplete] = useState(false);
 
-  // Countdown (only runs when not completed)
   const countdown = alreadyCompleted ? null : useCountdown(targetIso);
 
   // Load linked batch on mount
@@ -1030,13 +1103,11 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     if (log.batch_id && !linkedBatch) fetchBatch(log.batch_id);
   }, [log.batch_id]);
 
-  // Cleanup camera on unmount
   useEffect(() => { return () => stopScan(); }, []);
 
   // ── Batch helpers ──
   const fetchBatch = async (batchId: string) => {
-    setBatchLoading(true);
-    setBatchError("");
+    setBatchLoading(true); setBatchError("");
     try {
       const res = await apiRequest("GET", `/api/batches/${batchId}`);
       const data = await res.json();
@@ -1044,6 +1115,16 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       else { setLinkedBatch(data); setBatchError(""); }
     } catch { setBatchError("Could not load batch details"); }
     finally { setBatchLoading(false); }
+  };
+
+  const handleSelectBatch = async (b: BatchInfo) => {
+    setShowBatchSearch(false);
+    setLinkedBatch(b);
+    setBatchError("");
+    setManualBatchId(b.batch_id);
+    // Pre-fill weight/boxes from batch totals if not yet set
+    if (!thawWeightKg && b.total_weight_kg != null) setThawWeightKg(String(b.total_weight_kg));
+    if (!thawBoxes && b.num_boxes != null) setThawBoxes(String(b.num_boxes));
   };
 
   const stopScan = () => {
@@ -1055,7 +1136,7 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   const startScan = async () => {
     setBatchError("");
     if (!("BarcodeDetector" in window)) {
-      setBatchError("QR scanning not supported on this browser — enter the Batch ID manually below.");
+      setBatchError("QR scanning not supported on this browser — enter the Batch ID manually or use Search.");
       return;
     }
     setScanMode(true);
@@ -1074,7 +1155,7 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
             setManualBatchId(id);
             await fetchBatch(id);
           }
-        } catch { /* frame error — keep scanning */ }
+        } catch { /* frame error */ }
       }, 300);
     } catch (e: any) { setScanMode(false); setBatchError("Camera error: " + e.message); }
   };
@@ -1085,60 +1166,48 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   };
 
   const unlinkBatch = async () => {
-    setLinkedBatch(null); setManualBatchId(""); setBatchError(""); setNumBoxes("");
-    await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { batchId: null, thawNumBoxes: null });
+    setLinkedBatch(null); setManualBatchId(""); setBatchError("");
+    setThawWeightKg(""); setThawBoxes("");
+    await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { batchId: null, thawNumBoxes: null, thawWeightKg: null });
     onRefresh();
   };
 
-  // ── Save details (auto-save) ──
+  const buildPayload = () => ({
+    thawLocation,
+    thawStartTime: startTime ? fromAwstLocal(startTime) : null,
+    thawTargetCompletion: targetIso,
+    batchId: linkedBatch?.batch_id || null,
+    thawNumBoxes: thawBoxes ? parseInt(thawBoxes) : null,
+    thawWeightKg: thawWeightKg ? parseFloat(thawWeightKg) : null,
+  });
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
-        thawLocation,
-        thawStartTime: startTime ? fromAwstLocal(startTime) : null,
-        thawTargetCompletion: targetIso,
-        batchId: linkedBatch?.batch_id || null,
-        thawNumBoxes: numBoxes ? parseInt(numBoxes) : null,
-      });
-      onRefresh();
-      toast({ description: "Details saved" });
+      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, buildPayload());
+      onRefresh(); toast({ description: "Details saved" });
     } catch { toast({ description: "Failed to save", variant: "destructive" }); }
     finally { setSaving(false); }
   };
 
-  // ── Mark thawing complete ──
   const handleMarkComplete = async () => {
     setMarkingComplete(true);
     try {
       const now = new Date().toISOString();
-      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
-        thawCompletedAt: now,
-        thawLocation,
-        thawStartTime: startTime ? fromAwstLocal(startTime) : null,
-        thawTargetCompletion: targetIso,
-        batchId: linkedBatch?.batch_id || null,
-        thawNumBoxes: numBoxes ? parseInt(numBoxes) : null,
-      });
-      setCompletedAt(now);
-      onRefresh();
-      toast({ description: "Thawing marked as complete" });
+      await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { ...buildPayload(), thawCompletedAt: now });
+      setCompletedAt(now); onRefresh(); toast({ description: "Thawing marked as complete" });
     } catch { toast({ description: "Failed to mark complete", variant: "destructive" }); }
     finally { setMarkingComplete(false); }
   };
 
-  // ── Submit log ──
   const handleSubmit = async () => {
     if (!startTime) { toast({ description: "Please set a start time before submitting.", variant: "destructive" }); return; }
+    if (!thawWeightKg && !thawBoxes) { toast({ description: "Please enter the weight or number of boxes being defrosted.", variant: "destructive" }); return; }
     setSubmitting(true);
     try {
       await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
+        ...buildPayload(),
         status: "pass",
-        thawLocation,
-        thawStartTime: startTime ? fromAwstLocal(startTime) : null,
-        thawTargetCompletion: targetIso,
-        batchId: linkedBatch?.batch_id || null,
-        thawNumBoxes: numBoxes ? parseInt(numBoxes) : null,
         thawCompletedAt: completedAt || new Date().toISOString(),
       });
       toast({ description: "Thawing log submitted" });
@@ -1147,17 +1216,17 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     finally { setSubmitting(false); }
   };
 
-  // ── Countdown display component ──
   const CountdownDisplay = () => {
     if (!countdown) return null;
     const { days, hours, mins, secs, overdue } = countdown;
-    const totalMs = targetIso ? new Date(targetIso).getTime() - (log.thaw_start_time ? new Date(log.thaw_start_time).getTime() : Date.now()) : 0;
+    const totalMs = targetIso && log.thaw_start_time
+      ? new Date(targetIso).getTime() - new Date(log.thaw_start_time).getTime()
+      : (targetIso ? parseInt(thawDays || "1") * 86400000 : 0);
     const elapsed = totalMs > 0 ? Math.max(0, Math.min(1, 1 - (countdown.totalSecs * 1000) / totalMs)) : 0;
     const pct = Math.round(elapsed * 100);
     const color = overdue ? "#ef4444" : pct > 80 ? "#f59e0b" : "#256984";
     const circumference = 2 * Math.PI * 54;
     const strokeDash = circumference * (1 - elapsed);
-
     return (
       <div className={`rounded-xl border p-4 ${overdue ? "bg-red-50 border-red-200" : "bg-blue-50 border-blue-200"}`}>
         <div className="flex items-center justify-between mb-3">
@@ -1171,30 +1240,21 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
           )}
         </div>
         <div className="flex items-center gap-6">
-          {/* SVG ring */}
           <div className="shrink-0">
             <svg width="120" height="120" viewBox="0 0 120 120">
               <circle cx="60" cy="60" r="54" fill="none" stroke={overdue ? "#fecaca" : "#dbeafe"} strokeWidth="10" />
-              <circle
-                cx="60" cy="60" r="54" fill="none"
-                stroke={color} strokeWidth="10"
-                strokeDasharray={circumference}
-                strokeDashoffset={overdue ? 0 : strokeDash}
-                strokeLinecap="round"
-                transform="rotate(-90 60 60)"
-                style={{ transition: "stroke-dashoffset 1s linear" }}
-              />
+              <circle cx="60" cy="60" r="54" fill="none" stroke={color} strokeWidth="10"
+                strokeDasharray={circumference} strokeDashoffset={overdue ? 0 : strokeDash}
+                strokeLinecap="round" transform="rotate(-90 60 60)"
+                style={{ transition: "stroke-dashoffset 1s linear" }} />
               <text x="60" y="56" textAnchor="middle" fontSize="11" fill={color} fontWeight="600">{overdue ? "OVER" : `${pct}%`}</text>
               <text x="60" y="70" textAnchor="middle" fontSize="9" fill="#6b7280">elapsed</text>
             </svg>
           </div>
-          {/* Time units */}
           <div className="flex gap-3">
             {[{ v: days, l: "days" }, { v: hours, l: "hrs" }, { v: mins, l: "min" }, { v: secs, l: "sec" }].map(({ v, l }) => (
               <div key={l} className="text-center">
-                <div className={`text-2xl font-bold tabular-nums ${overdue ? "text-red-600" : "text-[#256984]"}`}>
-                  {String(v).padStart(2, "0")}
-                </div>
+                <div className={`text-2xl font-bold tabular-nums ${overdue ? "text-red-600" : "text-[#256984]"}`}>{String(v).padStart(2, "0")}</div>
                 <div className="text-xs text-muted-foreground">{l}</div>
               </div>
             ))}
@@ -1208,6 +1268,13 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     <div className="space-y-4">
       <h3 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Thawing details</h3>
 
+      {showBatchSearch && (
+        <BatchSearchPopup
+          onSelect={handleSelectBatch}
+          onClose={() => setShowBatchSearch(false)}
+        />
+      )}
+
       {/* ═══ 1. BATCH LINK ═══ */}
       <div className="border rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -1218,42 +1285,80 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
         </div>
 
         {linkedBatch ? (
-          <div className="rounded-lg bg-blue-50 border border-blue-200 p-4 space-y-3">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <p className="font-semibold text-sm text-[#256984]">{linkedBatch.product_name}</p>
-                <p className="text-xs text-muted-foreground font-mono mt-0.5">{linkedBatch.batch_id}</p>
-              </div>
-              <span className="text-xs rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 font-medium capitalize">{linkedBatch.stage}</span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              {[
-                { l: "Total boxes",   v: linkedBatch.num_boxes != null ? String(linkedBatch.num_boxes) : "—" },
-                { l: "Total weight",  v: linkedBatch.total_weight_kg != null ? `${linkedBatch.total_weight_kg}kg` : "—" },
-                { l: "kg / box",      v: linkedBatch.weight_per_box_kg != null ? `${linkedBatch.weight_per_box_kg}kg` : "—" },
-              ].map(({ l, v }) => (
-                <div key={l} className="bg-white rounded-lg p-2 text-center border border-blue-100">
-                  <p className="text-muted-foreground">{l}</p>
-                  <p className="font-semibold text-sm">{v}</p>
+          <div className="space-y-4">
+            {/* Batch card */}
+            <div className="rounded-lg bg-blue-50 border border-blue-200 p-4 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-semibold text-sm text-[#256984]">{linkedBatch.product_name}</p>
+                  <p className="text-xs text-muted-foreground font-mono mt-0.5">{linkedBatch.batch_id}</p>
                 </div>
-              ))}
+                <span className="text-xs rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 font-medium capitalize">{linkedBatch.stage}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                {[
+                  { l: "Total boxes",  v: linkedBatch.num_boxes != null ? String(linkedBatch.num_boxes) : "—" },
+                  { l: "Total weight", v: linkedBatch.total_weight_kg != null ? `${linkedBatch.total_weight_kg}kg` : "—" },
+                  { l: "kg / box",     v: linkedBatch.weight_per_box_kg != null ? `${linkedBatch.weight_per_box_kg}kg` : "—" },
+                ].map(({ l, v }) => (
+                  <div key={l} className="bg-white rounded-lg p-2 text-center border border-blue-100">
+                    <p className="text-muted-foreground">{l}</p>
+                    <p className="font-semibold text-sm">{v}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                No. of boxes being defrosted <span className="text-red-500">*</span>
-              </label>
-              <Input
-                type="number" min="1" max={linkedBatch.num_boxes ?? undefined}
-                value={numBoxes} onChange={e => setNumBoxes(e.target.value)}
-                className="h-11" placeholder={`Max ${linkedBatch.num_boxes ?? "?"} boxes`}
-              />
-              {linkedBatch.num_boxes != null && numBoxes && parseInt(numBoxes) > linkedBatch.num_boxes && (
+
+            {/* Weight / boxes being defrosted */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Quantity being defrosted <span className="text-red-500">*</span>
+                <span className="normal-case font-normal ml-1">(enter weight and/or boxes)</span>
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                {/* Weight */}
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Weight (kg)</label>
+                  <Input
+                    type="number" step="0.1" min="0.1"
+                    value={thawWeightKg}
+                    onChange={e => handleThawWeightChange(e.target.value)}
+                    className="h-11"
+                    placeholder="e.g. 10"
+                  />
+                </div>
+                {/* Boxes — only show if the batch has per-box data */}
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">
+                    No. of boxes
+                    {!batchHasBoxes && <span className="ml-1 text-muted-foreground/60">(bulk/no boxes)</span>}
+                  </label>
+                  <Input
+                    type="number" min="1"
+                    max={linkedBatch.num_boxes ?? undefined}
+                    value={thawBoxes}
+                    onChange={e => handleThawBoxesChange(e.target.value)}
+                    className="h-11"
+                    placeholder={batchHasBoxes ? `Max ${linkedBatch.num_boxes}` : "N/A"}
+                    disabled={!batchHasBoxes && !thawBoxes}
+                  />
+                </div>
+              </div>
+              {/* Cross-calc hint */}
+              {batchWpb && (
+                <p className="text-xs text-muted-foreground">
+                  {batchWpb}kg per box — entering one field auto-fills the other
+                </p>
+              )}
+              {/* Validation warning */}
+              {linkedBatch.num_boxes != null && thawBoxes && parseInt(thawBoxes) > linkedBatch.num_boxes && (
                 <p className="text-xs text-amber-600">Warning: exceeds batch total of {linkedBatch.num_boxes} boxes</p>
               )}
             </div>
           </div>
         ) : (
           <div className="space-y-3">
+            {/* Scan */}
             {scanMode ? (
               <div className="space-y-2">
                 <div className="relative rounded-xl overflow-hidden bg-black aspect-square max-w-xs mx-auto">
@@ -1261,18 +1366,23 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="w-40 h-40 border-2 border-white rounded-lg opacity-70" />
                   </div>
-                  <p className="absolute bottom-2 left-0 right-0 text-center text-white text-xs">
-                    Point at the QR code on the box
-                  </p>
+                  <p className="absolute bottom-2 left-0 right-0 text-center text-white text-xs">Point at the QR code on the box</p>
                 </div>
                 <Button variant="outline" className="w-full h-10" onClick={stopScan}>Cancel scan</Button>
               </div>
             ) : (
-              <Button className="w-full h-11 gap-2 font-medium" style={{ backgroundColor: "#256984" }} onClick={startScan}>
-                <ScanLine className="w-4 h-4" />
-                Scan QR code on box
-              </Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button className="h-11 gap-2 font-medium" style={{ backgroundColor: "#256984" }} onClick={startScan}>
+                  <ScanLine className="w-4 h-4" />
+                  Scan QR
+                </Button>
+                <Button variant="outline" className="h-11 gap-2 font-medium" onClick={() => setShowBatchSearch(true)}>
+                  <Search className="w-4 h-4" />
+                  Search batches
+                </Button>
+              </div>
             )}
+            {/* Manual entry */}
             <div className="flex gap-2">
               <Input
                 value={manualBatchId}
@@ -1300,12 +1410,10 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       <div className="border rounded-xl p-5 space-y-4">
         <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Log details</h4>
         <div className="grid gap-4 md:grid-cols-2">
-          {/* Start time */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Start time <span className="text-red-500">*</span></label>
             <Input type="datetime-local" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-11" />
           </div>
-          {/* Thaw duration dropdown */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Thaw duration</label>
             <Select value={thawDays} onValueChange={setThawDays}>
@@ -1314,9 +1422,7 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
               </SelectTrigger>
               <SelectContent>
                 {[1, 2, 3, 4, 5, 6, 7].map(d => (
-                  <SelectItem key={d} value={String(d)}>
-                    {d === 1 ? "1 day" : `${d} days`}
-                  </SelectItem>
+                  <SelectItem key={d} value={String(d)}>{d === 1 ? "1 day" : `${d} days`}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -1326,62 +1432,44 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
               </p>
             )}
           </div>
-          {/* Location */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Thaw location (fridge)</label>
             <Input value={thawLocation} onChange={e => setThawLocation(e.target.value)} className="h-11" placeholder="Fridge name or number" />
           </div>
         </div>
-
-        {/* Pass criteria */}
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-xs text-blue-800 space-y-1">
           <p className="font-medium">Pass criteria</p>
           <p>Item must be kept at ≤5°C throughout the thaw. Thaw must be completed within the planned timeframe.</p>
           <p>Fridge temperature must remain at or below 5°C at all times.</p>
         </div>
-
         <Button className="h-11 px-5 font-medium" style={{ backgroundColor: "#256984" }} onClick={handleSave} disabled={saving}>
           {saving ? "Saving…" : "Save details"}
         </Button>
       </div>
 
-      {/* ═══ 3. COUNTDOWN TIMER ═══ */}
+      {/* ═══ 3. COUNTDOWN ═══ */}
       {targetIso && !alreadyCompleted && <CountdownDisplay />}
 
-      {/* ═══ 4. COMPLETED BANNER or BUTTON ═══ */}
+      {/* ═══ 4. COMPLETE BUTTON / BANNER ═══ */}
       {alreadyCompleted ? (
         <div className="rounded-xl border border-green-200 bg-green-50 p-4 flex items-center gap-3">
           <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
           <div>
             <p className="text-sm font-semibold text-green-800">Thawing completed</p>
             <p className="text-xs text-green-700 mt-0.5">
-              {new Intl.DateTimeFormat("en-AU", {
-                timeZone: "Australia/Perth",
-                weekday: "short", day: "2-digit", month: "short",
-                hour: "2-digit", minute: "2-digit", hour12: false,
-              }).format(new Date(completedAt!))} AWST
+              {new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Perth", weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(completedAt!))} AWST
             </p>
           </div>
         </div>
       ) : (
-        <Button
-          variant="outline"
-          className="w-full h-12 gap-2 font-medium border-green-300 text-green-700 hover:bg-green-50"
-          onClick={handleMarkComplete}
-          disabled={markingComplete}
-        >
+        <Button variant="outline" className="w-full h-12 gap-2 font-medium border-green-300 text-green-700 hover:bg-green-50" onClick={handleMarkComplete} disabled={markingComplete}>
           <CheckCircle2 className="w-4 h-4" />
           {markingComplete ? "Saving…" : "Thawing completed"}
         </Button>
       )}
 
-      {/* ═══ 5. SUBMIT LOG ═══ */}
-      <Button
-        className="w-full h-12 font-semibold text-base gap-2"
-        style={{ backgroundColor: "#256984" }}
-        onClick={handleSubmit}
-        disabled={submitting}
-      >
+      {/* ═══ 5. SUBMIT ═══ */}
+      <Button className="w-full h-12 font-semibold text-base gap-2" style={{ backgroundColor: "#256984" }} onClick={handleSubmit} disabled={submitting}>
         {submitting ? "Submitting…" : "Submit log"}
       </Button>
     </div>
@@ -1655,7 +1743,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">No. of boxes <span className="text-red-500">*</span></label>
+                <label className="text-xs text-muted-foreground">No. of boxes</label>
                 <Input
                   type="number"
                   min="1"

@@ -64,23 +64,26 @@ function BatchLabel({ batch, qrUrl }: { batch: Partial<Batch>; qrUrl: string }) 
           </div>
           <div>
             <span className="font-semibold">Date:</span> {dateStr}
-            {batch.num_boxes ? (
-              <span className="ml-3">
-                <span className="font-semibold">Boxes:</span> {batch.num_boxes}
-              </span>
-            ) : null}
           </div>
-          {batch.weight_per_box_kg ? (
-            <div>
-              <span className="font-semibold">Weight/box:</span> {batch.weight_per_box_kg.toFixed(1)}kg
-              <span className="ml-3 font-bold">KEEP FROZEN</span>
+          {/* Box count + weight per box (shown when batch has discrete boxes) */}
+          {batch.num_boxes ? (
+            <div className="flex gap-3">
+              <span><span className="font-semibold">Boxes:</span> {batch.num_boxes}</span>
+              {batch.weight_per_box_kg ? (
+                <span><span className="font-semibold">Wt/box:</span> {Number(batch.weight_per_box_kg).toFixed(2)}kg</span>
+              ) : batch.total_weight_kg ? (
+                <span><span className="font-semibold">Wt/box:</span> {(Number(batch.total_weight_kg) / Number(batch.num_boxes)).toFixed(2)}kg</span>
+              ) : null}
             </div>
           ) : null}
+          {/* Total weight — always shown */}
           {batch.total_weight_kg ? (
             <div>
               <span className="font-semibold">Total weight:</span> {batch.total_weight_kg}kg
+              {!batch.num_boxes && <span className="ml-2 font-bold">(bulk — no boxes)</span>}
             </div>
           ) : null}
+          <div className="font-bold mt-0.5">KEEP FROZEN</div>
         </div>
         {qrUrl && (
           <img src={qrUrl} alt="QR" style={{ width: 70, height: 70 }} className="shrink-0" />
