@@ -217,6 +217,8 @@ function SizeVariantRow({
       // Invalidate so PricingTab and header cost auto-refresh
       queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants", variant.productUuid] });
       queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/live-costs", variant.productUuid] });
+      // Invalidate dietaries so hasCosting ("Not yet costed" badge) updates immediately
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/dietaries", variant.productUuid] });
     },
     onError: (e: any) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
