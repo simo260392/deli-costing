@@ -42,52 +42,75 @@ interface Ingredient {
 }
 
 // ─── Label component (print-friendly) ────────────────────────────────────────
+// Layout: brand header · large QR · product name + individual weight · batch ID
 function BatchLabel({ batch, qrUrl }: { batch: Partial<Batch>; qrUrl: string }) {
-  const dateStr = batch.created_at
-    ? format(new Date(batch.created_at), "dd/MM/yy")
-    : format(new Date(), "dd/MM/yy");
+  // Individual weight: weight_per_box_kg if set, else total_weight_kg (bulk)
+  const indivWeight = batch.weight_per_box_kg
+    ? `${Number(batch.weight_per_box_kg).toFixed(2)}kg`
+    : batch.total_weight_kg && !batch.num_boxes
+    ? `${Number(batch.total_weight_kg).toFixed(2)}kg`
+    : batch.total_weight_kg && batch.num_boxes
+    ? `${(Number(batch.total_weight_kg) / Number(batch.num_boxes)).toFixed(2)}kg`
+    : null;
 
   return (
     <div
       id="batch-label-print"
-      className="border-2 border-black rounded p-2 font-mono text-black bg-white"
-      style={{ width: 378, minHeight: 189, fontSize: 11 }}
+      className="bg-white text-black"
+      style={{
+        width: 189,      // 50mm @ 96dpi
+        height: 189,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "6px 6px 5px",
+        boxSizing: "border-box",
+        border: "1px solid #000",
+        borderRadius: 2,
+        overflow: "hidden",
+      }}
     >
-      <div className="font-bold text-xs uppercase tracking-wide border-b border-black pb-1 mb-1">
-        THE DELI BY GREENHORNS
+      {/* Top: brand name */}
+      <div style={{
+        fontSize: 7,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        fontFamily: "'Courier New', monospace",
+        textAlign: "center",
+        lineHeight: 1.2,
+        width: "100%",
+        borderBottom: "0.5px solid #000",
+        paddingBottom: 3,
+      }}>
+        The Deli · by Greenhorns
       </div>
-      <div className="font-bold text-sm mb-1">{batch.product_name}</div>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 space-y-0.5">
-          <div>
-            <span className="font-semibold">Batch:</span> {batch.batch_id}
-          </div>
-          <div>
-            <span className="font-semibold">Date:</span> {dateStr}
-          </div>
-          {/* Box count + weight per box (shown when batch has discrete boxes) */}
-          {batch.num_boxes ? (
-            <div className="flex gap-3">
-              <span><span className="font-semibold">Boxes:</span> {batch.num_boxes}</span>
-              {batch.weight_per_box_kg ? (
-                <span><span className="font-semibold">Wt/box:</span> {Number(batch.weight_per_box_kg).toFixed(2)}kg</span>
-              ) : batch.total_weight_kg ? (
-                <span><span className="font-semibold">Wt/box:</span> {(Number(batch.total_weight_kg) / Number(batch.num_boxes)).toFixed(2)}kg</span>
-              ) : null}
-            </div>
-          ) : null}
-          {/* Total weight — always shown */}
-          {batch.total_weight_kg ? (
-            <div>
-              <span className="font-semibold">Total weight:</span> {batch.total_weight_kg}kg
-              {!batch.num_boxes && <span className="ml-2 font-bold">(bulk — no boxes)</span>}
-            </div>
-          ) : null}
-          <div className="font-bold mt-0.5">KEEP FROZEN</div>
+
+      {/* Middle: QR code */}
+      {qrUrl && (
+        <img
+          src={qrUrl}
+          alt="QR"
+          style={{ width: 108, height: 108, display: "block", imageRendering: "pixelated" }}
+        />
+      )}
+
+      {/* Bottom: name + weight + batch ID */}
+      <div style={{
+        width: "100%",
+        textAlign: "center",
+        fontFamily: "'Courier New', monospace",
+        borderTop: "0.5px solid #000",
+        paddingTop: 3,
+      }}>
+        <div style={{ fontSize: 9, fontWeight: 700, lineHeight: 1.3 }}>
+          {batch.product_name}
+          {indivWeight ? ` · ${indivWeight}` : ""}
         </div>
-        {qrUrl && (
-          <img src={qrUrl} alt="QR" style={{ width: 70, height: 70 }} className="shrink-0" />
-        )}
+        <div style={{ fontSize: 7.5, fontWeight: 600, letterSpacing: "0.03em", marginTop: 1, lineHeight: 1.2 }}>
+          {batch.batch_id}
+        </div>
       </div>
     </div>
   );
@@ -104,7 +127,7 @@ function QRModal({
   const [qrUrl, setQrUrl] = useState("");
 
   useEffect(() => {
-    QRCode.toDataURL(batch.batch_id, { width: 200, margin: 2 }).then(setQrUrl);
+    QRCode.toDataURL(batch.batch_id, { width: 300, margin: 2 }).then(setQrUrl);
   }, [batch.batch_id]);
 
   const handlePrint = () => {
@@ -124,10 +147,10 @@ function QRModal({
           <p className="text-xs text-muted-foreground">{batch.product_name}</p>
         </div>
         <div className="mt-4 space-y-3">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Label preview (100×50mm)</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Label preview (50×50mm)</p>
           <BatchLabel
             batch={batch}
-            qrUrl={qrUrl.replace(/width=200/, "width=80").replace(/height=200/, "height=80")}
+            qrUrl={qrUrl}
           />
         </div>
         <div className="mt-4 flex gap-2">
@@ -148,7 +171,7 @@ function QRModal({
             display: block !important;
             position: fixed;
             top: 0; left: 0;
-            width: 100mm;
+            width: 50mm;
             height: 50mm;
             border: none;
             page-break-after: avoid;
