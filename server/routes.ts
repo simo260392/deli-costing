@@ -7255,7 +7255,13 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           } else if (log.log_type === 'supplier') {
             log.item_name = log.supplier_id ? (supplierMap[log.supplier_id] || null) : null;
           } else if (log.log_type === 'thawing') {
-            log.item_name = log.thaw_item || null;
+            if (log.thaw_item) {
+              log.item_name = log.thaw_item;
+            } else if (log.batch_id) {
+              // Fall back to batch product_name if thaw_item not stored yet
+              const { data: batchRow } = await supabase.from('product_batches').select('product_name').eq('batch_id', log.batch_id).single();
+              log.item_name = batchRow?.product_name || null;
+            }
           }
         }
 

@@ -1177,6 +1177,7 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     thawStartTime: startTime ? fromAwstLocal(startTime) : null,
     thawTargetCompletion: targetIso,
     batchId: linkedBatch?.batch_id || null,
+    thawItem: linkedBatch?.product_name || null,
     thawNumBoxes: thawBoxes ? parseInt(thawBoxes) : null,
     thawWeightKg: thawWeightKg ? parseFloat(thawWeightKg) : null,
   });

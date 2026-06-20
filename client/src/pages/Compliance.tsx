@@ -32,6 +32,11 @@ interface ComplianceLog {
   delivery_datetime: string | null;
   thaw_item: string | null;
   thaw_weight_qty: string | null;
+  thaw_weight_kg: number | null;
+  thaw_num_boxes: number | null;
+  thaw_start_time: string | null;
+  thaw_target_completion: string | null;
+  thaw_completed_at: string | null;
   cook_core_temp: number | null;
   cook_recorded_time: string | null;
   wastage_total_value: number | null;
@@ -133,8 +138,12 @@ function logKeyReadings(log: ComplianceLog): string {
   if (log.log_type === "wastage" && log.wastage_total_value !== null) {
     return `Total: $${Number(log.wastage_total_value).toFixed(2)}`;
   }
-  if (log.log_type === "thawing" && log.thaw_weight_qty) {
-    return log.thaw_weight_qty;
+  if (log.log_type === "thawing") {
+    const parts: string[] = [];
+    if (log.thaw_weight_kg != null) parts.push(`${log.thaw_weight_kg}kg`);
+    if (log.thaw_num_boxes != null) parts.push(`${log.thaw_num_boxes} box${log.thaw_num_boxes !== 1 ? 'es' : ''}`);
+    if (parts.length > 0) return parts.join(' · ');
+    if (log.thaw_weight_qty) return log.thaw_weight_qty;
   }
   return "";
 }
@@ -524,6 +533,38 @@ export default function Compliance() {
                             </span>
                           </div>
                         )}
+
+                        {/* Thaw progress bar */}
+                        {log.log_type === "thawing" && log.thaw_target_completion && log.derivedStatus !== "pass" && (() => {
+                          const now = Date.now();
+                          const start = log.thaw_start_time ? new Date(log.thaw_start_time as any).getTime() : new Date(log.created_at).getTime();
+                          const target = new Date(log.thaw_target_completion).getTime();
+                          const total = target - start;
+                          const elapsed = now - start;
+                          const pct = total > 0 ? Math.min(100, Math.round((elapsed / total) * 100)) : 0;
+                          const overdue = now > target;
+                          const complete = !!log.thaw_completed_at;
+                          const barColor = complete ? "#5AB693" : overdue ? "#ef4444" : pct > 80 ? "#f59e0b" : "#256984";
+                          const targetDate = format(new Date(log.thaw_target_completion), "EEE d MMM, HH:mm");
+                          return (
+                            <div className="mt-2 space-y-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-muted-foreground">
+                                  {complete ? "Thawing complete" : overdue ? "Overdue" : `Due ${targetDate}`}
+                                </span>
+                                <span className="text-xs font-medium" style={{ color: barColor }}>
+                                  {complete ? "Done" : `${pct}%`}
+                                </span>
+                              </div>
+                              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all"
+                                  style={{ width: `${pct}%`, backgroundColor: barColor }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Right: status + edit */}
