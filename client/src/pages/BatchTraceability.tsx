@@ -435,7 +435,7 @@ function ChildBatchView({
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
-export default function BatchTraceability() {
+export function BatchTraceabilityTab() {
   const { toast } = useToast();
   const [searchInput, setSearchInput] = useState("");
   const [searchedId, setSearchedId] = useState("");
@@ -471,17 +471,6 @@ export default function BatchTraceability() {
 
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-[#256984]/10 flex items-center justify-center">
-          <QrCode size={18} className="text-[#256984]" />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold text-[#256984]">Batch Traceability</h1>
-          <p className="text-xs text-muted-foreground">Scan or search a batch ID to view its full chain</p>
-        </div>
-      </div>
-
       {/* Search */}
       <div className="flex gap-2">
         <div className="relative flex-1">
@@ -563,3 +552,5 @@ export default function BatchTraceability() {
     </div>
   );
 }
+
+export default BatchTraceabilityTab;

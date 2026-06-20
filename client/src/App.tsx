@@ -34,7 +34,6 @@ import FridgeLogs from "@/pages/FridgeLogs";
 import FridgeSettings from "@/pages/FridgeSettings";
 import PrestartCheck from "@/pages/PrestartCheck";
 import BatchManager from "@/pages/BatchManager";
-import BatchTraceability from "@/pages/BatchTraceability";
 import NotFound from "@/pages/not-found";
 
 // Slug → path mapping for access control redirects
@@ -131,7 +130,7 @@ function AuthenticatedApp() {
         <Route path="/compliance/chemicals" component={ChemicalsRegister} />
         <Route path="/compliance/:logType/:logId" component={ComplianceLogEntry} />
         <Route path="/compliance/batch-manager" component={BatchManager} />
-        <Route path="/compliance/batch-traceability" component={BatchTraceability} />
+
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

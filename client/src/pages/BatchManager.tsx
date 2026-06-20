@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { Package, Plus, QrCode, Printer, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { Package, Plus, QrCode, Printer, ChevronDown, ChevronRight, RefreshCw, Search } from "lucide-react";
+import { BatchTraceabilityTab } from "./BatchTraceability";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import QRCode from "qrcode";
@@ -687,7 +688,7 @@ function CreateChildForm({ onSuccess }: { onSuccess: () => void }) {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function BatchManager() {
-  const [tab, setTab] = useState<"list" | "create-parent" | "create-child">("list");
+  const [tab, setTab] = useState<"list" | "create-parent" | "create-child" | "traceability">("list");
   const [qrBatch, setQrBatch] = useState<Batch | null>(null);
   const [createdBatch, setCreatedBatch] = useState<Batch | null>(null);
   const [printBatches, setPrintBatches] = useState<Batch[]>([]);
@@ -789,6 +790,7 @@ export default function BatchManager() {
           { key: "list", label: "Parent Batches" },
           { key: "create-parent", label: "Create Parent" },
           { key: "create-child", label: "Create Child" },
+          { key: "traceability", label: "Traceability" },
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -876,6 +878,11 @@ export default function BatchManager() {
 
       {tab === "create-parent" && <CreateParentForm onSuccess={handleCreateSuccess} />}
       {tab === "create-child" && <CreateChildForm onSuccess={handleCreateSuccess} />}
+      {tab === "traceability" && (
+        <div className="-mx-4 sm:-mx-6">
+          <BatchTraceabilityTab />
+        </div>
+      )}
 
       {/* QR Modal */}
       {qrBatch && <QRModal batch={qrBatch} onClose={() => setQrBatch(null)} />}
