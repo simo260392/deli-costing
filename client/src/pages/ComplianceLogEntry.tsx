@@ -3,6 +3,7 @@ import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -1089,6 +1090,10 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
 
   // ── Completed ──
   const [completedAt, setCompletedAt] = useState<string | null>(log.thaw_completed_at || null);
+  const [completedAtLocal, setCompletedAtLocal] = useState<string>(() =>
+    log.thaw_completed_at ? toAwstLocal(log.thaw_completed_at) : ""
+  );
+  const [fullyDefrosted, setFullyDefrosted] = useState(false);
   const alreadyCompleted = !!completedAt;
 
   // ── Saving states ──
@@ -1195,8 +1200,12 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
     setMarkingComplete(true);
     try {
       const now = new Date().toISOString();
+      const nowLocal = toAwstLocal(now);
       await apiRequest("PUT", `/api/compliance/logs/${log.id}`, { ...buildPayload(), thawCompletedAt: now });
-      setCompletedAt(now); onRefresh(); toast({ description: "Thawing marked as complete" });
+      setCompletedAt(now);
+      setCompletedAtLocal(nowLocal);
+      onRefresh();
+      toast({ description: "Thawing marked as complete — fill in the completion details below then submit." });
     } catch { toast({ description: "Failed to mark complete", variant: "destructive" }); }
     finally { setMarkingComplete(false); }
   };
@@ -1204,12 +1213,22 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
   const handleSubmit = async () => {
     if (!startTime) { toast({ description: "Please set a start time before submitting.", variant: "destructive" }); return; }
     if (!thawWeightKg && !thawBoxes) { toast({ description: "Please enter the weight or number of boxes being defrosted.", variant: "destructive" }); return; }
+    if (!completedAt) {
+      toast({ description: "Please click \u2018Thawing completed\u2019 before submitting.", variant: "destructive" });
+      return;
+    }
+    if (!fullyDefrosted) {
+      toast({ description: "Please confirm the item is completely defrosted before submitting.", variant: "destructive" });
+      return;
+    }
     setSubmitting(true);
     try {
+      // Use the (possibly edited) completedAtLocal value
+      const finalCompletedAt = completedAtLocal ? fromAwstLocal(completedAtLocal) : completedAt;
       await apiRequest("PUT", `/api/compliance/logs/${log.id}`, {
         ...buildPayload(),
         status: "pass",
-        thawCompletedAt: completedAt || new Date().toISOString(),
+        thawCompletedAt: finalCompletedAt,
       });
       toast({ description: "Thawing log submitted" });
       navigate("/compliance");
@@ -1451,27 +1470,76 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
       {/* ═══ 3. COUNTDOWN ═══ */}
       {targetIso && !alreadyCompleted && <CountdownDisplay />}
 
-      {/* ═══ 4. COMPLETE BUTTON / BANNER ═══ */}
-      {alreadyCompleted ? (
-        <div className="rounded-xl border border-green-200 bg-green-50 p-4 flex items-center gap-3">
-          <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
-          <div>
-            <p className="text-sm font-semibold text-green-800">Thawing completed</p>
-            <p className="text-xs text-green-700 mt-0.5">
-              {new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Perth", weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(completedAt!))} AWST
-            </p>
-          </div>
-        </div>
-      ) : (
-        <Button variant="outline" className="w-full h-12 gap-2 font-medium border-green-300 text-green-700 hover:bg-green-50" onClick={handleMarkComplete} disabled={markingComplete}>
+      {/* ═══ 4. COMPLETE BUTTON / COMPLETION CARD ═══ */}
+      {!alreadyCompleted ? (
+        <Button
+          variant="outline"
+          className="w-full h-12 gap-2 font-medium border-green-300 text-green-700 hover:bg-green-50"
+          onClick={handleMarkComplete}
+          disabled={markingComplete}
+        >
           <CheckCircle2 className="w-4 h-4" />
           {markingComplete ? "Saving…" : "Thawing completed"}
         </Button>
+      ) : (
+        <div className="rounded-xl border border-green-200 bg-green-50 p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
+            <p className="text-sm font-semibold text-green-800">Thawing completed</p>
+          </div>
+
+          {/* Editable completion datetime */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Completion time <span className="text-red-500">*</span>
+            </label>
+            <Input
+              type="datetime-local"
+              value={completedAtLocal}
+              onChange={e => {
+                setCompletedAtLocal(e.target.value);
+                try { setCompletedAt(fromAwstLocal(e.target.value)); } catch {}
+              }}
+              className="h-11 bg-white"
+            />
+            <p className="text-xs text-muted-foreground">Auto-populated when you pressed the button — edit if needed.</p>
+          </div>
+
+          {/* Fully defrosted checkbox */}
+          <div className={`flex items-start gap-3 rounded-lg border p-3 ${
+            fullyDefrosted ? "border-green-300 bg-green-100" : "border-amber-200 bg-amber-50"
+          }`}>
+            <Checkbox
+              id="fully-defrosted"
+              checked={fullyDefrosted}
+              onCheckedChange={(v) => setFullyDefrosted(!!v)}
+              className="mt-0.5"
+            />
+            <div>
+              <label htmlFor="fully-defrosted" className="text-sm font-medium cursor-pointer select-none">
+                Item completely defrosted? <span className="text-red-500">*</span>
+              </label>
+              <p className="text-xs text-muted-foreground mt-0.5">Confirm the item has fully thawed before submitting.</p>
+            </div>
+          </div>
+
+          {!fullyDefrosted && (
+            <p className="text-xs text-amber-700 font-medium">
+              Both fields above are required before you can submit this log.
+            </p>
+          )}
+        </div>
       )}
 
       {/* ═══ 5. SUBMIT ═══ */}
-      <Button className="w-full h-12 font-semibold text-base gap-2" style={{ backgroundColor: "#256984" }} onClick={handleSubmit} disabled={submitting}>
-        {submitting ? "Submitting…" : "Submit log"}
+      <Button
+        className="w-full h-12 font-semibold text-base gap-2"
+        style={{ backgroundColor: alreadyCompleted && fullyDefrosted ? "#256984" : undefined }}
+        variant={alreadyCompleted && fullyDefrosted ? "default" : "outline"}
+        disabled={submitting}
+        onClick={handleSubmit}
+      >
+        {submitting ? "Submitting…" : alreadyCompleted && fullyDefrosted ? "Submit & complete log" : "Submit log"}
       </Button>
     </div>
   );
