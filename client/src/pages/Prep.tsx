@@ -2006,7 +2006,7 @@ export default function Prep() {
 
   interface PrepRecipeSize { label: string; qty: number; }
   interface PrepRecipePkg { label: string; qty: number; orders: string[]; }
-  interface PrepRecipe { id: number; name: string; qty: number; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
+  interface PrepRecipe { id: number; name: string; qty: number; unit: string; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
   interface PrepSubRecipe { id: number; name: string; qty: number; unit: string; }
   interface PrepComputed { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[]; }
 
@@ -2519,7 +2519,8 @@ export default function Prep() {
                               <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
                                 prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
                               }`}>
-                                {displayQty}&times;
+                                {displayQty}
+                                {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit}</span> : <span className="text-xs font-normal text-muted-foreground ml-0.5">&times;</span>}
                               </span>
                             </div>
 
@@ -2535,7 +2536,7 @@ export default function Prep() {
                                     }}
                                   />
                                 </div>
-                                <p className="text-[10px] text-muted-foreground mt-0.5">{logged} / {item.qty} done</p>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">{logged} / {item.qty} {item.unit} done</p>
                               </div>
                             )}
 
