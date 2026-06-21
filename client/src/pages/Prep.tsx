@@ -2006,7 +2006,7 @@ export default function Prep() {
 
   interface PrepRecipeSize { label: string; qty: number; }
   interface PrepRecipePkg { label: string; qty: number; orders: string[]; }
-  interface PrepRecipe { id: number; name: string; qty: number; unit: string; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
+  interface PrepRecipe { id: number; name: string; category: string; qty: number; unit: string; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
   interface PrepSubRecipe { id: number; name: string; qty: number; unit: string; }
   interface PrepComputed { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[]; }
 
@@ -2500,82 +2500,90 @@ export default function Prep() {
                     <div className="bg-card border border-border rounded-xl px-4 py-6 text-center text-sm text-muted-foreground">
                       No recipes linked to these orders
                     </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {prepComputed.recipes.map(item => {
-                        const logged = todayLogEntries
-                          .filter(e => e.itemType === "recipe" && String(e.itemId) === String(item.id))
-                          .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
-                        const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
-                        const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
-                        const hasSizes = (item.sizes?.length ?? 0) > 1;
-                        const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
-
-                        return (
-                          <div key={item.id} className="bg-card border border-border rounded-xl overflow-hidden">
-                            {/* Header row */}
-                            <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-                              <span className="text-sm font-semibold text-foreground leading-tight">{item.name}</span>
-                              <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
-                                prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
-                              }`}>
-                                {displayQty}
-                                {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit}</span> : <span className="text-xs font-normal text-muted-foreground ml-0.5">&times;</span>}
-                              </span>
-                            </div>
-
-                            {/* Progress bar (Remaining mode) */}
-                            {prepMode === "remaining" && item.qty > 0 && (
-                              <div className="px-4 pt-2 pb-1">
-                                <div className="h-1.5 rounded-full bg-border overflow-hidden">
-                                  <div
-                                    className="h-full rounded-full transition-all"
-                                    style={{
-                                      width: `${pct}%`,
-                                      backgroundColor: pct >= 100 ? "#5AB693" : "#256984",
-                                    }}
-                                  />
-                                </div>
-                                <p className="text-[10px] text-muted-foreground mt-0.5">{logged} / {item.qty} {item.unit} done</p>
-                              </div>
-                            )}
-
-                            {/* Size breakdown */}
-                            {hasSizes && (
-                              <div className="px-4 py-2 border-t border-border/30">
-                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Sizes</p>
-                                <div className="space-y-0.5">
-                                  {item.sizes.map(s => (
-                                    <div key={s.label} className="flex items-center justify-between text-xs">
-                                      <span className="text-muted-foreground truncate mr-2">{s.label}</span>
-                                      <span className="font-semibold text-foreground tabular-nums shrink-0">{s.qty}&times;</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Packaging breakdown */}
-                            {hasPkg && (
-                              <div className="px-4 py-2 border-t border-border/30">
-                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Packaging</p>
-                                <div className="flex flex-wrap gap-1">
-                                  {item.packaging.map(p => (
-                                    <span
-                                      key={p.label}
-                                      className="inline-flex items-center gap-1 text-[10px] font-medium bg-[#256984]/10 text-[#256984] rounded-full px-2 py-0.5"
-                                    >
-                                      {p.label} &times;{p.qty}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
+                  ) : (() => {
+                    // Category grouping: Breakfast → Lunch Wraps & Sandwiches → Salads → Other
+                    const CATEGORY_ORDER = ["Breakfast", "Lunch Wraps & Sandwiches", "Salads", "Other"];
+                    const catLabel = (cat: string): string => {
+                      const c = (cat || "").toLowerCase();
+                      if (c.includes("breakfast")) return "Breakfast";
+                      if (c.includes("wrap") || c.includes("sandwich") || c.includes("lunch")) return "Lunch Wraps & Sandwiches";
+                      if (c.includes("salad")) return "Salads";
+                      return "Other";
+                    };
+                    const grouped: Record<string, PrepRecipe[]> = {};
+                    for (const item of prepComputed.recipes) {
+                      const key = catLabel(item.category);
+                      if (!grouped[key]) grouped[key] = [];
+                      grouped[key].push(item);
+                    }
+                    const renderRecipeCard = (item: PrepRecipe) => {
+                      const logged = todayLogEntries
+                        .filter(e => e.itemType === "recipe" && String(e.itemId) === String(item.id))
+                        .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
+                      const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
+                      const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
+                      const hasSizes = (item.sizes?.length ?? 0) > 1;
+                      const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
+                      return (
+                        <div key={item.id} className="bg-card border border-border rounded-xl overflow-hidden">
+                          <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
+                            <span className="text-sm font-semibold text-foreground leading-tight">{item.name}</span>
+                            <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
+                              prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
+                            }`}>
+                              {displayQty}
+                              {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit}</span> : <span className="text-xs font-normal text-muted-foreground ml-0.5">&times;</span>}
+                            </span>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          {prepMode === "remaining" && item.qty > 0 && (
+                            <div className="px-4 pt-2 pb-1">
+                              <div className="h-1.5 rounded-full bg-border overflow-hidden">
+                                <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: pct >= 100 ? "#5AB693" : "#256984" }} />
+                              </div>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">{logged} / {item.qty} {item.unit} done</p>
+                            </div>
+                          )}
+                          {hasSizes && (
+                            <div className="px-4 py-2 border-t border-border/30">
+                              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Sizes</p>
+                              <div className="space-y-0.5">
+                                {item.sizes.map(s => (
+                                  <div key={s.label} className="flex items-center justify-between text-xs">
+                                    <span className="text-muted-foreground truncate mr-2">{s.label}</span>
+                                    <span className="font-semibold text-foreground tabular-nums shrink-0">{s.qty}&times;</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {hasPkg && (
+                            <div className="px-4 py-2 border-t border-border/30">
+                              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Packaging</p>
+                              <div className="flex flex-wrap gap-1">
+                                {item.packaging.map(p => (
+                                  <span key={p.label} className="inline-flex items-center gap-1 text-[10px] font-medium bg-[#256984]/10 text-[#256984] rounded-full px-2 py-0.5">
+                                    {p.label} &times;{p.qty}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    };
+                    return (
+                      <div className="space-y-4">
+                        {CATEGORY_ORDER.filter(cat => grouped[cat]?.length).map(cat => (
+                          <div key={cat}>
+                            <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-1.5 px-1">{cat}</p>
+                            <div className="space-y-2">
+                              {grouped[cat].map(renderRecipeCard)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 
