@@ -2502,7 +2502,7 @@ export default function Prep() {
                                     className="w-7 h-7 rounded-full flex items-center justify-center bg-[#256984]/10 hover:bg-[#256984]/20 text-[#256984] transition-colors"
                                     title="Log prep"
                                   >
-                                    <Plus size={14} />
+                                    <Check size={14} />
                                   </button>
                                 </div>
                               </div>
@@ -2585,7 +2585,7 @@ export default function Prep() {
                                 className="w-7 h-7 rounded-full flex items-center justify-center bg-[#256984]/10 hover:bg-[#256984]/20 text-[#256984] transition-colors"
                                 title="Log prep"
                               >
-                                <Plus size={14} />
+                                <Check size={14} />
                               </button>
                             </div>
                           </div>
