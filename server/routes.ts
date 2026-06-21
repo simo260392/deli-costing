@@ -4928,8 +4928,17 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       return UNWRAPPED_BREAKFAST_NAMES.some(kw => n.includes(kw));
     }
 
-    function detectItemType(name: string, flexCategory?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
+    function detectItemType(name: string, flexCategory?: string, categoriesJson?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
+      // Check Flex order item category first
       if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
+      // Also check the product's categories_json from the DB (catches items like Bacon Egg Wrap
+      // whose Flex order line item category may be empty but product is tagged Breakfast)
+      if (categoriesJson) {
+        try {
+          const cats: { name: string }[] = JSON.parse(categoriesJson);
+          if (cats.some(c => c.name?.toLowerCase().includes('breakfast'))) return 'breakfast';
+        } catch { /* ignore */ }
+      }
       const n = (name || '').toLowerCase();
       if (n.includes('toastie')) return 'toastie';
       if (n.includes('wrap')) return 'wrap';
@@ -4961,6 +4970,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           // Muffins, pots etc. are never wrapped regardless of pref
           if (isAlwaysUnwrappedBreakfast(itemName)) return { wrapStyle: null, paper: null };
           // Otherwise wrapped only if all_items_greaseproof is ticked
+          // Note: wrapStyle is irrelevant for breakfast — only paper matters
           if (prefs.allItemsGreaseproof) {
             return { wrapStyle: null, paper: prefs.paper || 'branded' };
           }
@@ -5028,22 +5038,22 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     const subRecipeResultMap = new Map<number, any>();
 
     for (const order of orders) {
-      const itemType = detectItemType(order.name || '', order.flexCategory || '');
       const isWholesale = !!(order.isWholesale);
       const customerUuid = order.customerUuid || null;
       const forOrder = order.forOrder || order.name || 'Unknown';
 
+      // Resolve flex product first so we can use its categories_json for item type detection
+      let flexProduct: any = null;
+      if (order.sku) flexProduct = fpBySku.get(order.sku) || null;
+      if (!flexProduct && order.flexProductId) flexProduct = fpById.get(order.flexProductId) || null;
+      if (!flexProduct) continue;
+
+      const itemType = detectItemType(order.name || '', order.flexCategory || '', flexProduct.categories_json || '');
       const customerPrefs = (isWholesale && customerUuid) ? prefsMap.get(customerUuid) : undefined;
       const pkg = resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
       const pkgLabel = packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
       const qty = order.quantity || 1;
       const sizeLabel = order.name || 'Unknown';
-
-      // Resolve flex product from in-memory maps
-      let flexProduct: any = null;
-      if (order.sku) flexProduct = fpBySku.get(order.sku) || null;
-      if (!flexProduct && order.flexProductId) flexProduct = fpById.get(order.flexProductId) || null;
-      if (!flexProduct) continue;
 
       // Get components from costing, or fall back to size variant
       const costing = costingsByProductId.get(flexProduct.id);
