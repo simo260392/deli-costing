@@ -5066,10 +5066,18 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
 
       const itemType = detectItemType(order.name || '', order.flexCategory || '', flexProduct.categories_json || '');
       const customerPrefs = (isWholesale && customerUuid) ? prefsMap.get(customerUuid) : undefined;
-      // Platters are served on trays — individual components inside are not individually wrapped
+      // Platters: individual items are wrapped with fixed rules (not per-customer prefs)
+      // Sandwiches → Deli greaseproof, Wraps → Burrito + Deli greaseproof, Breakfast → no packaging
       const isPlatter = isPlatterProduct(order.name || '', flexProduct.categories_json || '');
-      const pkg = isPlatter ? { wrapStyle: null, paper: null } : resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
-      const pkgLabel = isPlatter ? 'No packaging' : packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
+      let pkg: { wrapStyle: string | null; paper: string | null };
+      if (isPlatter) {
+        if (itemType === 'wrap') pkg = { wrapStyle: 'burrito', paper: 'branded' };
+        else if (itemType === 'sandwich' || itemType === 'toastie') pkg = { wrapStyle: null, paper: 'branded' };
+        else pkg = { wrapStyle: null, paper: null }; // breakfast and other: no packaging
+      } else {
+        pkg = resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
+      }
+      const pkgLabel = packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
       const qty = order.quantity || 1;
       const sizeLabel = order.name || 'Unknown';
 
