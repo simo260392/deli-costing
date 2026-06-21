@@ -4915,33 +4915,75 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     if (!orders?.length) return res.json({ recipes: [], subRecipes: [] });
 
     // Fetch wholesale packaging prefs keyed by customerUuid
-    const { data: prefsRows } = await supabase.from('wholesale_packaging_prefs').select('flex_customer_id,wrap_style,paper');
-    const prefsMap = new Map<string, { wrapStyle: string | null; paper: string | null }>();
+    const { data: prefsRows } = await supabase.from('wholesale_packaging_prefs').select('flex_customer_id,wrap_style,paper,all_items_greaseproof');
+    const prefsMap = new Map<string, { wrapStyle: string | null; paper: string | null; allItemsGreaseproof: boolean }>();
     for (const p of (prefsRows || [])) {
-      prefsMap.set(p.flex_customer_id, { wrapStyle: p.wrap_style, paper: p.paper });
+      prefsMap.set(p.flex_customer_id, { wrapStyle: p.wrap_style, paper: p.paper, allItemsGreaseproof: !!(p.all_items_greaseproof) });
     }
 
-    function detectItemType(name: string, flexCategory?: string): 'wrap' | 'sandwich' | 'breakfast' | 'other' {
+    // Items that are never wrapped even for wholesale (always served unwrapped)
+    const UNWRAPPED_BREAKFAST_NAMES = ['muffin', 'muesli', 'yoghurt pot', 'chia pudding', 'coconut yoghurt'];
+    function isAlwaysUnwrappedBreakfast(name: string): boolean {
+      const n = (name || '').toLowerCase();
+      return UNWRAPPED_BREAKFAST_NAMES.some(kw => n.includes(kw));
+    }
+
+    function detectItemType(name: string, flexCategory?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
       if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
       const n = (name || '').toLowerCase();
+      if (n.includes('toastie')) return 'toastie';
       if (n.includes('wrap')) return 'wrap';
-      if (n.includes('sandwich') || n.includes('focaccia') || n.includes('turkish') || n.includes('lungo') || n.includes('panini') || n.includes('reuben') || n.includes('toastie') || n.includes('baguette') || n.includes('roll')) return 'sandwich';
+      if (n.includes('sandwich') || n.includes('focaccia') || n.includes('turkish') || n.includes('panini') || n.includes('reuben') || n.includes('baguette') || n.includes('roll') || n.includes('lungo')) return 'sandwich';
       return 'other';
     }
 
-    function getDefaultPackaging(itemType: string): { wrapStyle: string | null; paper: string | null } {
-      if (itemType === 'wrap') return { wrapStyle: 'burrito', paper: 'branded' };
-      if (itemType === 'sandwich') return { wrapStyle: null, paper: 'branded' };
-      return { wrapStyle: null, paper: null };
+    // Compute packaging based on item type, wholesale status, and customer prefs
+    function resolvePackaging(
+      itemType: 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other',
+      itemName: string,
+      isWholesale: boolean,
+      prefs: { wrapStyle: string | null; paper: string | null; allItemsGreaseproof: boolean } | undefined
+    ): { wrapStyle: string | null; paper: string | null } {
+      if (isWholesale && prefs) {
+        // WHOLESALE customer
+        if (itemType === 'wrap') {
+          // Always has wrap style and paper from prefs (defaults burrito + branded if not set)
+          return { wrapStyle: prefs.wrapStyle || 'burrito', paper: prefs.paper || 'branded' };
+        }
+        if (itemType === 'sandwich') {
+          // Wrapped only if all_items_greaseproof is ticked
+          if (prefs.allItemsGreaseproof) {
+            return { wrapStyle: null, paper: prefs.paper || 'branded' };
+          }
+          return { wrapStyle: null, paper: null };
+        }
+        if (itemType === 'breakfast') {
+          // Muffins, pots etc. are never wrapped regardless of pref
+          if (isAlwaysUnwrappedBreakfast(itemName)) return { wrapStyle: null, paper: null };
+          // Otherwise wrapped only if all_items_greaseproof is ticked
+          if (prefs.allItemsGreaseproof) {
+            return { wrapStyle: null, paper: prefs.paper || 'branded' };
+          }
+          return { wrapStyle: null, paper: null };
+        }
+        // Toasties and other items: no packaging
+        return { wrapStyle: null, paper: null };
+      } else {
+        // RETAIL (non-wholesale) customer
+        if (itemType === 'wrap') return { wrapStyle: 'burrito', paper: 'branded' };
+        if (itemType === 'sandwich') return { wrapStyle: null, paper: 'branded' };
+        // Breakfast, toastie, other: no packaging
+        return { wrapStyle: null, paper: null };
+      }
     }
 
     function packagingLabel(wrapStyle: string | null, paper: string | null, itemType: string): string {
       const parts: string[] = [];
-      if (wrapStyle === 'burrito') parts.push('Burrito');
+      if (wrapStyle === 'burrito') parts.push('Burrito style');
       else if (wrapStyle === 'open') parts.push('Open');
       if (paper === 'branded') parts.push('Deli greaseproof');
-      else if (paper === 'plain_white') parts.push('Plain white');
-      if (parts.length === 0) return itemType === 'breakfast' ? 'No wrap' : 'No packaging';
+      else if (paper === 'plain_white') parts.push('Plain white paper');
+      if (parts.length === 0) return 'No packaging';
       return parts.join(' · ');
     }
 
@@ -4991,12 +5033,8 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const customerUuid = order.customerUuid || null;
       const forOrder = order.forOrder || order.name || 'Unknown';
 
-      const pkg = getDefaultPackaging(itemType);
-      if (isWholesale && customerUuid && prefsMap.has(customerUuid)) {
-        const pref = prefsMap.get(customerUuid)!;
-        if (pref.wrapStyle) pkg.wrapStyle = pref.wrapStyle;
-        if (pref.paper) pkg.paper = pref.paper;
-      }
+      const customerPrefs = (isWholesale && customerUuid) ? prefsMap.get(customerUuid) : undefined;
+      const pkg = resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
       const pkgLabel = packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
       const qty = order.quantity || 1;
       const sizeLabel = order.name || 'Unknown';
