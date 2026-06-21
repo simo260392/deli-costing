@@ -4962,16 +4962,15 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         : Promise.resolve(new Map<number, any>()),
       skus.length
         ? supabase.from('product_size_variants').select('sku,components_json,attributes_summary').in('sku', skus).then(r => {
-            const m = new Map<string, any>();
+            // Map sku -> all variants (keep every size so we can match by attributes_summary)
+            const m = new Map<string, any[]>();
             for (const v of (r.data || [])) {
-              const attrs = (v.attributes_summary || '').toLowerCase();
-              const isIndividual = attrs.includes('individual') || attrs.includes('single') || (!attrs.includes('platter') && !attrs.includes('person') && !attrs.includes('medium') && !attrs.includes('large') && !attrs.includes('small'));
-              // Prefer Individual variant over platter variants — platters share SKUs with Individual in Flex
-              if (!m.has(v.sku) || isIndividual) m.set(v.sku, v);
+              if (!m.has(v.sku)) m.set(v.sku, []);
+              m.get(v.sku)!.push(v);
             }
             return m;
           })
-        : Promise.resolve(new Map<string, any>()),
+        : Promise.resolve(new Map<string, any[]>()),
       supabase.from('flex_product_costings').select('flex_product_id,components_json').then(r => {
         const m = new Map<number, any>(); for (const c of (r.data || [])) m.set(c.flex_product_id, c); return m;
       }),
@@ -5012,7 +5011,26 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const costing = costingsByProductId.get(flexProduct.id);
       let components: any[] = JSON.parse((costing?.components_json) || '[]');
       if (components.length === 0 && order.sku) {
-        const sv = sizeVariantsBySku.get(order.sku);
+        const variants = sizeVariantsBySku.get(order.sku) || [];
+        let sv: any = null;
+        if (variants.length === 1) {
+          sv = variants[0];
+        } else if (variants.length > 1) {
+          const orderAttrs = (order.attributesSummary || '').trim().toLowerCase();
+          // 1. Try exact match on attributes_summary from the Flex order line item
+          if (orderAttrs) {
+            sv = variants.find((v: any) => (v.attributes_summary || '').trim().toLowerCase() === orderAttrs) || null;
+          }
+          // 2. Fall back to keyword match (large/medium/small/individual) within the order attrs
+          if (!sv && orderAttrs) {
+            const sizeKw = ['large', 'medium', 'small', 'individual', 'single'].find(k => orderAttrs.includes(k));
+            if (sizeKw) sv = variants.find((v: any) => (v.attributes_summary || '').toLowerCase().includes(sizeKw)) || null;
+          }
+          // 3. Fall back to Individual variant
+          if (!sv) sv = variants.find((v: any) => (v.attributes_summary || '').toLowerCase().includes('individual')) || null;
+          // 4. Last resort: first variant
+          if (!sv) sv = variants[0] || null;
+        }
         if (sv?.components_json) components = JSON.parse(sv.components_json || '[]');
       }
 

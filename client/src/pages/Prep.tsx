@@ -2013,6 +2013,7 @@ export default function Prep() {
         sku: i.sku,
         name: i.name,
         quantity: i.quantity,
+        attributesSummary: (i as any).attributes_summary || "",
         forOrder: o.company || `${o.first_name} ${o.last_name}`.trim(),
         customerUuid: o.customer_uuid || null,
         isWholesale: o.is_wholesale || false,
