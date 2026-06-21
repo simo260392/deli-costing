@@ -5060,7 +5060,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
             if (!subRecipe) continue;
             const srQty = (sr.quantity || 0) * compQty;
             if (!subRecipeResultMap.has(subRecipe.id)) {
-              subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: subRecipe.yieldUnit || '' });
+              subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).yield_unit || subRecipe.yieldUnit || '' });
             }
             subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
           }
@@ -5069,7 +5069,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           if (!subRecipe) continue;
           const srQty = (comp.quantity || 1) * qty;
           if (!subRecipeResultMap.has(subRecipe.id)) {
-            subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: subRecipe.yieldUnit || '' });
+            subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).yield_unit || subRecipe.yieldUnit || '' });
           }
           subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
         }
