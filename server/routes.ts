@@ -4962,7 +4962,14 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         : Promise.resolve(new Map<number, any>()),
       skus.length
         ? supabase.from('product_size_variants').select('sku,components_json,attributes_summary').in('sku', skus).then(r => {
-            const m = new Map<string, any>(); for (const v of (r.data || [])) m.set(v.sku, v); return m;
+            const m = new Map<string, any>();
+            for (const v of (r.data || [])) {
+              const attrs = (v.attributes_summary || '').toLowerCase();
+              const isIndividual = attrs.includes('individual') || attrs.includes('single') || (!attrs.includes('platter') && !attrs.includes('person') && !attrs.includes('medium') && !attrs.includes('large') && !attrs.includes('small'));
+              // Prefer Individual variant over platter variants — platters share SKUs with Individual in Flex
+              if (!m.has(v.sku) || isIndividual) m.set(v.sku, v);
+            }
+            return m;
           })
         : Promise.resolve(new Map<string, any>()),
       supabase.from('flex_product_costings').select('flex_product_id,components_json').then(r => {
