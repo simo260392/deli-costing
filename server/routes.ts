@@ -4928,6 +4928,18 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       return UNWRAPPED_BREAKFAST_NAMES.some(kw => n.includes(kw));
     }
 
+    function isPlatterProduct(name: string, categoriesJson?: string): boolean {
+      const n = (name || '').toLowerCase();
+      if (n.includes('platter') || n.includes('grazing') || n.includes('tray')) return true;
+      if (categoriesJson) {
+        try {
+          const cats: { name: string }[] = JSON.parse(categoriesJson);
+          if (cats.some(c => c.name?.toLowerCase().includes('platter') || c.name?.toLowerCase().includes('grazing'))) return true;
+        } catch { /* ignore */ }
+      }
+      return false;
+    }
+
     function detectItemType(name: string, flexCategory?: string, categoriesJson?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
       const n = (name || '').toLowerCase();
       // Toastie/bagel/focaccia/turkish/flat items — no wrap style ever, paper only
@@ -5051,8 +5063,10 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
 
       const itemType = detectItemType(order.name || '', order.flexCategory || '', flexProduct.categories_json || '');
       const customerPrefs = (isWholesale && customerUuid) ? prefsMap.get(customerUuid) : undefined;
-      const pkg = resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
-      const pkgLabel = packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
+      // Platters are served on trays — individual components inside are not individually wrapped
+      const isPlatter = isPlatterProduct(order.name || '', flexProduct.categories_json || '');
+      const pkg = isPlatter ? { wrapStyle: null, paper: null } : resolvePackaging(itemType, order.name || '', isWholesale, customerPrefs);
+      const pkgLabel = isPlatter ? 'No packaging' : packagingLabel(pkg.wrapStyle, pkg.paper, itemType);
       const qty = order.quantity || 1;
       const sizeLabel = order.name || 'Unknown';
 

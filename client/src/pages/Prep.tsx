@@ -2627,7 +2627,7 @@ export default function Prep() {
                             <div className="px-4 py-2 border-t border-border/30">
                               <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Packaging</p>
                               <div className="flex flex-wrap gap-1">
-                                {item.packaging.map(p => (
+                                {item.packaging.filter(p => p.label !== 'No packaging').map(p => (
                                   <span key={p.label} className="inline-flex items-center gap-1 text-[10px] font-medium bg-[#256984]/10 text-[#256984] rounded-full px-2 py-0.5">
                                     {p.label} &times;{p.qty}
                                   </span>
