@@ -1403,7 +1403,7 @@ export default function Prep() {
   const { toast } = useToast();
   const [tab, setTab] = useState<"orders" | "prep" | "stock">("orders");
   // Prep tab controls
-  const [prepMode, setPrepMode] = useState<"total" | "remaining">("total");
+  const [prepMode, setPrepMode] = useState<"total" | "remaining">("remaining");
   const [prepMobileTab, setPrepMobileTab] = useState<"subrecipes" | "recipes">("subrecipes");
 
   // Date range
@@ -1704,6 +1704,24 @@ export default function Prep() {
     if (!logByStaff[key]) logByStaff[key] = [];
     logByStaff[key].push(entry);
   }
+
+  // Count ticked-off order items by recipe/item name (for Remaining mode)
+  // This maps normalised lowercase name → total quantity ticked across all orders
+  const checkedQtyByName = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const order of flexOrders) {
+      const state = orderStates[order.id];
+      if (!state) continue;
+      const tickables = getTickableItems(order);
+      for (const t of tickables) {
+        if (state.checkedItems[t.uuid]?.checked) {
+          const key = (t.name || "").toLowerCase().trim();
+          map[key] = (map[key] || 0) + (t.quantity || 1);
+        }
+      }
+    }
+    return map;
+  }, [flexOrders, orderStates]);
 
   // ── Fetch Flex orders ──
   const fetchOrders = useCallback(async (isAutoRefresh = false) => {
@@ -2446,9 +2464,10 @@ export default function Prep() {
                     <div className="bg-card border border-border rounded-xl overflow-hidden">
                       <div className="divide-y divide-border/50">
                         {prepComputed.subRecipes.map(item => {
-                          const logged = todayLogEntries
+                          const loggedPrep = todayLogEntries
                             .filter(e => e.itemType === "sub_recipe" && String(e.itemId) === String(item.id))
                             .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
+                          const logged = loggedPrep;
                           const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
                           const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
                           return (
@@ -2517,9 +2536,11 @@ export default function Prep() {
                       grouped[key].push(item);
                     }
                     const renderRecipeCard = (item: PrepRecipe) => {
-                      const logged = todayLogEntries
+                      const loggedPrep = todayLogEntries
                         .filter(e => e.itemType === "recipe" && String(e.itemId) === String(item.id))
                         .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
+                      const tickedOff = checkedQtyByName[(item.name || "").toLowerCase().trim()] || 0;
+                      const logged = loggedPrep + tickedOff;
                       const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
                       const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
                       const hasSizes = (item.sizes?.length ?? 0) > 1;
