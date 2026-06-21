@@ -5016,10 +5016,12 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           const compQty = (comp.quantity || 1) * qty;
 
           if (!recipeResultMap.has(recipe.id)) {
-            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: recipe.category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map() });
+            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: recipe.category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map(), orderItemNames: new Set<string>() });
           }
           const re = recipeResultMap.get(recipe.id)!;
           re.totalQty += compQty;
+          // Track the exact order item name so the frontend can match ticked items by name
+          if (order.name) re.orderItemNames.add(order.name.trim());
           re.sizes.set(sizeLabel, (re.sizes.get(sizeLabel) || 0) + compQty);
           if (!re.packaging.has(pkgLabel)) re.packaging.set(pkgLabel, { qty: 0, orders: new Set() });
           re.packaging.get(pkgLabel).qty += compQty;
@@ -5051,6 +5053,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(r => ({
         id: r.id, name: r.name, category: r.category || '', qty: r.totalQty, unit: r.unit || 'each',
+        orderItemNames: [...(r.orderItemNames || new Set())],
         sizes: [...r.sizes.entries()].map(([label, qty]) => ({ label, qty })).sort((a: any, b: any) => (b.qty as number) - (a.qty as number)),
         packaging: [...r.packaging.entries()].map(([label, v]) => ({ label, qty: (v as any).qty, orders: [...(v as any).orders] })),
       }));

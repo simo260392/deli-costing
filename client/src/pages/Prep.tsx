@@ -2024,7 +2024,7 @@ export default function Prep() {
 
   interface PrepRecipeSize { label: string; qty: number; }
   interface PrepRecipePkg { label: string; qty: number; orders: string[]; }
-  interface PrepRecipe { id: number; name: string; category: string; qty: number; unit: string; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
+  interface PrepRecipe { id: number; name: string; category: string; qty: number; unit: string; orderItemNames: string[]; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
   interface PrepSubRecipe { id: number; name: string; qty: number; unit: string; }
   interface PrepComputed { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[]; }
 
@@ -2539,7 +2539,9 @@ export default function Prep() {
                       const loggedPrep = todayLogEntries
                         .filter(e => e.itemType === "recipe" && String(e.itemId) === String(item.id))
                         .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
-                      const tickedOff = checkedQtyByName[(item.name || "").toLowerCase().trim()] || 0;
+                      // Sum ticked-off quantities across ALL order item names that map to this recipe
+                      const tickedOff = (item.orderItemNames || [item.name])
+                        .reduce((sum, n) => sum + (checkedQtyByName[(n || "").toLowerCase().trim()] || 0), 0);
                       const logged = loggedPrep + tickedOff;
                       const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
                       const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
