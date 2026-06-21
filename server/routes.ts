@@ -5041,7 +5041,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           const compQty = (comp.quantity || 1) * qty;
 
           if (!recipeResultMap.has(recipe.id)) {
-            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: recipe.category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map(), orderItemNames: new Set<string>() });
+            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: recipe.category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map(), orders: new Map<string, number>(), orderItemNames: new Set<string>() });
           }
           const re = recipeResultMap.get(recipe.id)!;
           re.totalQty += compQty;
@@ -5051,6 +5051,8 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           if (!re.packaging.has(pkgLabel)) re.packaging.set(pkgLabel, { qty: 0, orders: new Set() });
           re.packaging.get(pkgLabel).qty += compQty;
           re.packaging.get(pkgLabel).orders.add(forOrder);
+          // Track qty per customer for the ORDERS breakdown
+          re.orders.set(forOrder, (re.orders.get(forOrder) || 0) + compQty);
 
           const subRecipesUsed: any[] = JSON.parse(recipe.sub_recipes_json || '[]');
           for (const sr of subRecipesUsed) {
@@ -5081,6 +5083,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         orderItemNames: [...(r.orderItemNames || new Set())],
         sizes: [...r.sizes.entries()].map(([label, qty]) => ({ label, qty })).sort((a: any, b: any) => (b.qty as number) - (a.qty as number)),
         packaging: [...r.packaging.entries()].map(([label, v]) => ({ label, qty: (v as any).qty, orders: [...(v as any).orders] })),
+        orders: [...(r.orders as Map<string, number>).entries()].map(([customer, qty]) => ({ customer, qty })).sort((a: any, b: any) => (b.qty as number) - (a.qty as number)),
       }));
 
     const subRecipes = [...subRecipeResultMap.values()]

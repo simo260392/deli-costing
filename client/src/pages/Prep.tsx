@@ -2025,7 +2025,8 @@ export default function Prep() {
 
   interface PrepRecipeSize { label: string; qty: number; }
   interface PrepRecipePkg { label: string; qty: number; orders: string[]; }
-  interface PrepRecipe { id: number; name: string; category: string; qty: number; unit: string; orderItemNames: string[]; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; }
+  interface PrepRecipeOrder { customer: string; qty: number; }
+  interface PrepRecipe { id: number; name: string; category: string; qty: number; unit: string; orderItemNames: string[]; sizes: PrepRecipeSize[]; packaging: PrepRecipePkg[]; orders: PrepRecipeOrder[]; }
   interface PrepSubRecipe { id: number; name: string; qty: number; unit: string; }
   interface PrepComputed { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[]; }
 
@@ -2548,6 +2549,7 @@ export default function Prep() {
                       const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
                       const hasSizes = (item.sizes?.length ?? 0) > 1;
                       const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
+                      const hasOrders = (item.orders?.length ?? 0) > 0;
                       return (
                         <div key={item.id} className="bg-card border border-border rounded-xl overflow-hidden">
                           <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
@@ -2575,6 +2577,19 @@ export default function Prep() {
                                   <div key={s.label} className="flex items-center justify-between text-xs">
                                     <span className="text-muted-foreground truncate mr-2">{s.label}</span>
                                     <span className="font-semibold text-foreground tabular-nums shrink-0">{s.qty}&times;</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {hasOrders && (
+                            <div className="px-4 py-2 border-t border-border/30">
+                              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Orders</p>
+                              <div className="space-y-0.5">
+                                {item.orders.map(o => (
+                                  <div key={o.customer} className="flex items-center justify-between text-xs">
+                                    <span className="text-muted-foreground truncate mr-2">{o.customer}</span>
+                                    <span className="font-semibold text-foreground tabular-nums shrink-0">{o.qty}&times;</span>
                                   </div>
                                 ))}
                               </div>
