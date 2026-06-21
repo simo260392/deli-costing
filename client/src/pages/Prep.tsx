@@ -2563,7 +2563,7 @@ export default function Prep() {
                       const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
                       const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
                       const hasSizes = (item.sizes?.length ?? 0) > 1;
-                      const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
+                      const hasPkg = (item.packaging?.length ?? 0) > 0;
                       const hasOrders = (item.orders?.length ?? 0) > 0;
                       const recipeRemaining = Math.max(0, item.qty - logged);
                       const isDoneRecipe = pct >= 100;
@@ -2627,8 +2627,15 @@ export default function Prep() {
                             <div className="px-4 py-2 border-t border-border/30">
                               <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Packaging</p>
                               <div className="flex flex-wrap gap-1">
-                                {item.packaging.filter(p => p.label !== 'No packaging').map(p => (
-                                  <span key={p.label} className="inline-flex items-center gap-1 text-[10px] font-medium bg-[#256984]/10 text-[#256984] rounded-full px-2 py-0.5">
+                                {item.packaging.map(p => (
+                                  <span
+                                    key={p.label}
+                                    className={`inline-flex items-center gap-1 text-[10px] font-medium rounded-full px-2 py-0.5 ${
+                                      p.label === 'No packaging'
+                                        ? 'bg-muted text-muted-foreground'
+                                        : 'bg-[#256984]/10 text-[#256984]'
+                                    }`}
+                                  >
                                     {p.label} &times;{p.qty}
                                   </span>
                                 ))}

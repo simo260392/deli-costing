@@ -4943,7 +4943,10 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     function detectItemType(name: string, flexCategory?: string, categoriesJson?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
       const n = (name || '').toLowerCase();
       // Toastie/bagel/focaccia/turkish/flat items — no wrap style ever, paper only
-      if (n.includes('toastie') || n.includes('bagel') || n.includes('focaccia') || n.includes('turkish')) return 'toastie';
+      // Toasties and bagels — no wrap style, paper only
+      if (n.includes('toastie') || n.includes('bagel') || n.includes('focaccia')) return 'toastie';
+      // Turkish and similar flat breads are sandwiches (Falafel Turkish, Chipotle Turkish etc.)
+      // unless they are a breakfast item — handled below
       // Check Flex order item category for breakfast
       if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
       // Also check the product's categories_json from the DB (catches items like Bacon Egg Wrap
@@ -4955,7 +4958,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         } catch { /* ignore */ }
       }
       if (n.includes('wrap')) return 'wrap';
-      if (n.includes('sandwich') || n.includes('panini') || n.includes('reuben') || n.includes('baguette') || n.includes('roll') || n.includes('lungo') || n.includes('sourdough')) return 'sandwich';
+      if (n.includes('sandwich') || n.includes('panini') || n.includes('reuben') || n.includes('baguette') || n.includes('roll') || n.includes('lungo') || n.includes('sourdough') || n.includes('turkish')) return 'sandwich';
       return 'other';
     }
 
