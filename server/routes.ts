@@ -4945,6 +4945,37 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       return parts.join(' · ');
     }
 
+    // ── Bulk-fetch all data upfront to avoid N+1 queries ──
+    const skus = [...new Set(orders.map((o: any) => o.sku).filter(Boolean))];
+    const flexProductIds = [...new Set(orders.map((o: any) => o.flexProductId).filter(Boolean))];
+
+    const [fpBySku, fpById, sizeVariantsBySku, costingsByProductId, allRecipes, allSubRecipes] = await Promise.all([
+      skus.length
+        ? supabase.from('flex_products').select('*').in('sku', skus).then(r => {
+            const m = new Map<string, any>(); for (const p of (r.data || [])) m.set(p.sku, p); return m;
+          })
+        : Promise.resolve(new Map<string, any>()),
+      flexProductIds.length
+        ? supabase.from('flex_products').select('*').in('id', flexProductIds).then(r => {
+            const m = new Map<number, any>(); for (const p of (r.data || [])) m.set(p.id, p); return m;
+          })
+        : Promise.resolve(new Map<number, any>()),
+      skus.length
+        ? supabase.from('product_size_variants').select('sku,components_json,attributes_summary').in('sku', skus).then(r => {
+            const m = new Map<string, any>(); for (const v of (r.data || [])) m.set(v.sku, v); return m;
+          })
+        : Promise.resolve(new Map<string, any>()),
+      supabase.from('flex_product_costings').select('flex_product_id,components_json').then(r => {
+        const m = new Map<number, any>(); for (const c of (r.data || [])) m.set(c.flex_product_id, c); return m;
+      }),
+      supabase.from('recipes').select('*').then(r => {
+        const m = new Map<number, any>(); for (const rec of (r.data || [])) m.set(rec.id, rec); return m;
+      }),
+      supabase.from('sub_recipes').select('*').then(r => {
+        const m = new Map<number, any>(); for (const sr of (r.data || [])) m.set(sr.id, sr); return m;
+      }),
+    ]);
+
     const recipeResultMap = new Map<number, any>();
     const subRecipeResultMap = new Map<number, any>();
 
@@ -4954,7 +4985,6 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const customerUuid = order.customerUuid || null;
       const forOrder = order.forOrder || order.name || 'Unknown';
 
-      // Determine packaging for this order line
       const pkg = getDefaultPackaging(itemType);
       if (isWholesale && customerUuid && prefsMap.has(customerUuid)) {
         const pref = prefsMap.get(customerUuid)!;
@@ -4965,41 +4995,28 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const qty = order.quantity || 1;
       const sizeLabel = order.name || 'Unknown';
 
-      // Resolve flex product
+      // Resolve flex product from in-memory maps
       let flexProduct: any = null;
-      if (order.sku) {
-        const { data } = await supabase.from('flex_products').select('*').eq('sku', order.sku).single();
-        flexProduct = data;
-      }
-      if (!flexProduct && order.flexProductId) {
-        const { data } = await supabase.from('flex_products').select('*').eq('id', order.flexProductId).single();
-        flexProduct = data;
-      }
+      if (order.sku) flexProduct = fpBySku.get(order.sku) || null;
+      if (!flexProduct && order.flexProductId) flexProduct = fpById.get(order.flexProductId) || null;
       if (!flexProduct) continue;
 
-      const { data: costing } = await supabase.from('flex_product_costings').select('*').eq('flex_product_id', flexProduct.id).single();
+      // Get components from costing, or fall back to size variant
+      const costing = costingsByProductId.get(flexProduct.id);
       let components: any[] = JSON.parse((costing?.components_json) || '[]');
-
-      // If no components in product-level costing, try to find a matching size variant by SKU
       if (components.length === 0 && order.sku) {
-        const { data: sizeVariant } = await supabase
-          .from('product_size_variants')
-          .select('components_json, attributes_summary')
-          .eq('sku', order.sku)
-          .single();
-        if (sizeVariant?.components_json) {
-          components = JSON.parse(sizeVariant.components_json || '[]');
-        }
+        const sv = sizeVariantsBySku.get(order.sku);
+        if (sv?.components_json) components = JSON.parse(sv.components_json || '[]');
       }
 
       for (const comp of components) {
         if (comp.type === 'recipe') {
-          const { data: recipe } = await supabase.from('recipes').select('*').eq('id', comp.id).single();
+          const recipe = allRecipes.get(comp.id);
           if (!recipe) continue;
           const compQty = (comp.quantity || 1) * qty;
 
           if (!recipeResultMap.has(recipe.id)) {
-            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: (recipe as any).category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map() });
+            recipeResultMap.set(recipe.id, { id: recipe.id, name: recipe.name, category: recipe.category || '', totalQty: 0, unit: 'each', sizes: new Map(), packaging: new Map() });
           }
           const re = recipeResultMap.get(recipe.id)!;
           re.totalQty += compQty;
@@ -5008,30 +5025,29 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           re.packaging.get(pkgLabel).qty += compQty;
           re.packaging.get(pkgLabel).orders.add(forOrder);
 
-          // Sub-recipes within this recipe
-          const subRecipesUsed: any[] = JSON.parse((recipe as any).sub_recipes_json || '[]');
+          const subRecipesUsed: any[] = JSON.parse(recipe.sub_recipes_json || '[]');
           for (const sr of subRecipesUsed) {
-            const { data: subRecipe } = await supabase.from('sub_recipes').select('*').eq('id', sr.subRecipeId).single();
+            const subRecipe = allSubRecipes.get(sr.subRecipeId);
             if (!subRecipe) continue;
             const srQty = (sr.quantity || 0) * compQty;
             if (!subRecipeResultMap.has(subRecipe.id)) {
-              subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).yieldUnit || '' });
+              subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: subRecipe.yieldUnit || '' });
             }
             subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
           }
         } else if (comp.type === 'sub_recipe') {
-          const { data: subRecipe } = await supabase.from('sub_recipes').select('*').eq('id', comp.id).single();
+          const subRecipe = allSubRecipes.get(comp.id);
           if (!subRecipe) continue;
           const srQty = (comp.quantity || 1) * qty;
           if (!subRecipeResultMap.has(subRecipe.id)) {
-            subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: (subRecipe as any).yieldUnit || '' });
+            subRecipeResultMap.set(subRecipe.id, { id: subRecipe.id, name: subRecipe.name, totalQty: 0, unit: subRecipe.yieldUnit || '' });
           }
           subRecipeResultMap.get(subRecipe.id)!.totalQty += srQty;
         }
       }
     }
 
-    const recipes = [...recipeResultMap.values()]
+        const recipes = [...recipeResultMap.values()]
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(r => ({
         id: r.id, name: r.name, category: r.category || '', qty: r.totalQty, unit: r.unit || 'each',
