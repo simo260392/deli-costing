@@ -120,12 +120,15 @@ export default function MissingItemsReport() {
   const t = today();
   const y = yesterday();
 
+  const tmrw = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 1); return toAWST(d); }, []);
+
   const PRESETS = [
-    { label: "Today",      from: t,           to: t           },
-    { label: "Yesterday",  from: y,            to: y           },
-    { label: "Last 7 days",from: daysAgo(6),   to: t           },
-    { label: "Last 30 days",from: daysAgo(29), to: t           },
-    { label: "Custom",     from: "",           to: ""          },
+    { label: "Today",       from: t,           to: t      },
+    { label: "Tomorrow",    from: tmrw,         to: tmrw   },
+    { label: "Yesterday",   from: y,            to: y      },
+    { label: "Last 7 days", from: daysAgo(6),   to: t      },
+    { label: "Last 30 days",from: daysAgo(29),  to: t      },
+    { label: "Custom",      from: "",           to: ""     },
   ];
 
   const [preset, setPreset]     = useState(0); // default today
