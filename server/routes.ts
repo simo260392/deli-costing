@@ -4930,8 +4930,8 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
 
     function detectItemType(name: string, flexCategory?: string, categoriesJson?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
       const n = (name || '').toLowerCase();
-      // Toastie always wins regardless of category — never wrapped
-      if (n.includes('toastie')) return 'toastie';
+      // Toastie/bagel always wins regardless of category — no wrap style, paper only
+      if (n.includes('toastie') || n.includes('bagel')) return 'toastie';
       // Check Flex order item category for breakfast
       if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
       // Also check the product's categories_json from the DB (catches items like Bacon Egg Wrap
