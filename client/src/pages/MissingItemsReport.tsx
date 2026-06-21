@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { AlertTriangle, TrendingDown, Package, Clock, ChevronDown, ChevronUp, ArrowUpDown } from "lucide-react";
+import { AlertTriangle, TrendingDown, Package, Clock, ChevronDown, ChevronUp, ArrowUpDown, DollarSign } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -31,12 +31,12 @@ function fillColor(rate: number) {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface ReportKpis { totalMissing: number; totalUnits: number; ordersAffected: number; fillRate: number; totalRequired: number; totalMade: number; }
+interface ReportKpis { totalMissing: number; totalUnits: number; ordersAffected: number; fillRate: number; totalRequired: number; totalMade: number; totalRevenueLost: number; }
 interface Ingredient  { name: string; occurrences: number; unitsLost: number; itemsAffected: string[]; }
 interface Reason      { label: string; occurrences: number; unitsLost: number; }
-interface MissedItem  { name: string; unitsLost: number; occurrences: number; }
+interface MissedItem  { name: string; unitsLost: number; occurrences: number; revenueLost: number | null; }
 interface TrendDay    { date: string; unitsLost: number; itemsMissing: number; fillRate: number; }
-interface LogEntry    { id: number; date: string; item: string; orderId: number; required: number; made: number; missing: number; reasonType: string; reasonLabel: string; rawReason: string; staffName: string; loggedAt: string; }
+interface LogEntry    { id: number; date: string; item: string; orderId: number; required: number; made: number; missing: number; unitPrice: number | null; totalLost: number | null; reasonType: string; reasonLabel: string; rawReason: string; staffName: string; loggedAt: string; }
 interface ReportData  { ok: boolean; from: string; to: string; kpis: ReportKpis; ingredients: Ingredient[]; reasons: Reason[]; missedItems: MissedItem[]; trend: TrendDay[]; log: LogEntry[]; }
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
@@ -222,11 +222,17 @@ export default function MissingItemsReport() {
       {!isFetching && data && (
         <>
           {/* ── KPI Cards ── */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
             <KpiCard label="Fill Rate" value={`${kpis!.fillRate}%`} sub={`${kpis!.totalMade} of ${kpis!.totalRequired} made`} accent={fc} />
             <KpiCard label="Units Short" value={kpis!.totalUnits} sub="total items not delivered" accent={kpis!.totalUnits === 0 ? FILL_GREEN : FILL_RED} />
             <KpiCard label="Items Missing" value={kpis!.totalMissing} sub="unique line items" />
             <KpiCard label="Orders Affected" value={kpis!.ordersAffected} sub="customer orders impacted" />
+            <KpiCard
+              label="Revenue Lost"
+              value={kpis!.totalRevenueLost > 0 ? `$${kpis!.totalRevenueLost.toFixed(2)}` : "$0.00"}
+              sub="estimated from sell prices"
+              accent={kpis!.totalRevenueLost > 0 ? FILL_RED : FILL_GREEN}
+            />
           </div>
 
           {/* ── Fill rate banner ── */}
@@ -351,6 +357,9 @@ export default function MissingItemsReport() {
                         <div className="flex items-center gap-3 shrink-0 ml-2">
                           <span className="text-[10px] text-muted-foreground">{item.occurrences}×</span>
                           <span className="text-xs font-bold text-red-500">{item.unitsLost} units</span>
+                          {item.revenueLost != null && item.revenueLost > 0 && (
+                            <span className="text-xs font-bold text-orange-600">${item.revenueLost.toFixed(2)}</span>
+                          )}
                         </div>
                       </div>
                       <div className="h-1.5 rounded-full bg-border overflow-hidden ml-6">
@@ -413,6 +422,7 @@ export default function MissingItemsReport() {
                       <th className="text-center px-3 py-2 font-semibold text-muted-foreground">Req</th>
                       <th className="text-center px-3 py-2 font-semibold text-muted-foreground">Made</th>
                       <th className="text-center px-3 py-2 font-semibold text-muted-foreground text-red-500">Short</th>
+                      <th className="text-center px-3 py-2 font-semibold text-muted-foreground text-orange-600 hidden sm:table-cell">$ Lost</th>
                       <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Reason</th>
                       <th className="text-left px-3 py-2 font-semibold text-muted-foreground hidden sm:table-cell">Logged by</th>
                     </tr>
@@ -425,6 +435,9 @@ export default function MissingItemsReport() {
                         <td className="px-3 py-2 text-center text-muted-foreground">{row.required}</td>
                         <td className="px-3 py-2 text-center text-muted-foreground">{row.made}</td>
                         <td className="px-3 py-2 text-center font-bold text-red-500">{row.missing}</td>
+                        <td className="px-3 py-2 text-center font-bold text-orange-600 hidden sm:table-cell">
+                          {row.totalLost != null ? `$${row.totalLost.toFixed(2)}` : <span className="text-muted-foreground font-normal text-[10px]">—</span>}
+                        </td>
                         <td className="px-3 py-2 max-w-[180px]">
                           <span className={`inline-block text-[10px] font-medium rounded-full px-2 py-0.5 ${
                             row.reasonType === "ingredient"

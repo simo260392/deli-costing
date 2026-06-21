@@ -6906,6 +6906,52 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
     const rows = data || [];
 
+    // ── Price lookup ──────────────────────────────────────────────────────
+    // Build a map of item_name → unit price using flex_products + product_size_variants
+    // Strategy:
+    //   1. Fetch all flex_products (name → id, flex_uuid, price)
+    //   2. Fetch all product_size_variants (sku → sell_price, attributes_summary)
+    //   3. For each missing item name, try to match:
+    //      a. exact name match in flex_products → find best variant price
+    //      b. fall back to flex_products.price
+    const [{ data: flexProds }, { data: sizeVars }] = await Promise.all([
+      supabase.from("flex_products").select("id, name, price, sku"),
+      supabase.from("product_size_variants").select("sku, sell_price, attributes_summary"),
+    ]);
+
+    // Build sku → variants map
+    const variantsBySku = new Map<string, { sell_price: number | null; attributes_summary: string | null }[]>();
+    for (const v of sizeVars || []) {
+      if (!variantsBySku.has(v.sku)) variantsBySku.set(v.sku, []);
+      variantsBySku.get(v.sku)!.push(v);
+    }
+
+    // For a product's SKU, pick the best price:
+    // prefer the Individual variant, otherwise take first non-null sell_price
+    function pickVariantPrice(sku: string): number | null {
+      const vars = variantsBySku.get(sku) || [];
+      if (vars.length === 0) return null;
+      const indiv = vars.find(v => v.attributes_summary?.toLowerCase().includes("individual"));
+      if (indiv?.sell_price != null) return indiv.sell_price;
+      const first = vars.find(v => v.sell_price != null);
+      return first?.sell_price ?? null;
+    }
+
+    // Build name → price map (case-insensitive)
+    const namePriceMap = new Map<string, number>();
+    for (const p of flexProds || []) {
+      const variantPrice = p.sku ? pickVariantPrice(p.sku) : null;
+      const price = variantPrice ?? p.price ?? null;
+      if (price != null && p.name) {
+        namePriceMap.set(p.name.toLowerCase().trim(), Number(price));
+      }
+    }
+
+    function lookupPrice(itemName: string): number | null {
+      if (!itemName) return null;
+      return namePriceMap.get(itemName.toLowerCase().trim()) ?? null;
+    }
+
     // ── Reason normalisation ───────────────────────────────────────────────
     // Consolidates free-text "other" reasons into clean categories
     function normaliseReason(raw: string | null): string {
@@ -6939,6 +6985,10 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const totalMade      = rows.reduce((s, r) => s + (r.qty_made || 0), 0);
     const ordersAffected = new Set(rows.map(r => r.order_id)).size;
     const fillRate       = totalRequired > 0 ? Math.round(((totalRequired - totalUnits) / totalRequired) * 1000) / 10 : 100;
+    const totalRevenueLost = rows.reduce((s, r) => {
+      const price = lookupPrice(r.item_name);
+      return s + (price != null ? price * (r.qty_missing || 0) : 0);
+    }, 0);
 
     // ── Ingredients out of stock ───────────────────────────────────────────
     const ingMap = new Map<string, { count: number; units: number; items: Set<string> }>();
@@ -6974,14 +7024,17 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .sort((a, b) => b.unitsLost - a.unitsLost);
 
     // ── Most missed items ──────────────────────────────────────────────────
-    const itemMap = new Map<string, { units: number; occurrences: number }>();
+    const itemMap = new Map<string, { units: number; occurrences: number; revenue: number }>();
     for (const r of rows) {
-      if (!itemMap.has(r.item_name)) itemMap.set(r.item_name, { units: 0, occurrences: 0 });
-      itemMap.get(r.item_name)!.units += r.qty_missing || 0;
-      itemMap.get(r.item_name)!.occurrences++;
+      if (!itemMap.has(r.item_name)) itemMap.set(r.item_name, { units: 0, occurrences: 0, revenue: 0 });
+      const entry = itemMap.get(r.item_name)!;
+      entry.units += r.qty_missing || 0;
+      entry.occurrences++;
+      const price = lookupPrice(r.item_name);
+      if (price != null) entry.revenue += price * (r.qty_missing || 0);
     }
     const missedItems = [...itemMap.entries()]
-      .map(([name, v]) => ({ name, unitsLost: v.units, occurrences: v.occurrences }))
+      .map(([name, v]) => ({ name, unitsLost: v.units, occurrences: v.occurrences, revenueLost: v.revenue > 0 ? Math.round(v.revenue * 100) / 100 : null }))
       .sort((a, b) => b.unitsLost - a.unitsLost);
 
     // ── Day-by-day trend ───────────────────────────────────────────────────
@@ -7004,24 +7057,29 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .sort((a, b) => a.date.localeCompare(b.date));
 
     // ── Full log ───────────────────────────────────────────────────────────
-    const log = rows.map(r => ({
-      id: r.id,
-      date: r.order_date,
-      item: r.item_name,
-      orderId: r.order_id,
-      required: r.total_required,
-      made: r.qty_made,
-      missing: r.qty_missing,
-      reasonType: r.reason_type,
-      reasonLabel: r.reason_type === "ingredient" && r.reason_ingredient
-        ? `Out of stock: ${r.reason_ingredient}`
-        : normaliseReason(r.reason_other),
-      rawReason: r.reason_other || r.reason_ingredient || "",
-      staffName: r.staff_name,
-      loggedAt: r.logged_at,
-    }));
+    const log = rows.map(r => {
+      const unitPrice = lookupPrice(r.item_name);
+      return {
+        id: r.id,
+        date: r.order_date,
+        item: r.item_name,
+        orderId: r.order_id,
+        required: r.total_required,
+        made: r.qty_made,
+        missing: r.qty_missing,
+        unitPrice: unitPrice != null ? Math.round(unitPrice * 100) / 100 : null,
+        totalLost: unitPrice != null ? Math.round(unitPrice * (r.qty_missing || 0) * 100) / 100 : null,
+        reasonType: r.reason_type,
+        reasonLabel: r.reason_type === "ingredient" && r.reason_ingredient
+          ? `Out of stock: ${r.reason_ingredient}`
+          : normaliseReason(r.reason_other),
+        rawReason: r.reason_other || r.reason_ingredient || "",
+        staffName: r.staff_name,
+        loggedAt: r.logged_at,
+      };
+    });
 
-    res.json({ ok: true, from, to, kpis: { totalMissing, totalUnits, ordersAffected, fillRate, totalRequired, totalMade }, ingredients, reasons, missedItems, trend, log });
+    res.json({ ok: true, from, to, kpis: { totalMissing, totalUnits, ordersAffected, fillRate, totalRequired, totalMade, totalRevenueLost: Math.round(totalRevenueLost * 100) / 100 }, ingredients, reasons, missedItems, trend, log });
   }));
 
   // ─── SafetyCulture ────────────────────────────────────────────────────────
