@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChefHat, RefreshCw, ChevronDown, ChevronUp, CheckCircle2,
@@ -1575,6 +1576,13 @@ export default function Prep() {
   const [logForm, setLogForm] = useState<LogForm>(DEFAULT_LOG_FORM);
   const logFormRef = useRef<LogForm>(DEFAULT_LOG_FORM);
 
+  // Quick-log sheet (inline tick-off from prep list)
+  const [quickLogOpen, setQuickLogOpen] = useState(false);
+  const [quickLogItem, setQuickLogItem] = useState<{ type: 'sub_recipe' | 'recipe'; id: number; name: string; unit: string; remaining: number } | null>(null);
+  const [quickLogQty, setQuickLogQty] = useState("");
+  const [quickLogStaffId, setQuickLogStaffId] = useState("");
+  const [quickLogStaffName, setQuickLogStaffName] = useState("");
+
   // Data
   const { data: rosterData } = useQuery<{ employees: StaffMember[]; source: string }>({
     queryKey: [`/api/deputy/roster?date=${today()}`],
@@ -2470,35 +2478,42 @@ export default function Prep() {
                             .filter(e => e.itemType === "sub_recipe" && String(e.itemId) === String(item.id))
                             .reduce((s, e) => s + (Number(e.quantity) || 0), 0);
                           const logged = loggedPrep;
-                          const displayQty = prepMode === "remaining" ? Math.max(0, item.qty - logged) : item.qty;
+                          const remaining = Math.max(0, item.qty - logged);
+                          const displayQty = prepMode === "remaining" ? remaining : item.qty;
                           const pct = item.qty > 0 ? Math.min(100, Math.round((logged / item.qty) * 100)) : 0;
+                          const isDone = pct >= 100;
                           return (
-                            <div key={item.id} className="px-4 py-3">
-                              <div className="flex items-center justify-between">
-                                <span className="text-sm text-foreground leading-tight">{item.name}</span>
-                                <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
-                                  prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
-                                }`}>
-                                  {Number.isInteger(displayQty) ? displayQty : displayQty.toFixed(2)}
-                                  {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5"> {item.unit}</span> : null}
-                                </span>
-                              </div>
-                              {prepMode === "remaining" && item.qty > 0 && (
-                                <div className="mt-1.5">
-                                  <div className="h-1.5 rounded-full bg-border overflow-hidden">
-                                    <div
-                                      className="h-full rounded-full transition-all"
-                                      style={{
-                                        width: `${pct}%`,
-                                        backgroundColor: pct >= 100 ? "#5AB693" : "#256984",
-                                      }}
-                                    />
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                                    {Number.isInteger(logged) ? logged : logged.toFixed(2)} / {item.qty} {item.unit} done
-                                  </p>
+                            <div key={item.id} className={`px-4 py-3 ${isDone ? "bg-green-50/50" : ""}`}>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <span className={`text-sm leading-tight ${isDone ? "text-muted-foreground line-through" : "text-foreground"}`}>{item.name}</span>
                                 </div>
-                              )}
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className={`text-sm font-bold tabular-nums ${isDone ? "text-green-600" : "text-[#256984]"}`}>
+                                    {Number.isInteger(displayQty) ? displayQty : displayQty.toFixed(2)}
+                                    <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit || "each"}</span>
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      setQuickLogItem({ type: "sub_recipe", id: item.id, name: item.name, unit: item.unit || "each", remaining });
+                                      setQuickLogQty(remaining > 0 ? (Number.isInteger(remaining) ? String(remaining) : remaining.toFixed(2)) : "");
+                                      setQuickLogOpen(true);
+                                    }}
+                                    className="w-7 h-7 rounded-full flex items-center justify-center bg-[#256984]/10 hover:bg-[#256984]/20 text-[#256984] transition-colors"
+                                    title="Log prep"
+                                  >
+                                    <Plus size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="mt-1.5">
+                                <div className="h-1 rounded-full bg-border overflow-hidden">
+                                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: isDone ? "#5AB693" : "#256984" }} />
+                                </div>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">
+                                  {Number.isInteger(logged) ? logged : logged.toFixed(2)} / {item.qty} {item.unit || "each"} done
+                                </p>
+                              </div>
                             </div>
                           );
                         })}
@@ -2550,16 +2565,29 @@ export default function Prep() {
                       const hasSizes = (item.sizes?.length ?? 0) > 1;
                       const hasPkg = (item.packaging?.length ?? 0) > 0 && item.packaging.some(p => p.label !== "No packaging");
                       const hasOrders = (item.orders?.length ?? 0) > 0;
+                      const recipeRemaining = Math.max(0, item.qty - logged);
+                      const isDoneRecipe = pct >= 100;
                       return (
-                        <div key={item.id} className="bg-card border border-border rounded-xl overflow-hidden">
+                        <div key={item.id} className={`bg-card border border-border rounded-xl overflow-hidden ${isDoneRecipe ? "border-green-200" : ""}`}>
                           <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-                            <span className="text-sm font-semibold text-foreground leading-tight">{item.name}</span>
-                            <span className={`text-sm font-bold tabular-nums ml-2 shrink-0 ${
-                              prepMode === "remaining" && displayQty === 0 ? "text-green-600" : "text-[#256984]"
-                            }`}>
-                              {displayQty}
-                              {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit}</span> : <span className="text-xs font-normal text-muted-foreground ml-0.5">&times;</span>}
-                            </span>
+                            <span className={`text-sm font-semibold leading-tight ${isDoneRecipe ? "text-muted-foreground line-through" : "text-foreground"}`}>{item.name}</span>
+                            <div className="flex items-center gap-2 shrink-0 ml-2">
+                              <span className={`text-sm font-bold tabular-nums ${isDoneRecipe ? "text-green-600" : "text-[#256984]"}`}>
+                                {displayQty}
+                                {item.unit ? <span className="text-xs font-normal text-muted-foreground ml-0.5">{item.unit}</span> : <span className="text-xs font-normal text-muted-foreground ml-0.5"> each</span>}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setQuickLogItem({ type: "recipe", id: item.id, name: item.name, unit: item.unit || "each", remaining: recipeRemaining });
+                                  setQuickLogQty(recipeRemaining > 0 ? String(recipeRemaining) : "");
+                                  setQuickLogOpen(true);
+                                }}
+                                className="w-7 h-7 rounded-full flex items-center justify-center bg-[#256984]/10 hover:bg-[#256984]/20 text-[#256984] transition-colors"
+                                title="Log prep"
+                              >
+                                <Plus size={14} />
+                              </button>
+                            </div>
                           </div>
                           {prepMode === "remaining" && item.qty > 0 && (
                             <div className="px-4 pt-2 pb-1">
@@ -2778,6 +2806,77 @@ export default function Prep() {
       )}
 
       {/* ─────────── LOG PREP DIALOG ─────────── */}
+      {/* ── Quick-Log Sheet (inline tick-off from prep list) ── */}
+      <Sheet open={quickLogOpen} onOpenChange={v => { if (!v) setQuickLogOpen(false); }}>
+        <SheetContent side="bottom" className="rounded-t-2xl pb-8">
+          <SheetHeader className="mb-4">
+            <SheetTitle className="text-base">{quickLogItem?.name}</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-4">
+            {/* Staff picker */}
+            <div>
+              <Label className="text-xs font-semibold text-muted-foreground mb-1 block">Who made it?</Label>
+              <Select value={quickLogStaffId} onValueChange={val => {
+                const emp = staff.find((s: StaffMember) => String(s.id) === val);
+                setQuickLogStaffId(val);
+                setQuickLogStaffName(emp?.name ?? val);
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select staff member" />
+                </SelectTrigger>
+                <SelectContent>
+                  {staff.map((s: StaffMember) => (
+                    <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Quantity */}
+            <div>
+              <Label className="text-xs font-semibold text-muted-foreground mb-1 block">
+                Quantity {quickLogItem?.unit ? `(${quickLogItem.unit})` : ""}
+              </Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.1"
+                value={quickLogQty}
+                onChange={e => setQuickLogQty(e.target.value)}
+                placeholder={quickLogItem ? String(Math.max(0, quickLogItem.remaining).toFixed(quickLogItem.unit === 'each' ? 0 : 2)) : "0"}
+                className="text-base"
+                autoFocus
+              />
+            </div>
+            <Button
+              className="w-full bg-[#256984] hover:bg-[#1d5570] text-white"
+              disabled={!quickLogStaffId || !quickLogQty || parseFloat(quickLogQty) <= 0 || logMutation.isPending}
+              onClick={() => {
+                if (!quickLogItem || !quickLogStaffId || !quickLogQty) return;
+                logMutation.mutate({
+                  itemType: quickLogItem.type,
+                  itemId: quickLogItem.id,
+                  itemName: quickLogItem.name,
+                  quantity: parseFloat(quickLogQty),
+                  unit: quickLogItem.unit || 'each',
+                  staffId: parseInt(quickLogStaffId) || null,
+                  staffName: quickLogStaffName,
+                  notes: null,
+                }, {
+                  onSuccess: () => {
+                    setQuickLogOpen(false);
+                    setQuickLogQty("");
+                    toast({ title: "Prep logged", description: `${quickLogItem.name} recorded` });
+                  },
+                });
+              }}
+            >
+              {logMutation.isPending ? <Loader2 className="animate-spin mr-2" size={16} /> : <Check size={16} className="mr-2" />}
+              Log Prep
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
       <Dialog open={logOpen} onOpenChange={v => { if (!v) { setLogOpen(false); setLogForm(DEFAULT_LOG_FORM); } }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
