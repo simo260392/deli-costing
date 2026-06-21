@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical, Car, Thermometer
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical, Car, Thermometer, AlertTriangle
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -19,7 +19,8 @@ const topNavItems = [
 
 // Production group sub-items
 const productionSubItems = [
-  { href: "/prep-reports",  label: "Production Reports", icon: BarChart3, slug: "prep-reports" },
+  { href: "/prep-reports",       label: "Production Reports", icon: BarChart3,     slug: "prep-reports" },
+  { href: "/missing-items-report", label: "Missing Items",    icon: AlertTriangle, slug: "prep-reports" },
 ];
 
 // Items after the Production group

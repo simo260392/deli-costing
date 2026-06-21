@@ -19,6 +19,7 @@ import CustomPricing from "@/pages/CustomPricing";
 import RecipeBook from "@/pages/RecipeBook";
 import Prep from "@/pages/Prep";
 import PrepReports from "@/pages/PrepReports";
+import MissingItemsReport from "@/pages/MissingItemsReport";
 import WholesalePackaging from "@/pages/WholesalePackaging";
 import WagesDashboard from "@/pages/WagesDashboard";
 import SafetyDashboard from "@/pages/SafetyDashboard";
@@ -114,6 +115,7 @@ function AuthenticatedApp() {
         <Route path="/custom-pricing" component={CustomPricing} />
         <Route path="/prep" component={Prep} />
         <Route path="/prep-reports" component={PrepReports} />
+        <Route path="/missing-items-report" component={MissingItemsReport} />
         <Route path="/recipe-book" component={RecipeBook} />
         <Route path="/wholesale" component={WholesalePackaging} />
         <Route path="/wages" component={WagesDashboard} />

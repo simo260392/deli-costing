@@ -6891,6 +6891,139 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json({ ok: true });
   }));
 
+  // GET /api/missing-items/report?from=YYYY-MM-DD&to=YYYY-MM-DD
+  app.get("/api/missing-items/report", asyncRoute(async (req: any, res: any) => {
+    const from = (req.query.from as string) || new Date().toISOString().slice(0, 10);
+    const to   = (req.query.to   as string) || from;
+
+    const { data, error } = await supabase
+      .from("missing_items_log")
+      .select("*")
+      .gte("order_date", from)
+      .lte("order_date", to)
+      .order("logged_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    const rows = data || [];
+
+    // ── Reason normalisation ───────────────────────────────────────────────
+    // Consolidates free-text "other" reasons into clean categories
+    function normaliseReason(raw: string | null): string {
+      if (!raw) return "Unknown";
+      const r = raw.toLowerCase().trim();
+      // Time-related
+      if (r.includes("no time") || r.includes("not enough time") || r.includes("run out of time") || r.includes("no time to cook") || r.includes("not enough time to bake")) return "Ran out of time";
+      // Not made / forgot
+      if (r.includes("didn't make") || r.includes("didnt make") || r.includes("not made") || r.includes("didn't made") || r.includes("chef didn't") || r.includes("not sure if")) return "Not made / overlooked";
+      // Pulled meats
+      if (r.includes("pulled beef") || r.includes("pulled pork")) return "Pulled meat not prepared";
+      // Grilled chicken
+      if (r.includes("grilled chicken") || r.includes("schnitzel")) return "Protein not cooked";
+      // Specific ingredients mentioned in free text
+      if (r.includes("focaccia")) return "Out of stock: Focaccia Bread";
+      if (r.includes("sourdough")) return "Out of stock: Sourdough";
+      if (r.includes("mushroom")) return "Out of stock: Mushrooms";
+      if (r.includes("muesli")) return "Out of stock: Muesli";
+      if (r.includes("banana bread")) return "Out of stock: Banana Bread";
+      if (r.includes("carrot cake")) return "Out of stock: Carrot Cake";
+      if (r.includes("coulli") || r.includes("couli")) return "Out of stock: Coulis";
+      if (r.includes("not enough")) return "Insufficient quantity prepared";
+      if (r.includes("should be made") || r.includes("tuesday") || r.includes("wednesday")) return "Scheduling / prep day issue";
+      return raw.trim(); // keep original if no match
+    }
+
+    // ── KPIs ───────────────────────────────────────────────────────────────
+    const totalMissing   = rows.length;
+    const totalUnits     = rows.reduce((s, r) => s + (r.qty_missing || 0), 0);
+    const totalRequired  = rows.reduce((s, r) => s + (r.total_required || 0), 0);
+    const totalMade      = rows.reduce((s, r) => s + (r.qty_made || 0), 0);
+    const ordersAffected = new Set(rows.map(r => r.order_id)).size;
+    const fillRate       = totalRequired > 0 ? Math.round(((totalRequired - totalUnits) / totalRequired) * 1000) / 10 : 100;
+
+    // ── Ingredients out of stock ───────────────────────────────────────────
+    const ingMap = new Map<string, { count: number; units: number; items: Set<string> }>();
+    for (const r of rows) {
+      if (r.reason_type === "ingredient" && r.reason_ingredient) {
+        const k = r.reason_ingredient.trim();
+        if (!ingMap.has(k)) ingMap.set(k, { count: 0, units: 0, items: new Set() });
+        const e = ingMap.get(k)!;
+        e.count++;
+        e.units += r.qty_missing || 0;
+        e.items.add(r.item_name);
+      }
+    }
+    const ingredients = [...ingMap.entries()]
+      .map(([name, v]) => ({ name, occurrences: v.count, unitsLost: v.units, itemsAffected: [...v.items] }))
+      .sort((a, b) => b.unitsLost - a.unitsLost);
+
+    // ── Normalised reasons (other + ingredient) ────────────────────────────
+    const reasonMap = new Map<string, { count: number; units: number }>();
+    for (const r of rows) {
+      let label: string;
+      if (r.reason_type === "ingredient" && r.reason_ingredient) {
+        label = `Out of stock: ${r.reason_ingredient.trim()}`;
+      } else {
+        label = normaliseReason(r.reason_other);
+      }
+      if (!reasonMap.has(label)) reasonMap.set(label, { count: 0, units: 0 });
+      reasonMap.get(label)!.count++;
+      reasonMap.get(label)!.units += r.qty_missing || 0;
+    }
+    const reasons = [...reasonMap.entries()]
+      .map(([label, v]) => ({ label, occurrences: v.count, unitsLost: v.units }))
+      .sort((a, b) => b.unitsLost - a.unitsLost);
+
+    // ── Most missed items ──────────────────────────────────────────────────
+    const itemMap = new Map<string, { units: number; occurrences: number }>();
+    for (const r of rows) {
+      if (!itemMap.has(r.item_name)) itemMap.set(r.item_name, { units: 0, occurrences: 0 });
+      itemMap.get(r.item_name)!.units += r.qty_missing || 0;
+      itemMap.get(r.item_name)!.occurrences++;
+    }
+    const missedItems = [...itemMap.entries()]
+      .map(([name, v]) => ({ name, unitsLost: v.units, occurrences: v.occurrences }))
+      .sort((a, b) => b.unitsLost - a.unitsLost);
+
+    // ── Day-by-day trend ───────────────────────────────────────────────────
+    const dayMap = new Map<string, { units: number; items: number; required: number; made: number }>();
+    for (const r of rows) {
+      const d = r.order_date;
+      if (!dayMap.has(d)) dayMap.set(d, { units: 0, items: 0, required: 0, made: 0 });
+      dayMap.get(d)!.units += r.qty_missing || 0;
+      dayMap.get(d)!.items++;
+      dayMap.get(d)!.required += r.total_required || 0;
+      dayMap.get(d)!.made += r.qty_made || 0;
+    }
+    const trend = [...dayMap.entries()]
+      .map(([date, v]) => ({
+        date,
+        unitsLost: v.units,
+        itemsMissing: v.items,
+        fillRate: v.required > 0 ? Math.round(((v.required - v.units) / v.required) * 1000) / 10 : 100,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // ── Full log ───────────────────────────────────────────────────────────
+    const log = rows.map(r => ({
+      id: r.id,
+      date: r.order_date,
+      item: r.item_name,
+      orderId: r.order_id,
+      required: r.total_required,
+      made: r.qty_made,
+      missing: r.qty_missing,
+      reasonType: r.reason_type,
+      reasonLabel: r.reason_type === "ingredient" && r.reason_ingredient
+        ? `Out of stock: ${r.reason_ingredient}`
+        : normaliseReason(r.reason_other),
+      rawReason: r.reason_other || r.reason_ingredient || "",
+      staffName: r.staff_name,
+      loggedAt: r.logged_at,
+    }));
+
+    res.json({ ok: true, from, to, kpis: { totalMissing, totalUnits, ordersAffected, fillRate, totalRequired, totalMade }, ingredients, reasons, missedItems, trend, log });
+  }));
+
   // ─── SafetyCulture ────────────────────────────────────────────────────────
   const SC_TOKEN = "scapi_jEN3Gh4Sq_dhY7b53vgGpwfJDHVWl_ackd_qT9eimci-NfVtF3C60x_m-gdFaVHjmq5s4BRXRgivh7X_FtW9d6pIcJN9wbPfNxwj5b8EgOFskBQsEGxQOGdoy-SXNEmD-KownUxpYen7linST45zYW0iV0ZvpM4ritr-d8WuRtk";
   const SC_BASE = "https://api.safetyculture.io";
