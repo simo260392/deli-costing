@@ -7588,6 +7588,69 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json(data);
   }));
 
+  // ── Supplier-keyed stock order item routes ─────────────────────────────────
+
+  // GET /api/stock-order/drafts/:id/supplier-items — all items for a draft keyed by supplier+item_key
+  app.get("/api/stock-order/drafts/:id/supplier-items", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { data, error } = await supabase
+      .from('stock_order_supplier_items')
+      .select('*')
+      .eq('draft_id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // PUT /api/stock-order/drafts/:id/supplier-items — upsert one supplier item
+  app.put("/api/stock-order/drafts/:id/supplier-items", asyncRoute(async (req: any, res: any) => {
+    const draftId = Number(req.params.id);
+    const { supplierKey, itemKey, sectionKey, itemName, qty, receivedQty, notes } = req.body;
+    if (!supplierKey || !itemKey) return res.status(400).json({ error: 'supplierKey and itemKey required' });
+
+    if ((qty === 0 || qty === null || qty === undefined) && receivedQty === undefined) {
+      // Zero qty with no received recording = delete the row
+      await supabase.from('stock_order_supplier_items')
+        .delete()
+        .eq('draft_id', draftId)
+        .eq('item_key', itemKey);
+      return res.json({ ok: true, deleted: true });
+    }
+
+    const upsertData: any = {
+      draft_id: draftId,
+      supplier_key: supplierKey,
+      item_key: itemKey,
+      section_key: sectionKey || '',
+      item_name: itemName || itemKey,
+      updated_at: new Date().toISOString(),
+    };
+    if (qty !== undefined) upsertData.qty = qty;
+    if (receivedQty !== undefined) upsertData.received_qty = receivedQty;
+    if (notes !== undefined) upsertData.notes = notes;
+
+    const { data, error } = await supabase
+      .from('stock_order_supplier_items')
+      .upsert(upsertData, { onConflict: 'draft_id,item_key' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/stock-order/drafts/:id/status — update draft status (draft/submitted/received/partial)
+  app.patch("/api/stock-order/drafts/:id/status", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { status } = req.body;
+    const allowed = ['draft', 'submitted', 'received', 'partial', 'cancelled'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const { data, error } = await supabase
+      .from('stock_order_drafts')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
   // ═══════════════════════════════════════════════════════════════════════════
   // COMPLIANCE HUB ROUTES
   // ═══════════════════════════════════════════════════════════════════════════
