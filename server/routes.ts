@@ -4929,7 +4929,10 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     }
 
     function detectItemType(name: string, flexCategory?: string, categoriesJson?: string): 'wrap' | 'sandwich' | 'toastie' | 'breakfast' | 'other' {
-      // Check Flex order item category first
+      const n = (name || '').toLowerCase();
+      // Toastie always wins regardless of category — never wrapped
+      if (n.includes('toastie')) return 'toastie';
+      // Check Flex order item category for breakfast
       if (flexCategory?.toLowerCase().includes('breakfast')) return 'breakfast';
       // Also check the product's categories_json from the DB (catches items like Bacon Egg Wrap
       // whose Flex order line item category may be empty but product is tagged Breakfast)
@@ -4939,10 +4942,8 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           if (cats.some(c => c.name?.toLowerCase().includes('breakfast'))) return 'breakfast';
         } catch { /* ignore */ }
       }
-      const n = (name || '').toLowerCase();
-      if (n.includes('toastie')) return 'toastie';
       if (n.includes('wrap')) return 'wrap';
-      if (n.includes('sandwich') || n.includes('focaccia') || n.includes('turkish') || n.includes('panini') || n.includes('reuben') || n.includes('baguette') || n.includes('roll') || n.includes('lungo')) return 'sandwich';
+      if (n.includes('sandwich') || n.includes('focaccia') || n.includes('turkish') || n.includes('panini') || n.includes('reuben') || n.includes('baguette') || n.includes('roll') || n.includes('lungo') || n.includes('sourdough')) return 'sandwich';
       return 'other';
     }
 
