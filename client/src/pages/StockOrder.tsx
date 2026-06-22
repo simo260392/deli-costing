@@ -181,299 +181,179 @@ function QtyInput({
 
 type FilterTab = "all" | "supplier" | "category";
 
-function IngredientSelectDialog({
+type FilterMode = "all" | "supplier" | "category";
+
+function OrderScopeDialog({
   open,
   onClose,
   ingredients,
   suppliers,
-  existingItems,
   onConfirm,
 }: {
   open: boolean;
   onClose: () => void;
   ingredients: Ingredient[];
   suppliers: Supplier[];
-  existingItems: SupplierItem[];
   onConfirm: (selected: Ingredient[]) => void;
 }) {
-  const [tab, setTab] = useState<FilterTab>("all");
-  const [search, setSearch] = useState("");
+  const [mode, setMode] = useState<FilterMode>("all");
   const [selectedSuppliers, setSelectedSuppliers] = useState<number[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // Seed with already-ordered ingredients
-  useEffect(() => {
-    if (open) {
-      const existing = new Set(
-        existingItems.map(i => {
-          const match = i.item_key.match(/^ingredient::(\d+)$/);
-          return match ? Number(match[1]) : null;
-        }).filter(Boolean) as number[]
-      );
-      setSelectedIds(existing);
-    }
-  }, [open, existingItems]);
-
-  // All unique categories
   const allCategories = Array.from(
-    new Set(ingredients.map(i => i.category || "Uncategorised").filter(Boolean))
+    new Set(ingredients.map(i => i.category || "Uncategorised"))
   ).sort();
 
-  // Filter ingredients based on active tab + search
-  const filtered = ingredients.filter(ing => {
-    const matchSearch = !search || ing.name.toLowerCase().includes(search.toLowerCase()) ||
-      (ing.category || "").toLowerCase().includes(search.toLowerCase());
+  const toggleSupplier = (id: number) =>
+    setSelectedSuppliers(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
 
-    if (tab === "supplier") {
-      if (selectedSuppliers.length === 0) return matchSearch;
-      return matchSearch && selectedSuppliers.includes(ing.bestSupplierId || -1);
+  const toggleCategory = (cat: string) =>
+    setSelectedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+
+  const previewCount = (() => {
+    if (mode === "all") return ingredients.length;
+    if (mode === "supplier") {
+      if (selectedSuppliers.length === 0) return 0;
+      return ingredients.filter(i => selectedSuppliers.includes(i.bestSupplierId || -1)).length;
     }
-    if (tab === "category") {
-      if (selectedCategories.length === 0) return matchSearch;
-      const cat = ing.category || "Uncategorised";
-      return matchSearch && selectedCategories.includes(cat);
-    }
-    return matchSearch;
-  });
+    if (selectedCategories.length === 0) return 0;
+    return ingredients.filter(i => selectedCategories.includes(i.category || "Uncategorised")).length;
+  })();
 
-  // Group by category for display
-  const grouped: Record<string, Ingredient[]> = {};
-  filtered.forEach(ing => {
-    const cat = ing.category || "Uncategorised";
-    if (!grouped[cat]) grouped[cat] = [];
-    grouped[cat].push(ing);
-  });
-
-  const toggleSupplier = (id: number) => {
-    setSelectedSuppliers(prev =>
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
-  };
-
-  const toggleCategory = (cat: string) => {
-    setSelectedCategories(prev =>
-      prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
-    );
-  };
-
-  const toggleIngredient = (id: number) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAllFiltered = () => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      filtered.forEach(i => next.add(i.id));
-      return next;
-    });
-  };
-
-  const clearFiltered = () => {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      filtered.forEach(i => next.delete(i.id));
-      return next;
-    });
-  };
+  const canConfirm =
+    mode === "all" ||
+    (mode === "supplier" && selectedSuppliers.length > 0) ||
+    (mode === "category" && selectedCategories.length > 0);
 
   const handleConfirm = () => {
-    const selected = ingredients.filter(i => selectedIds.has(i.id));
+    let selected: Ingredient[];
+    if (mode === "all") {
+      selected = ingredients;
+    } else if (mode === "supplier") {
+      selected = ingredients.filter(i => selectedSuppliers.includes(i.bestSupplierId || -1));
+    } else {
+      selected = ingredients.filter(i => selectedCategories.includes(i.category || "Uncategorised"));
+    }
     onConfirm(selected);
     onClose();
   };
 
-  const tabs: { key: FilterTab; label: string; icon: any }[] = [
-    { key: "all", label: "All Ingredients", icon: List },
-    { key: "supplier", label: "By Supplier", icon: Package },
-    { key: "category", label: "By Category", icon: Tag },
+  const modes: { key: FilterMode; label: string; icon: any }[] = [
+    { key: "all",      label: "All Ingredients", icon: List },
+    { key: "supplier", label: "By Supplier",     icon: Package },
+    { key: "category", label: "By Category",     icon: Tag },
   ];
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col p-0 gap-0">
-        <DialogHeader className="px-5 pt-5 pb-0">
-          <DialogTitle style={{ color: BRAND }}>Select Ingredients to Order</DialogTitle>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle style={{ color: BRAND }}>What would you like to order?</DialogTitle>
         </DialogHeader>
 
-        {/* Tab strip */}
-        <div className="flex gap-1 mx-5 mt-4 bg-gray-100 p-1 rounded-lg">
-          {tabs.map(t => {
-            const Icon = t.icon;
+        {/* Mode toggle */}
+        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
+          {modes.map(m => {
+            const Icon = m.icon;
             return (
               <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium rounded-md transition-all"
-                style={tab === t.key
+                key={m.key}
+                onClick={() => setMode(m.key)}
+                className="flex-1 flex flex-col items-center gap-1 py-2 px-1 rounded-md transition-all text-xs font-medium"
+                style={mode === m.key
                   ? { backgroundColor: "white", color: BRAND, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
                   : { color: "#6B7280" }
                 }
               >
-                <Icon className="w-3.5 h-3.5" />
-                {t.label}
+                <Icon className="w-4 h-4" />
+                {m.label}
               </button>
             );
           })}
         </div>
 
-        {/* Filter panel for supplier/category tabs */}
-        {tab === "supplier" && (
-          <div className="mx-5 mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Select Suppliers</p>
-            <div className="flex flex-wrap gap-2">
-              {suppliers.map(sup => (
-                <label key={sup.id} className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <Checkbox
-                    checked={selectedSuppliers.includes(sup.id)}
-                    onCheckedChange={() => toggleSupplier(sup.id)}
-                    className="border-gray-300"
-                    style={{ accentColor: BRAND }}
-                  />
-                  <span className="text-sm text-gray-700">{sup.name}</span>
-                </label>
-              ))}
-            </div>
-            {selectedSuppliers.length > 0 && (
-              <p className="text-xs text-gray-400 mt-2">
-                Showing ingredients from {selectedSuppliers.length} supplier{selectedSuppliers.length > 1 ? "s" : ""}
-              </p>
-            )}
-          </div>
+        {/* All — no extra UI needed */}
+        {mode === "all" && (
+          <p className="text-sm text-gray-500 text-center py-2">
+            An order sheet will be generated for all {ingredients.length} ingredients.
+          </p>
         )}
 
-        {tab === "category" && (
-          <div className="mx-5 mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Select Categories</p>
-            <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-              {allCategories.map(cat => (
-                <label key={cat} className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <Checkbox
-                    checked={selectedCategories.includes(cat)}
-                    onCheckedChange={() => toggleCategory(cat)}
-                    className="border-gray-300"
-                  />
-                  <span className="text-sm text-gray-700">{cat}</span>
-                </label>
-              ))}
-            </div>
-            {selectedCategories.length > 0 && (
-              <p className="text-xs text-gray-400 mt-2">
-                Showing {selectedCategories.length} categor{selectedCategories.length > 1 ? "ies" : "y"}
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Search */}
-        <div className="mx-5 mt-3 relative">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <Input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search ingredients..."
-            className="pl-8 h-8 text-sm"
-          />
-        </div>
-
-        {/* Select / clear all controls */}
-        <div className="mx-5 mt-2 flex items-center justify-between">
-          <span className="text-xs text-gray-400">{filtered.length} ingredients shown</span>
-          <div className="flex gap-2">
-            <button
-              onClick={selectAllFiltered}
-              className="text-xs font-medium underline"
-              style={{ color: BRAND }}
-            >
-              Select all
-            </button>
-            <span className="text-gray-300">|</span>
-            <button
-              onClick={clearFiltered}
-              className="text-xs font-medium text-gray-500 underline"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
-
-        {/* Ingredient list */}
-        <div className="flex-1 overflow-y-auto mx-5 mt-2 mb-3 border border-gray-200 rounded-lg divide-y divide-gray-100">
-          {Object.keys(grouped).length === 0 ? (
-            <div className="text-center py-8 text-gray-400 text-sm">No ingredients found</div>
-          ) : (
-            Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([cat, items]) => (
-              <div key={cat}>
-                <div
-                  className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500 sticky top-0"
-                  style={{ backgroundColor: "#F9FAFB", borderLeft: `3px solid ${BRAND}` }}
+        {/* Supplier checkboxes */}
+        {mode === "supplier" && (
+          <div className="space-y-2 mt-1">
+            <p className="text-xs text-gray-500 font-medium">Select suppliers to include:</p>
+            {suppliers.map(sup => {
+              const ingCount = ingredients.filter(i => i.bestSupplierId === sup.id).length;
+              if (ingCount === 0) return null;
+              const checked = selectedSuppliers.includes(sup.id);
+              return (
+                <label
+                  key={sup.id}
+                  className="flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                  style={checked ? { borderColor: BRAND, backgroundColor: BRAND_LIGHT } : { borderColor: "#E5E7EB" }}
                 >
-                  {cat} ({items.length})
-                </div>
-                {items.map(ing => {
-                  const selected = selectedIds.has(ing.id);
-                  return (
-                    <label
-                      key={ing.id}
-                      className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 transition-colors"
-                      style={selected ? { backgroundColor: BRAND_LIGHT } : {}}
-                    >
-                      <Checkbox
-                        checked={selected}
-                        onCheckedChange={() => toggleIngredient(ing.id)}
-                        className="border-gray-300 shrink-0"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span
-                          className="text-sm font-medium block truncate"
-                          style={selected ? { color: BRAND } : { color: "#374151" }}
-                        >
-                          {ing.name}
-                        </span>
-                        {ing.bestSupplierName && (
-                          <span className="text-xs text-gray-400">{ing.bestSupplierName}</span>
-                        )}
-                      </div>
-                      {ing.unit && (
-                        <span className="text-xs text-gray-400 shrink-0">{ing.unit}</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            ))
-          )}
-        </div>
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => toggleSupplier(sup.id)}
+                  />
+                  <span className="flex-1 text-sm font-medium text-gray-800">{sup.name}</span>
+                  <span className="text-xs text-gray-400">{ingCount} items</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Category checkboxes */}
+        {mode === "category" && (
+          <div className="space-y-2 mt-1 max-h-64 overflow-y-auto pr-1">
+            <p className="text-xs text-gray-500 font-medium">Select categories to include:</p>
+            {allCategories.map(cat => {
+              const ingCount = ingredients.filter(i => (i.category || "Uncategorised") === cat).length;
+              const checked = selectedCategories.includes(cat);
+              return (
+                <label
+                  key={cat}
+                  className="flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
+                  style={checked ? { borderColor: BRAND, backgroundColor: BRAND_LIGHT } : { borderColor: "#E5E7EB" }}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => toggleCategory(cat)}
+                  />
+                  <span className="flex-1 text-sm font-medium text-gray-800">{cat}</span>
+                  <span className="text-xs text-gray-400">{ingCount} items</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Preview count */}
+        {canConfirm && previewCount > 0 && (
+          <p className="text-xs text-center" style={{ color: BRAND }}>
+            {previewCount} ingredient{previewCount !== 1 ? "s" : ""} will be added to the order sheet
+          </p>
+        )}
 
         {/* Footer */}
-        <div className="px-5 pb-5 pt-2 border-t flex items-center justify-between gap-3">
-          <span className="text-sm text-gray-500">
-            {selectedIds.size} ingredient{selectedIds.size !== 1 ? "s" : ""} selected
-          </span>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={onClose}>Cancel</Button>
-            <Button
-              onClick={handleConfirm}
-              disabled={selectedIds.size === 0}
-              className="text-white gap-1.5"
-              style={{ backgroundColor: selectedIds.size > 0 ? BRAND : "#D1D5DB" }}
-            >
-              <Check className="w-4 h-4" />
-              Add to Order
-            </Button>
-          </div>
+        <div className="flex gap-2 pt-1">
+          <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+          <Button
+            className="flex-1 text-white gap-1.5"
+            style={{ backgroundColor: canConfirm ? BRAND : "#D1D5DB" }}
+            disabled={!canConfirm}
+            onClick={handleConfirm}
+          >
+            <Check className="w-4 h-4" />
+            Generate Order
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
   );
 }
-
-// ─── Order Form (ingredient-based) ────────────────────────────────────────────
 
 function OrderForm({
   draft,
@@ -1147,12 +1027,12 @@ export default function StockOrder() {
       </div>
 
       {/* Ingredient selection dialog */}
-      <IngredientSelectDialog
+      <OrderScopeDialog
         open={selectDialog}
         onClose={() => setSelectDialog(false)}
         ingredients={ingredients}
         suppliers={suppliers}
-        existingItems={supplierItems}
+        
         onConfirm={handleIngredientsConfirmed}
       />
 
