@@ -316,7 +316,7 @@ function SizeVariantRow({
       >
         <Layers size={14} className="text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{displayAttrs}</p>
+          <p className="text-sm font-medium">{displayAttrs}</p>
           <p className="text-xs text-muted-foreground font-mono">{variant.sku}</p>
         </div>
         <div className="flex items-center gap-3 shrink-0 text-xs">
