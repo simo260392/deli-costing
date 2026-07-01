@@ -2500,8 +2500,8 @@ Return ONLY the JSON object, no explanation.`;
         if (page > 20) break;
       }
 
-      // Filter out only cancelled orders
-      const activeOrders = allOrders.filter(o => o.status !== 'cancelled');
+      // Include all orders including pending, cancelled, archived — frontend handles display
+      const activeOrders = allOrders;
 
       // Debug: fullraw=true returns the complete raw Flex payload (first order only)
       if (req.query.fullraw === "true") {

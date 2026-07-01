@@ -161,15 +161,29 @@ function getTickableItems(order: FlexOrder): TickableItem[] {
   return result;
 }
 
+// Returns colour tokens for a Flex order's status (pending/cancelled/archived) overrides prep status
+function flexStatusColour(flexStatus: string) {
+  switch (flexStatus) {
+    case "pending":
+      return { border: "border-purple-400", bg: "bg-purple-50", badge: "bg-purple-600 text-white", label: "PENDING", locked: true };
+    case "cancelled":
+      return { border: "border-gray-300", bg: "bg-gray-100", badge: "bg-gray-400 text-white", label: "CANCELLED", locked: true };
+    case "archived":
+      return { border: "border-gray-300", bg: "bg-gray-100", badge: "bg-gray-400 text-white", label: "ARCHIVED", locked: true };
+    default:
+      return null; // no override — use prep status colour
+  }
+}
+
 function orderColour(status: string) {
-  if (status === "edited") return { border: "border-purple-400", bg: "bg-purple-50", badge: "bg-purple-100 text-purple-700" };
+  if (status === "edited") return { border: "border-purple-400", bg: "bg-purple-50", badge: "bg-purple-100 text-purple-700", label: "Edited", locked: false };
   switch (status) {
-    case "new":         return { border: "border-yellow-400",  bg: "bg-yellow-50 dark:bg-yellow-950/20",  badge: "bg-yellow-100 text-yellow-800 border-yellow-300", label: "New" };
-    case "not_started": return { border: "border-red-400",     bg: "bg-red-50 dark:bg-red-950/20",        badge: "bg-red-100 text-red-700 border-red-300",           label: "Not Started" };
-    case "in_progress": return { border: "border-orange-400",  bg: "bg-orange-50 dark:bg-orange-950/20",  badge: "bg-orange-100 text-orange-700 border-orange-300",  label: "In Progress" };
-    case "done":        return { border: "border-green-400",   bg: "bg-green-50 dark:bg-green-950/20",    badge: "bg-green-100 text-green-700 border-green-300",     label: "Done" };
-    case "complete":    return { border: "border-green-400",   bg: "bg-green-50 dark:bg-green-950/20",    badge: "bg-green-100 text-green-700 border-green-300",     label: "Complete" };
-    default:            return { border: "border-border",       bg: "bg-card",                              badge: "bg-muted text-muted-foreground",                   label: status };
+    case "new":         return { border: "border-yellow-400",  bg: "bg-yellow-50 dark:bg-yellow-950/20",  badge: "bg-yellow-100 text-yellow-800 border-yellow-300", label: "New", locked: false };
+    case "not_started": return { border: "border-red-400",     bg: "bg-red-50 dark:bg-red-950/20",        badge: "bg-red-100 text-red-700 border-red-300",           label: "Not Started", locked: false };
+    case "in_progress": return { border: "border-orange-400",  bg: "bg-orange-50 dark:bg-orange-950/20",  badge: "bg-orange-100 text-orange-700 border-orange-300",  label: "In Progress", locked: false };
+    case "done":        return { border: "border-green-400",   bg: "bg-green-50 dark:bg-green-950/20",    badge: "bg-green-100 text-green-700 border-green-300",     label: "Done", locked: false };
+    case "complete":    return { border: "border-green-400",   bg: "bg-green-50 dark:bg-green-950/20",    badge: "bg-green-100 text-green-700 border-green-300",     label: "Complete", locked: false };
+    default:            return { border: "border-border",       bg: "bg-card",                              badge: "bg-muted text-muted-foreground",                   label: status, locked: false };
   }
 }
 
@@ -665,12 +679,15 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const colour = isComplete ? orderColour("complete") : orderColour(state.prepStatus || "new");
+  const flexOverride = flexStatusColour(order.status);
+  const colour = flexOverride ?? (isComplete ? orderColour("complete") : orderColour(state.prepStatus || "new"));
+  const isLocked = !!flexOverride; // pending/cancelled/archived orders cannot be interacted with
   const customerName = order.company || `${order.first_name} ${order.last_name}`.trim();
   const tickableItems = getTickableItems(order);
   const checkedCount = tickableItems.filter(i => state.checkedItems[i.uuid]?.checked).length;
 
   const handleExpand = () => {
+    if (isLocked) return; // pending/cancelled/archived — no interaction
     if (!expanded) {
       const patch: Partial<OrderState> = {};
       if (!state.viewed) patch.viewed = true;
@@ -942,10 +959,10 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
         </DialogContent>
       </Dialog>
 
-      <div className={cn("rounded-xl border-2 overflow-hidden transition-all", colour.border, colour.bg)}>
+      <div className={cn("rounded-xl border-2 overflow-hidden transition-all", colour.border, colour.bg, isLocked && order.status !== "pending" && "opacity-60")}>
         {/* Header */}
         <button
-          className="w-full flex items-center gap-3 px-4 py-3 text-left"
+          className={cn("w-full flex items-center gap-3 px-4 py-3 text-left", isLocked && "cursor-default")}
           onClick={handleExpand}
         >
           <div className="flex-1 min-w-0">
@@ -973,14 +990,21 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {state.hasMissing && (
+            {!isLocked && state.hasMissing && (
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700 border border-red-300">
                 <AlertTriangle size={9} /> Missing
               </span>
             )}
-            <Badge className={cn("text-xs", colour.badge)}>{colour.label}</Badge>
+            {isLocked ? (
+              <span className={cn("inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-md tracking-wide", colour.badge)}>
+                {order.status === "pending" && <span className="inline-block w-2 h-2 rounded-full bg-white/80 mr-0.5" />}
+                {colour.label}
+              </span>
+            ) : (
+              <Badge className={cn("text-xs", colour.badge)}>{colour.label}</Badge>
+            )}
           </div>
-          {expanded ? <ChevronUp size={16} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={16} className="shrink-0 text-muted-foreground" />}
+          {!isLocked && (expanded ? <ChevronUp size={16} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={16} className="shrink-0 text-muted-foreground" />)}
         </button>
 
         {/* Missing items warning banner — shown when expanded */}
@@ -1984,6 +2008,10 @@ export default function Prep() {
     .filter(o => showCompleted || !orderStates[o.id]?.isComplete)
     .slice()
     .sort((a, b) => {
+      // Locked orders (pending/cancelled/archived) always go to the bottom
+      const aLocked = lockedStatuses.has(a.status) ? 1 : 0;
+      const bLocked = lockedStatuses.has(b.status) ? 1 : 0;
+      if (aLocked !== bLocked) return aLocked - bLocked;
       if (orderSort === "placed") {
         // Newest placed first
         const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -1996,14 +2024,17 @@ export default function Prep() {
         return ta - tb;
       }
     });
+  // Active orders = those not in a locked Flex status (pending/cancelled/archived)
+  const lockedStatuses = new Set(["pending", "cancelled", "archived"]);
+  const activeFlexOrders = flexOrders.filter(o => !lockedStatuses.has(o.status));
   const orderStats = {
-    total: flexOrders.length,
-    new: flexOrders.filter(o => (orderStates[o.id]?.prepStatus || "new") === "new" && !orderStates[o.id]?.isComplete).length,
-    not_started: flexOrders.filter(o => orderStates[o.id]?.prepStatus === "not_started" && !orderStates[o.id]?.isComplete).length,
-    in_progress: flexOrders.filter(o => orderStates[o.id]?.prepStatus === "in_progress" && !orderStates[o.id]?.isComplete).length,
-    edited: flexOrders.filter(o => orderStates[o.id]?.prepStatus === "edited").length,
-    done: flexOrders.filter(o => orderStates[o.id]?.prepStatus === "done" && !orderStates[o.id]?.isComplete).length,
-    complete: flexOrders.filter(o => !!orderStates[o.id]?.isComplete).length,
+    total: activeFlexOrders.length,
+    new: activeFlexOrders.filter(o => (orderStates[o.id]?.prepStatus || "new") === "new" && !orderStates[o.id]?.isComplete).length,
+    not_started: activeFlexOrders.filter(o => orderStates[o.id]?.prepStatus === "not_started" && !orderStates[o.id]?.isComplete).length,
+    in_progress: activeFlexOrders.filter(o => orderStates[o.id]?.prepStatus === "in_progress" && !orderStates[o.id]?.isComplete).length,
+    edited: activeFlexOrders.filter(o => orderStates[o.id]?.prepStatus === "edited").length,
+    done: activeFlexOrders.filter(o => orderStates[o.id]?.prepStatus === "done" && !orderStates[o.id]?.isComplete).length,
+    complete: activeFlexOrders.filter(o => !!orderStates[o.id]?.isComplete).length,
   };
 
   const prepTasks = sessionDetail?.tasks ?? [];
@@ -2015,7 +2046,7 @@ export default function Prep() {
   // ── Auto-compute prep summary from current orders ──
   // Build the flat order line items from all loaded flex orders (all items, regardless of tick status)
   const prepComputeOrders = useMemo(() =>
-    flexOrders.flatMap(o =>
+    flexOrders.filter(o => !lockedStatuses.has(o.status)).flatMap(o =>
       (o.items ?? []).map(i => ({
         type: "flex_product" as const,
         sku: i.sku,
