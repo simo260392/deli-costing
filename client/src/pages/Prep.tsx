@@ -160,7 +160,6 @@ function getTickableItems(order: FlexOrder): TickableItem[] {
   }
   return result;
 }
-
 // Returns colour tokens for a Flex order's status (pending/cancelled/archived) overrides prep status
 function flexStatusColour(flexStatus: string) {
   switch (flexStatus) {
@@ -2009,8 +2008,8 @@ export default function Prep() {
     .slice()
     .sort((a, b) => {
       // Locked orders (pending/cancelled/archived) always go to the bottom
-      const aLocked = lockedStatuses.has(a.status) ? 1 : 0;
-      const bLocked = lockedStatuses.has(b.status) ? 1 : 0;
+      const aLocked = LOCKED_FLEX_STATUSES.has(a.status) ? 1 : 0;
+      const bLocked = LOCKED_FLEX_STATUSES.has(b.status) ? 1 : 0;
       if (aLocked !== bLocked) return aLocked - bLocked;
       if (orderSort === "placed") {
         // Newest placed first
@@ -2025,8 +2024,8 @@ export default function Prep() {
       }
     });
   // Active orders = those not in a locked Flex status (pending/cancelled/archived)
-  const lockedStatuses = new Set(["pending", "cancelled", "archived"]);
-  const activeFlexOrders = flexOrders.filter(o => !lockedStatuses.has(o.status));
+  const LOCKED_FLEX_STATUSES = new Set(["pending", "cancelled", "archived"]);
+  const activeFlexOrders = flexOrders.filter(o => !LOCKED_FLEX_STATUSES.has(o.status));
   const orderStats = {
     total: activeFlexOrders.length,
     new: activeFlexOrders.filter(o => (orderStates[o.id]?.prepStatus || "new") === "new" && !orderStates[o.id]?.isComplete).length,
@@ -2046,7 +2045,7 @@ export default function Prep() {
   // ── Auto-compute prep summary from current orders ──
   // Build the flat order line items from all loaded flex orders (all items, regardless of tick status)
   const prepComputeOrders = useMemo(() =>
-    flexOrders.filter(o => !lockedStatuses.has(o.status)).flatMap(o =>
+    flexOrders.filter(o => !LOCKED_FLEX_STATUSES.has(o.status)).flatMap(o =>
       (o.items ?? []).map(i => ({
         type: "flex_product" as const,
         sku: i.sku,
