@@ -160,6 +160,9 @@ function getTickableItems(order: FlexOrder): TickableItem[] {
   }
   return result;
 }
+// Module-level constant — must be outside the component to avoid TDZ errors in useMemo/sort
+const LOCKED_FLEX_STATUSES = new Set(["pending", "cancelled", "archived"]);
+
 // Returns colour tokens for a Flex order's status (pending/cancelled/archived) overrides prep status
 function flexStatusColour(flexStatus: string) {
   switch (flexStatus) {
@@ -2024,7 +2027,6 @@ export default function Prep() {
       }
     });
   // Active orders = those not in a locked Flex status (pending/cancelled/archived)
-  const LOCKED_FLEX_STATUSES = new Set(["pending", "cancelled", "archived"]);
   const activeFlexOrders = flexOrders.filter(o => !LOCKED_FLEX_STATUSES.has(o.status));
   const orderStats = {
     total: activeFlexOrders.length,
