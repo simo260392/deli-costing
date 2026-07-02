@@ -131,9 +131,21 @@ export default function PrepReports() {
 
   const [dateFrom, setDateFrom] = useState(sevenDaysAgo());
   const [dateTo,   setDateTo]   = useState(today());
+  const [timeFrom, setTimeFrom] = useState("");   // "" = no filter, else "HH:MM"
+  const [timeTo,   setTimeTo]   = useState("");
   const [staffFilter, setStaffFilter] = useState("all");
   const [groupBy, setGroupBy] = useState<"staff" | "item" | "date">("staff");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // Convert a logged_at ISO string to AWST HH:MM for time comparison
+  const toAwstTime = (iso: string) => {
+    const awst = new Date(new Date(iso).getTime() + 8 * 60 * 60 * 1000);
+    return awst.toISOString().slice(11, 16); // "HH:MM"
+  };
+
+  const applyShift = (from: string, to: string) => {
+    setTimeFrom(from); setTimeTo(to);
+  };
 
   const { data: entries = [], isLoading, refetch } = useQuery<PrepLogEntry[]>({
     queryKey: ["/api/prep-log/report", dateFrom, dateTo],
@@ -156,9 +168,16 @@ export default function PrepReports() {
   }, [entries]);
 
   const filtered = useMemo(() => {
-    if (staffFilter === "all") return entries;
-    return entries.filter(e => e.staffName === staffFilter);
-  }, [entries, staffFilter]);
+    return entries.filter(e => {
+      if (staffFilter !== "all" && e.staffName !== staffFilter) return false;
+      if (timeFrom || timeTo) {
+        const t = toAwstTime(e.loggedAt);
+        if (timeFrom && t < timeFrom) return false;
+        if (timeTo   && t > timeTo)   return false;
+      }
+      return true;
+    });
+  }, [entries, staffFilter, timeFrom, timeTo]);
 
   const grouped = useMemo(() => {
     const map: Record<string, PrepLogEntry[]> = {};
@@ -258,6 +277,26 @@ export default function PrepReports() {
             </Select>
           </div>
         </div>
+        {/* Time of day filter */}
+        <div className="flex items-end gap-3 flex-wrap">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Time from (AWST)</Label>
+            <Input type="time" value={timeFrom} onChange={e => setTimeFrom(e.target.value)} className="h-9 text-sm w-32" />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Time to (AWST)</Label>
+            <Input type="time" value={timeTo} onChange={e => setTimeTo(e.target.value)} className="h-9 text-sm w-32" />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Shift presets</Label>
+            <div className="flex gap-1.5 flex-wrap">
+              <Button size="sm" variant={timeFrom==="05:00"&&timeTo==="12:00"?"default":"outline"} className="h-9 text-xs" onClick={() => applyShift("05:00","12:00")}>Morning (5am–12pm)</Button>
+              <Button size="sm" variant={timeFrom==="12:00"&&timeTo==="17:00"?"default":"outline"} className="h-9 text-xs" onClick={() => applyShift("12:00","17:00")}>Afternoon (12pm–5pm)</Button>
+              <Button size="sm" variant={timeFrom===""&&timeTo===""?"default":"outline"} className="h-9 text-xs" onClick={() => applyShift("","")}>All day</Button>
+            </div>
+          </div>
+        </div>
+        {/* Date presets */}
         <div className="flex gap-2 flex-wrap">
           <Button size="sm" variant="outline" className="h-7 text-xs"
             onClick={() => { setDateFrom(today()); setDateTo(today()); }}>Today</Button>
