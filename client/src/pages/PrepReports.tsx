@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { BarChart3, Trash2, Download, ChevronDown, ChevronUp, List } from "lucide-react";
+import { BarChart3, Trash2, Download, ChevronDown, ChevronUp, List, Clock, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type PrepLogEntry = {
@@ -28,6 +28,18 @@ type PrepLogEntry = {
 type PrepRecipe   = { id: number; name: string; category: string; qty: number; unit: string };
 type PrepSubRecipe = { id: number; name: string; qty: number; unit: string };
 type PrepComputed  = { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[] };
+
+// Combined view: one row per unique item name+unit
+type CombinedRow = {
+  itemName: string;
+  itemType: string;
+  itemSku: string | null;
+  itemAttributesSummary: string | null;
+  totalQty: number;
+  unit: string;
+  staffList: string[];        // unique staff who made it
+  representativeEntry: PrepLogEntry;
+};
 
 // All dates in AWST (UTC+8) to match server-side date filtering
 function toAwstDate(d: Date): string {
@@ -124,6 +136,54 @@ function BreakdownPanel({ orderPayload }: { orderPayload: any[] }) {
   );
 }
 
+// ── Combined category: aggregated view ─────────────────────────────────────────
+function CombinedCategory({
+  label,
+  colour,
+  rows,
+  onDelete,
+}: {
+  label: string;
+  colour: string;
+  rows: CombinedRow[];
+  onDelete: (id: number) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <div>
+      <div className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide"
+        style={{ backgroundColor: colour + "18", color: colour }}>
+        {label}
+      </div>
+      <div className="divide-y divide-border">
+        {rows.map(row => (
+          <div key={`${row.itemName}-${row.unit}`} className="px-4 py-2.5 hover:bg-muted/20">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-3 gap-1 md:gap-3 items-start">
+                <div className="md:col-span-1">
+                  <p className="text-sm font-medium">{row.itemName}</p>
+                  {row.itemType === "order" && (
+                    <EntryBreakdown
+                      entry={row.representativeEntry}
+                      quantity={row.totalQty}
+                    />
+                  )}
+                </div>
+                <p className="text-sm tabular-nums font-semibold text-primary">
+                  {row.totalQty % 1 === 0 ? row.totalQty : row.totalQty.toFixed(2)} {row.unit}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {row.staffList.join(", ")}
+                </p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────────
 export default function PrepReports() {
   const { toast } = useToast();
@@ -136,6 +196,8 @@ export default function PrepReports() {
   const [staffFilter, setStaffFilter] = useState("all");
   const [groupBy, setGroupBy] = useState<"staff" | "item" | "date">("staff");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // Per-group view mode: "timeline" | "combined"
+  const [groupViewMode, setGroupViewMode] = useState<Record<string, "timeline" | "combined">>({});
 
   // Convert a logged_at ISO string to AWST HH:MM for time comparison
   const toAwstTime = (iso: string) => {
@@ -198,6 +260,39 @@ export default function PrepReports() {
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+  };
+
+  const getGroupViewMode = (key: string): "timeline" | "combined" =>
+    groupViewMode[key] ?? "timeline";
+
+  const setGroupMode = (key: string, mode: "timeline" | "combined") => {
+    setGroupViewMode(prev => ({ ...prev, [key]: mode }));
+  };
+
+  // Build combined rows for a set of entries
+  const buildCombinedRows = (items: PrepLogEntry[]): CombinedRow[] => {
+    const map: Record<string, CombinedRow> = {};
+    for (const e of items) {
+      const rowKey = `${e.itemName}|||${e.unit}`;
+      if (!map[rowKey]) {
+        map[rowKey] = {
+          itemName: e.itemName,
+          itemType: e.itemType,
+          itemSku: e.itemSku,
+          itemAttributesSummary: e.itemAttributesSummary,
+          totalQty: 0,
+          unit: e.unit,
+          staffList: [],
+          representativeEntry: e,
+        };
+      }
+      map[rowKey].totalQty += e.quantity;
+      if (!map[rowKey].staffList.includes(e.staffName)) {
+        map[rowKey].staffList.push(e.staffName);
+      }
+    }
+    // Sort alphabetically by item name
+    return Object.values(map).sort((a, b) => a.itemName.localeCompare(b.itemName));
   };
 
   const exportCsv = () => {
@@ -340,10 +435,69 @@ export default function PrepReports() {
         <div className="space-y-3">
           {grouped.map(({ key, entries: groupEntries }) => {
             const isExpanded = expandedGroups.has(key);
+            const viewMode = getGroupViewMode(key);
             const byUnit: Record<string, number> = {};
             for (const e of groupEntries) {
               byUnit[e.unit] = (byUnit[e.unit] || 0) + e.quantity;
             }
+
+            const prepEntries    = groupEntries.filter(e => e.itemType !== "order" && e.itemType !== "boxed");
+            const productEntries = groupEntries.filter(e => e.itemType === "order");
+            const boxedEntries   = groupEntries.filter(e => e.itemType === "boxed");
+
+            // Timeline (original) render
+            const renderCategory = (label: string, colour: string, items: PrepLogEntry[]) => {
+              if (items.length === 0) return null;
+              return (
+                <div>
+                  <div className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide"
+                    style={{ backgroundColor: colour + "18", color: colour }}>
+                    {label}
+                  </div>
+                  <div className="divide-y divide-border">
+                    {items.map(e => (
+                      <div key={e.id} className="px-4 py-2.5 hover:bg-muted/20">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-4 gap-1 md:gap-3 items-start">
+                            <div className="md:col-span-1">
+                              <p className="text-sm font-medium truncate">{e.itemName}</p>
+                              {/* Component breakdown — only for order items with a SKU */}
+                              {e.itemType === "order" && (
+                                <EntryBreakdown entry={e} quantity={e.quantity} />
+                              )}
+                            </div>
+                            <p className="text-sm tabular-nums font-semibold text-primary">
+                              {e.quantity % 1 === 0 ? e.quantity : e.quantity.toFixed(2)} {e.unit}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {groupBy !== "staff" ? e.staffName : formatDate(e.loggedAt)}
+                            </p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {groupBy === "staff"
+                                ? (e.notes || "")
+                                : `${groupBy === "item" ? e.staffName + " · " : ""}${formatDate(e.loggedAt)}${e.notes ? " · " + e.notes : ""}`
+                              }
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="h-7 w-7 text-destructive shrink-0"
+                            onClick={() => deleteMutation.mutate(e.id)}
+                          >
+                            <Trash2 size={13} />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            };
+
+            // Combined render
+            const combinedPrepRows    = buildCombinedRows(prepEntries);
+            const combinedProductRows = buildCombinedRows(productEntries);
+            const combinedBoxedRows   = buildCombinedRows(boxedEntries);
 
             return (
               <div key={key} className="rounded-lg border border-border overflow-hidden">
@@ -370,67 +524,66 @@ export default function PrepReports() {
                   {isExpanded ? <ChevronUp size={16} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={16} className="shrink-0 text-muted-foreground" />}
                 </button>
 
-                {isExpanded && (() => {
-                  const prepEntries    = groupEntries.filter(e => e.itemType !== "order" && e.itemType !== "boxed");
-                  const productEntries = groupEntries.filter(e => e.itemType === "order");
-                  const boxedEntries   = groupEntries.filter(e => e.itemType === "boxed");
-
-                  const renderCategory = (label: string, colour: string, items: PrepLogEntry[]) => {
-                    if (items.length === 0) return null;
-                    return (
-                      <div>
-                        <div className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide"
-                          style={{ backgroundColor: colour + "18", color: colour }}>
-                          {label}
-                        </div>
-                        <div className="divide-y divide-border">
-                          {items.map(e => (
-                            <div key={e.id} className="px-4 py-2.5 hover:bg-muted/20">
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-4 gap-1 md:gap-3 items-start">
-                                  <div className="md:col-span-1">
-                                    <p className="text-sm font-medium truncate">{e.itemName}</p>
-                                    {/* Component breakdown — only for order items with a SKU */}
-                                    {e.itemType === "order" && (
-                                      <EntryBreakdown entry={e} quantity={e.quantity} />
-                                    )}
-                                  </div>
-                                  <p className="text-sm tabular-nums font-semibold text-primary">
-                                    {e.quantity % 1 === 0 ? e.quantity : e.quantity.toFixed(2)} {e.unit}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {groupBy !== "staff" ? e.staffName : formatDate(e.loggedAt)}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground truncate">
-                                    {groupBy === "staff"
-                                      ? (e.notes || "")
-                                      : `${groupBy === "item" ? e.staffName + " · " : ""}${formatDate(e.loggedAt)}${e.notes ? " · " + e.notes : ""}`
-                                    }
-                                  </p>
-                                </div>
-                                <Button
-                                  variant="ghost" size="icon"
-                                  className="h-7 w-7 text-destructive shrink-0"
-                                  onClick={() => deleteMutation.mutate(e.id)}
-                                >
-                                  <Trash2 size={13} />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  };
-
-                  return (
-                    <div className="divide-y divide-border">
-                      {renderCategory("Prep", "#6d7c8a", prepEntries)}
-                      {renderCategory("Products", "#256984", productEntries)}
-                      {renderCategory("Items Boxed", "#7c3aed", boxedEntries)}
+                {isExpanded && (
+                  <div>
+                    {/* View mode tabs */}
+                    <div className="flex border-b border-border bg-muted/20">
+                      <button
+                        className={cn(
+                          "flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors border-b-2",
+                          viewMode === "timeline"
+                            ? "border-[#256984] text-[#256984]"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={() => setGroupMode(key, "timeline")}
+                      >
+                        <Clock size={12} /> By Time
+                      </button>
+                      <button
+                        className={cn(
+                          "flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors border-b-2",
+                          viewMode === "combined"
+                            ? "border-[#256984] text-[#256984]"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={() => setGroupMode(key, "combined")}
+                      >
+                        <Layers size={12} /> Combined
+                      </button>
                     </div>
-                  );
-                })()}
+
+                    <div className="divide-y divide-border">
+                      {viewMode === "timeline" ? (
+                        <>
+                          {renderCategory("Prep", "#6d7c8a", prepEntries)}
+                          {renderCategory("Products", "#256984", productEntries)}
+                          {renderCategory("Items Boxed", "#7c3aed", boxedEntries)}
+                        </>
+                      ) : (
+                        <>
+                          <CombinedCategory
+                            label="Prep"
+                            colour="#6d7c8a"
+                            rows={combinedPrepRows}
+                            onDelete={deleteMutation.mutate}
+                          />
+                          <CombinedCategory
+                            label="Products"
+                            colour="#256984"
+                            rows={combinedProductRows}
+                            onDelete={deleteMutation.mutate}
+                          />
+                          <CombinedCategory
+                            label="Items Boxed"
+                            colour="#7c3aed"
+                            rows={combinedBoxedRows}
+                            onDelete={deleteMutation.mutate}
+                          />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
