@@ -710,6 +710,35 @@ export function registerRoutes(httpServer: Server, app: Express) {
     return (req: any, res: any, next: any) => fn(req, res, next).catch(next);
   }
 
+  // ─── Schema migrations (idempotent) ─────────────────────────────────────────
+  // Supabase JS client doesn't support DDL directly; we run via raw fetch to the pg REST endpoint.
+  (async () => {
+    const migrations = [
+      "ALTER TABLE prep_log ADD COLUMN IF NOT EXISTS item_sku TEXT",
+      "ALTER TABLE prep_log ADD COLUMN IF NOT EXISTS item_attributes_summary TEXT",
+    ];
+    for (const sql of migrations) {
+      try {
+        const resp = await fetch(
+          `${process.env.SUPABASE_URL || 'https://dxtbuiicrdkjxkwdjdwq.supabase.co'}/rest/v1/rpc/exec_sql`,
+          {
+            method: 'POST',
+            headers: {
+              'apikey': process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR4dGJ1aWljcmRranhrd2RqZHdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4OTM1OTYsImV4cCI6MjA5MzQ2OTU5Nn0.ewyJW3UjkajSVyUKuWJkIGjTs-3lNT45e3S_ZrU_PI8',
+              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || ''}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ query: sql }),
+          }
+        );
+        if (!resp.ok) console.warn('[migration] DDL via RPC failed (expected if exec_sql not defined):', await resp.text());
+        else console.log('[migration] Applied:', sql);
+      } catch (e) {
+        console.warn('[migration] Could not apply:', sql, e);
+      }
+    }
+  })();
+
   const getMarkup = async () => parseFloat(await storage.getSetting("markup_percent") || "65");
   const getWholesaleMarkup = async () => parseFloat(await storage.getSetting("wholesale_markup_percent") || "45");
 
@@ -5462,6 +5491,8 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
         itemType: r.item_type,
         itemId: r.item_id,
         itemName: r.item_name,
+        itemSku: r.item_sku || null,
+        itemAttributesSummary: r.item_attributes_summary || null,
         quantity: r.quantity,
         unit: r.unit,
         staffId: r.staff_id,
@@ -5488,15 +5519,27 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
   // item_type: 'order' = fulfilled from production, 'boxed' = boxed from stock on hand
   app.post("/api/order-tick-log", async (req, res) => {
     try {
-      const { itemName, quantity, staffName, staffId, orderId, fromStock } = req.body;
+      const { itemName, quantity, staffName, staffId, orderId, fromStock, itemSku, itemAttributesSummary } = req.body;
       if (!itemName || !staffName) return res.status(400).json({ error: "itemName and staffName required" });
-      const ts = new Date().toISOString(); // always use actual tick-off time, not order delivery date
+      const ts = new Date().toISOString();
       const itemType = fromStock ? 'boxed' : 'order';
-      const { data: row, error } = await supabase.from('prep_log').insert({
+      const baseInsert = {
         logged_at: ts, item_type: itemType, item_id: orderId || null,
         item_name: itemName, quantity: quantity || 1, unit: 'each',
-        staff_id: staffId || null, staff_name: staffName, notes: ''
-      }).select().single();
+        staff_id: staffId || null, staff_name: staffName, notes: '',
+      };
+      // Try with new columns first; fall back gracefully if they don't exist yet
+      let row: any = null;
+      let error: any = null;
+      ({ data: row, error } = await supabase.from('prep_log').insert({
+        ...baseInsert,
+        item_sku: itemSku || null,
+        item_attributes_summary: itemAttributesSummary || null,
+      }).select().single());
+      if (error?.code === '42703') {
+        // Column doesn't exist yet — retry without new columns
+        ({ data: row, error } = await supabase.from('prep_log').insert(baseInsert).select().single());
+      }
       if (error) throw error;
       res.json({ ok: true, id: (row as any).id });
     } catch (err: any) {

@@ -7,70 +7,143 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { BarChart3, Trash2, Download, ChevronDown, ChevronUp } from "lucide-react";
+import { BarChart3, Trash2, Download, ChevronDown, ChevronUp, List } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type PrepLogEntry = {
   id: number;
-  logged_at: string;
-  item_type: string;
-  item_id: number;
-  item_name: string;
+  loggedAt: string;
+  itemType: string;
+  itemId: number;
+  itemName: string;
+  itemSku: string | null;
+  itemAttributesSummary: string | null;
   quantity: number;
   unit: string;
-  staff_id: number | null;
-  staff_name: string;
+  staffId: number | null;
+  staffName: string;
   notes: string;
 };
+
+type PrepRecipe   = { id: number; name: string; category: string; qty: number; unit: string };
+type PrepSubRecipe = { id: number; name: string; qty: number; unit: string };
+type PrepComputed  = { recipes: PrepRecipe[]; subRecipes: PrepSubRecipe[] };
 
 // All dates in AWST (UTC+8) to match server-side date filtering
 function toAwstDate(d: Date): string {
   const awst = new Date(d.getTime() + 8 * 60 * 60 * 1000);
   return awst.toISOString().slice(0, 10);
 }
-
-function today() {
-  return toAwstDate(new Date());
-}
-
+function today() { return toAwstDate(new Date()); }
 function sevenDaysAgo() {
-  const d = new Date();
-  d.setDate(d.getDate() - 6);
-  return toAwstDate(d);
+  const d = new Date(); d.setDate(d.getDate() - 6); return toAwstDate(d);
 }
-
 function formatDate(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleString("en-AU", {
+  return new Date(iso).toLocaleString("en-AU", {
     day: "2-digit", month: "short", year: "numeric",
     hour: "2-digit", minute: "2-digit", hour12: true,
   });
 }
-
 function formatDateShort(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+// ── Breakdown row: fetches prep/compute for a single log entry by SKU ──────────
+function EntryBreakdown({ entry, quantity }: { entry: PrepLogEntry; quantity: number }) {
+  const [open, setOpen] = useState(false);
+
+  // Only show breakdown button if we have a SKU
+  if (!entry.itemSku) return null;
+
+  const orderPayload = [{
+    type: "flex_product",
+    sku: entry.itemSku,
+    name: entry.itemName,
+    quantity,
+    attributesSummary: entry.itemAttributesSummary || "",
+    isWholesale: false,
+    flexCategory: "",
+    forOrder: entry.staffName,
+  }];
+
+  return (
+    <div>
+      <button
+        className="flex items-center gap-1 text-xs text-[#256984] hover:underline mt-0.5"
+        onClick={() => setOpen(o => !o)}
+      >
+        <List size={11} />
+        {open ? "Hide breakdown" : "Show breakdown"}
+        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+      </button>
+      {open && <BreakdownPanel orderPayload={orderPayload} />}
+    </div>
+  );
+}
+
+function BreakdownPanel({ orderPayload }: { orderPayload: any[] }) {
+  const { data, isLoading, isError } = useQuery<PrepComputed>({
+    queryKey: ["/api/prep/compute/breakdown", orderPayload],
+    queryFn: () =>
+      apiRequest("POST", "/api/prep/compute", { orders: orderPayload }).then(r => r.json()),
+    staleTime: 60 * 1000,
+  });
+
+  if (isLoading) return <p className="text-xs text-muted-foreground mt-1 ml-4">Loading...</p>;
+  if (isError) return <p className="text-xs text-destructive mt-1 ml-4">Could not load breakdown</p>;
+
+  const recipes    = data?.recipes    || [];
+  const subRecipes = data?.subRecipes || [];
+
+  if (recipes.length === 0 && subRecipes.length === 0) {
+    return <p className="text-xs text-muted-foreground mt-1 ml-4 italic">No components found for this item</p>;
+  }
+
+  return (
+    <div className="mt-1.5 ml-4 space-y-0.5 border-l-2 border-[#256984]/30 pl-3">
+      {recipes.map(r => (
+        <div key={`r-${r.id}`} className="flex items-center gap-2">
+          <span className="text-xs font-medium text-foreground">{r.name}</span>
+          <span className="text-xs text-[#256984] font-semibold tabular-nums">
+            {r.qty % 1 === 0 ? r.qty : r.qty.toFixed(1)} {r.unit}
+          </span>
+          {r.category && (
+            <span className="text-[10px] text-muted-foreground">({r.category})</span>
+          )}
+        </div>
+      ))}
+      {subRecipes.map(sr => (
+        <div key={`sr-${sr.id}`} className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{sr.name}</span>
+          <span className="text-xs font-semibold tabular-nums text-muted-foreground">
+            {sr.qty % 1 === 0 ? sr.qty : sr.qty.toFixed(2)} {sr.unit}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────────
 export default function PrepReports() {
   const { toast } = useToast();
   const qc = useQueryClient();
 
   const [dateFrom, setDateFrom] = useState(sevenDaysAgo());
-  const [dateTo, setDateTo] = useState(today());
+  const [dateTo,   setDateTo]   = useState(today());
   const [staffFilter, setStaffFilter] = useState("all");
   const [groupBy, setGroupBy] = useState<"staff" | "item" | "date">("staff");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
-  // Fetch entries for the selected range (all staff — we filter client-side)
   const { data: entries = [], isLoading, refetch } = useQuery<PrepLogEntry[]>({
     queryKey: ["/api/prep-log/report", dateFrom, dateTo],
-    queryFn: () => apiRequest("GET", `/api/prep-log?dateFrom=${dateFrom}&dateTo=${dateTo}`).then((r) => r.json()),
+    queryFn: () =>
+      apiRequest("GET", `/api/prep-log?dateFrom=${dateFrom}&dateTo=${dateTo}`).then(r => r.json()),
     enabled: !!dateFrom && !!dateTo,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => apiRequest("DELETE", `/api/prep-log/${id}`).then((r) => r.json()),
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/prep-log/${id}`).then(r => r.json()),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/prep-log"] });
       refetch();
@@ -78,49 +151,43 @@ export default function PrepReports() {
     },
   });
 
-  // Unique staff names in result set
   const allStaff = useMemo(() => {
-    const names = [...new Set(entries.map((e) => e.staffName))].sort();
-    return names;
+    return [...new Set(entries.map(e => e.staffName))].sort();
   }, [entries]);
 
-  // Filter by staff
   const filtered = useMemo(() => {
     if (staffFilter === "all") return entries;
-    return entries.filter((e) => e.staffName === staffFilter);
+    return entries.filter(e => e.staffName === staffFilter);
   }, [entries, staffFilter]);
 
-  // Group the filtered entries
   const grouped = useMemo(() => {
     const map: Record<string, PrepLogEntry[]> = {};
     for (const e of filtered) {
-      let key: string;
-      if (groupBy === "staff") key = e.staffName;
-      else if (groupBy === "item") key = e.itemName;
-      else key = e.loggedAt.slice(0, 10); // date
+      const key =
+        groupBy === "staff" ? e.staffName :
+        groupBy === "item"  ? e.itemName  :
+        e.loggedAt.slice(0, 10);
       if (!map[key]) map[key] = [];
       map[key].push(e);
     }
-    // Sort keys
-    const keys = Object.keys(map).sort();
-    return keys.map((key) => ({ key, entries: map[key] }));
+    return Object.keys(map).sort().map(key => ({ key, entries: map[key] }));
   }, [filtered, groupBy]);
 
   const toggleGroup = (key: string) => {
-    setExpandedGroups((prev) => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
   };
 
   const exportCsv = () => {
-    const header = "Date/Time,Item,Source,Quantity,Unit,Staff,Notes";
-    const rows = filtered.map((e) =>
+    const header = "Date/Time,Item,SKU,Source,Quantity,Unit,Staff,Notes";
+    const rows = filtered.map(e =>
       [
         formatDate(e.loggedAt),
         `"${e.itemName.replace(/"/g, '""')}"`,
+        e.itemSku || "",
         e.itemType === "order" ? "Order" : "Prep",
         e.quantity,
         e.unit,
@@ -130,21 +197,17 @@ export default function PrepReports() {
     );
     const csv = [header, ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
     a.href = url;
-    const fname = `prep-report-${dateFrom}-to-${dateTo}${staffFilter !== "all" ? `-${staffFilter}` : ""}.csv`;
-    a.download = fname;
+    a.download = `prep-report-${dateFrom}-to-${dateTo}${staffFilter !== "all" ? `-${staffFilter}` : ""}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // Summary stats
-  const totalEntries = filtered.length;
-  const totalEach = filtered
-    .filter((e) => e.unit === "each" || e.unit === "portion")
-    .reduce((sum, e) => sum + e.quantity, 0);
-  const uniqueStaff = new Set(filtered.map((e) => e.staffName)).size;
+  const totalEntries  = filtered.length;
+  const totalEach     = filtered.filter(e => e.unit === "each" || e.unit === "portion").reduce((s, e) => s + e.quantity, 0);
+  const uniqueStaff   = new Set(filtered.map(e => e.staffName)).size;
 
   return (
     <div className="p-6 space-y-6 max-w-screen-xl">
@@ -152,18 +215,13 @@ export default function PrepReports() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
-            <BarChart3 size={20} />
-            Production Reports
+            <BarChart3 size={20} /> Production Reports
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Track what was made, by whom, and when.
-          </p>
+          <p className="text-sm text-muted-foreground mt-1">Track what was made, by whom, and when.</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={filtered.length === 0}>
-            <Download size={14} className="mr-1.5" /> Export CSV
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={exportCsv} disabled={filtered.length === 0}>
+          <Download size={14} className="mr-1.5" /> Export CSV
+        </Button>
       </div>
 
       {/* Filters */}
@@ -172,21 +230,11 @@ export default function PrepReports() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="space-y-1.5">
             <Label className="text-xs">From</Label>
-            <Input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="h-9 text-sm"
-            />
+            <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-9 text-sm" />
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">To</Label>
-            <Input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="h-9 text-sm"
-            />
+            <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-9 text-sm" />
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Staff Member</Label>
@@ -194,15 +242,13 @@ export default function PrepReports() {
               <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Staff</SelectItem>
-                {allStaff.map((name) => (
-                  <SelectItem key={name} value={name}>{name}</SelectItem>
-                ))}
+                {allStaff.map(name => <SelectItem key={name} value={name}>{name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Group By</Label>
-            <Select value={groupBy} onValueChange={(v) => setGroupBy(v as any)}>
+            <Select value={groupBy} onValueChange={v => setGroupBy(v as any)}>
               <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="staff">Staff Member</SelectItem>
@@ -212,24 +258,15 @@ export default function PrepReports() {
             </Select>
           </div>
         </div>
-        {/* Quick date presets */}
         <div className="flex gap-2 flex-wrap">
           <Button size="sm" variant="outline" className="h-7 text-xs"
             onClick={() => { setDateFrom(today()); setDateTo(today()); }}>Today</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs"
-            onClick={() => {
-              const d = new Date(); d.setDate(d.getDate() - 1);
-              const s = toAwstDate(d);
-              setDateFrom(s); setDateTo(s);
-            }}>Yesterday</Button>
+            onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); const s = toAwstDate(d); setDateFrom(s); setDateTo(s); }}>Yesterday</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs"
             onClick={() => { setDateFrom(sevenDaysAgo()); setDateTo(today()); }}>Last 7 days</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs"
-            onClick={() => {
-              const d = new Date();
-              const first = toAwstDate(new Date(d.getFullYear(), d.getMonth(), 1));
-              setDateFrom(first); setDateTo(today());
-            }}>This month</Button>
+            onClick={() => { const d = new Date(); setDateFrom(toAwstDate(new Date(d.getFullYear(), d.getMonth(), 1))); setDateTo(today()); }}>This month</Button>
         </div>
       </div>
 
@@ -253,9 +290,7 @@ export default function PrepReports() {
 
       {/* Results */}
       {isLoading ? (
-        <div className="space-y-2">
-          {[1, 2, 3].map((i) => <div key={i} className="h-14 rounded-lg bg-muted animate-pulse" />)}
-        </div>
+        <div className="space-y-2">{[1,2,3].map(i => <div key={i} className="h-14 rounded-lg bg-muted animate-pulse" />)}</div>
       ) : filtered.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-10 text-center text-muted-foreground">
           <BarChart3 size={32} className="mx-auto mb-3 opacity-30" />
@@ -266,16 +301,13 @@ export default function PrepReports() {
         <div className="space-y-3">
           {grouped.map(({ key, entries: groupEntries }) => {
             const isExpanded = expandedGroups.has(key);
-            // Aggregate quantities by unit for summary
             const byUnit: Record<string, number> = {};
             for (const e of groupEntries) {
-              const k = e.unit;
-              byUnit[k] = (byUnit[k] || 0) + e.quantity;
+              byUnit[e.unit] = (byUnit[e.unit] || 0) + e.quantity;
             }
 
             return (
               <div key={key} className="rounded-lg border border-border overflow-hidden">
-                {/* Group header — always visible, clickable */}
                 <button
                   className="w-full flex items-center justify-between px-4 py-3 bg-muted/40 hover:bg-muted/60 transition-colors text-left"
                   onClick={() => toggleGroup(key)}
@@ -287,7 +319,6 @@ export default function PrepReports() {
                     <Badge variant="outline" className="text-xs shrink-0">
                       {groupEntries.length} entr{groupEntries.length !== 1 ? "ies" : "y"}
                     </Badge>
-                    {/* Unit summaries */}
                     <div className="flex gap-1.5 flex-wrap">
                       {Object.entries(byUnit).map(([unit, total]) => (
                         <span key={unit} className="text-xs font-medium px-2 py-0.5 rounded-full"
@@ -300,45 +331,52 @@ export default function PrepReports() {
                   {isExpanded ? <ChevronUp size={16} className="shrink-0 text-muted-foreground" /> : <ChevronDown size={16} className="shrink-0 text-muted-foreground" />}
                 </button>
 
-                {/* Entries — shown when expanded, split into categories */}
                 {isExpanded && (() => {
-                  const prepEntries = groupEntries.filter(e => e.itemType !== "order" && e.itemType !== "boxed");
+                  const prepEntries    = groupEntries.filter(e => e.itemType !== "order" && e.itemType !== "boxed");
                   const productEntries = groupEntries.filter(e => e.itemType === "order");
-                  const boxedEntries = groupEntries.filter(e => e.itemType === "boxed");
+                  const boxedEntries   = groupEntries.filter(e => e.itemType === "boxed");
 
                   const renderCategory = (label: string, colour: string, items: PrepLogEntry[]) => {
                     if (items.length === 0) return null;
                     return (
                       <div>
-                        <div className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide" style={{ backgroundColor: colour + "18", color: colour }}>
+                        <div className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide"
+                          style={{ backgroundColor: colour + "18", color: colour }}>
                           {label}
                         </div>
                         <div className="divide-y divide-border">
-                          {items.map((e) => (
-                            <div key={e.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-muted/20">
-                              <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-4 gap-1 md:gap-3 items-center">
-                                <p className="text-sm font-medium truncate md:col-span-1">{e.itemName}</p>
-                                <p className="text-sm tabular-nums font-semibold text-primary">
-                                  {e.quantity % 1 === 0 ? e.quantity : e.quantity.toFixed(2)} {e.unit}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  {groupBy !== "staff" ? e.staffName : formatDate(e.loggedAt)}
-                                </p>
-                                <p className="text-xs text-muted-foreground truncate">
-                                  {groupBy === "staff" ? (
-                                    e.notes || ""
-                                  ) : (
-                                    `${groupBy === "item" ? e.staffName + " · " : ""}${formatDate(e.loggedAt)}${e.notes ? " · " + e.notes : ""}`
-                                  )}
-                                </p>
+                          {items.map(e => (
+                            <div key={e.id} className="px-4 py-2.5 hover:bg-muted/20">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-4 gap-1 md:gap-3 items-start">
+                                  <div className="md:col-span-1">
+                                    <p className="text-sm font-medium truncate">{e.itemName}</p>
+                                    {/* Component breakdown — only for order items with a SKU */}
+                                    {e.itemType === "order" && (
+                                      <EntryBreakdown entry={e} quantity={e.quantity} />
+                                    )}
+                                  </div>
+                                  <p className="text-sm tabular-nums font-semibold text-primary">
+                                    {e.quantity % 1 === 0 ? e.quantity : e.quantity.toFixed(2)} {e.unit}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {groupBy !== "staff" ? e.staffName : formatDate(e.loggedAt)}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground truncate">
+                                    {groupBy === "staff"
+                                      ? (e.notes || "")
+                                      : `${groupBy === "item" ? e.staffName + " · " : ""}${formatDate(e.loggedAt)}${e.notes ? " · " + e.notes : ""}`
+                                    }
+                                  </p>
+                                </div>
+                                <Button
+                                  variant="ghost" size="icon"
+                                  className="h-7 w-7 text-destructive shrink-0"
+                                  onClick={() => deleteMutation.mutate(e.id)}
+                                >
+                                  <Trash2 size={13} />
+                                </Button>
                               </div>
-                              <Button
-                                variant="ghost" size="icon"
-                                className="h-7 w-7 text-destructive shrink-0 ml-2"
-                                onClick={() => deleteMutation.mutate(e.id)}
-                              >
-                                <Trash2 size={13} />
-                              </Button>
                             </div>
                           ))}
                         </div>

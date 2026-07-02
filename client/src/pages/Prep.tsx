@@ -770,6 +770,8 @@ function OrderCard({ order, state, staff, onStateChange, onMarkComplete, isCompl
           orderId: order.id,
           orderDate,
           fromStock: useFromStock,
+          itemSku: pendingItemObj?.sku ?? null,
+          itemAttributesSummary: pendingItemObj?.attributes_summary ?? null,
         }),
       }).catch(() => {});
     }
