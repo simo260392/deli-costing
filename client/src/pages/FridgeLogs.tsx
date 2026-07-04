@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Thermometer, Plus, Download, Trash2, RefreshCw, Building2, ChefHat, AlertTriangle, CheckCircle, Settings } from "lucide-react";
+import { Thermometer, Plus, Download, Trash2, RefreshCw, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity } from "lucide-react";
 import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -208,6 +208,159 @@ function AddLogDialog({
   );
 }
 
+// ─── SensorPush Live Panel ──────────────────────────────────────────────────
+
+type SensorReading = {
+  id: string; name: string; location: string;
+  temp_min: number; temp_max: number;
+  latest_reading: { temperature: number; humidity: number; observed_at: string } | null;
+  in_range: boolean | null;
+};
+
+function SensorLivePanel({ location }: { location: string }) {
+  // Map FridgeLogs location ID to sensorpush location
+  const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
+
+  const { data: sensors = [], isLoading, refetch, isRefetching, dataUpdatedAt } = useQuery<SensorReading[]>({
+    queryKey: ['/api/sensorpush/latest', spLocation],
+    queryFn: () => apiRequest('GET', `/api/sensorpush/latest?location=${spLocation}`).then(r => r.json()),
+    refetchInterval: 5 * 60 * 1000, // refresh every 5 min client-side
+    staleTime: 4 * 60 * 1000,
+  });
+
+  const outOfRange = sensors.filter(s => s.in_range === false);
+  const noReading  = sensors.filter(s => s.in_range === null);
+  const allOk      = sensors.length > 0 && outOfRange.length === 0 && noReading.length === 0;
+
+  function formatObserved(iso: string) {
+    return new Date(iso).toLocaleTimeString('en-AU', {
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Perth'
+    });
+  }
+
+  function tempColour(s: SensorReading) {
+    if (s.in_range === null) return 'text-gray-400';
+    if (s.in_range) return 'text-green-600';
+    const t = s.latest_reading!.temperature;
+    // slightly over = amber, far over = red
+    const margin = s.temp_max - s.temp_min;
+    const diff = Math.abs(t > s.temp_max ? t - s.temp_max : s.temp_min - t);
+    return diff > margin ? 'text-red-600' : 'text-amber-600';
+  }
+
+  if (isLoading) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Activity size={15} className="text-[#256984]" />
+          <span className="text-sm font-semibold text-[#256984]">Live Sensor Readings</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {[1,2,3,4,5,6].map(i => (
+            <div key={i} className="h-16 rounded-lg bg-gray-100 animate-pulse" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (sensors.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-4">
+        <div className="flex items-center gap-2">
+          <WifiOff size={15} className="text-gray-400" />
+          <span className="text-sm text-gray-500">No sensor data available — polling every 2 hours</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn(
+      "rounded-xl border p-4 space-y-3",
+      outOfRange.length > 0 ? "border-red-200 bg-red-50" : "border-gray-200 bg-white"
+    )}>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Activity size={15} className="text-[#256984]" />
+          <span className="text-sm font-semibold text-[#256984]">Live Sensor Readings</span>
+          {allOk && (
+            <Badge className="bg-green-100 text-green-700 border-green-200 text-xs px-2 py-0">
+              <CheckCircle size={10} className="mr-1" /> All in range
+            </Badge>
+          )}
+          {outOfRange.length > 0 && (
+            <Badge className="bg-red-100 text-red-700 border-red-200 text-xs px-2 py-0">
+              <AlertTriangle size={10} className="mr-1" /> {outOfRange.length} out of range
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {dataUpdatedAt > 0 && (
+            <span className="text-xs text-gray-400">
+              Updated {new Date(dataUpdatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Perth' })}
+            </span>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isRefetching} className="h-7 px-2">
+            <RefreshCw size={12} className={cn(isRefetching && "animate-spin")} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Sensor grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {sensors.map(s => (
+          <div key={s.id} className={cn(
+            "rounded-lg border p-3 space-y-0.5 transition-colors",
+            s.in_range === false ? "border-red-200 bg-red-50" :
+            s.in_range === null  ? "border-gray-100 bg-gray-50" :
+            "border-green-100 bg-green-50"
+          )}>
+            <p className="text-[11px] font-medium text-gray-600 leading-tight truncate" title={s.name}>
+              {/* Strip location suffix for cleaner display */}
+              {s.name.replace(/ - (CBD|Osborne Park)$/i, '')}
+            </p>
+            {s.latest_reading ? (
+              <>
+                <p className={cn("text-xl font-bold tabular-nums leading-none", tempColour(s))}>
+                  {s.latest_reading.temperature.toFixed(1)}°C
+                </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-gray-400">
+                    {formatObserved(s.latest_reading.observed_at)}
+                  </p>
+                  <p className="text-[10px] text-gray-400">
+                    {s.latest_reading.humidity?.toFixed(0)}% RH
+                  </p>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Range: {s.temp_min}° to {s.temp_max}°C
+                </p>
+              </>
+            ) : (
+              <div className="flex items-center gap-1 mt-1">
+                <WifiOff size={12} className="text-gray-300" />
+                <span className="text-xs text-gray-400">No data yet</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {outOfRange.length > 0 && (
+        <div className="text-xs text-red-700 font-medium flex items-start gap-1.5">
+          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+          <span>
+            {outOfRange.map(s => `${s.name.replace(/ - (CBD|Osborne Park)$/i, '')} (${s.latest_reading!.temperature.toFixed(1)}°C)`).join(', ')} {outOfRange.length === 1 ? 'is' : 'are'} out of range.
+            {' '}A WhatsApp alert is sent outside business hours.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function FridgeLogs() {
@@ -370,6 +523,9 @@ export default function FridgeLogs() {
           );
         })}
       </div>
+
+      {/* SensorPush live readings */}
+      <SensorLivePanel location={location} />
 
       {/* Date + summary bar */}
       <div className="flex items-center gap-4 flex-wrap">

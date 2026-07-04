@@ -8966,6 +8966,142 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
 
+  // ── SensorPush Live Sensor Data ─────────────────────────────────────────────
+
+  // GET /api/sensorpush/sensors?location=cbd|osborne_park
+  app.get('/api/sensorpush/sensors', asyncRoute(async (req: any, res: any) => {
+    let query = supabase.from('sensorpush_sensors').select('*').eq('active', true).order('name');
+    if (req.query.location) query = query.eq('location', req.query.location);
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // GET /api/sensorpush/latest — latest reading per sensor (with alert status)
+  app.get('/api/sensorpush/latest', asyncRoute(async (req: any, res: any) => {
+    const location = req.query.location as string | undefined;
+    let sensorsQuery = supabase.from('sensorpush_sensors').select('*').eq('active', true).order('name');
+    if (location) sensorsQuery = sensorsQuery.eq('location', location);
+    const { data: sensors, error: sErr } = await sensorsQuery;
+    if (sErr) return res.status(500).json({ error: sErr.message });
+
+    // For each sensor fetch the latest reading
+    const results = await Promise.all((sensors || []).map(async (sensor: any) => {
+      const { data: readings } = await supabase
+        .from('sensorpush_readings')
+        .select('*')
+        .eq('sensor_id', sensor.id)
+        .order('observed_at', { ascending: false })
+        .limit(1);
+      const latest = readings?.[0] || null;
+      const inRange = latest
+        ? latest.temperature >= sensor.temp_min && latest.temperature <= sensor.temp_max
+        : null;
+      return { ...sensor, latest_reading: latest, in_range: inRange };
+    }));
+    res.json(results);
+  }));
+
+  // GET /api/sensorpush/readings?sensor_id=X&hours=24
+  app.get('/api/sensorpush/readings', asyncRoute(async (req: any, res: any) => {
+    const { sensor_id, hours = '24' } = req.query;
+    if (!sensor_id) return res.status(400).json({ error: 'sensor_id required' });
+    const since = new Date(Date.now() - parseInt(hours as string) * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('sensorpush_readings')
+      .select('*')
+      .eq('sensor_id', sensor_id)
+      .gte('observed_at', since)
+      .order('observed_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // POST /api/sensorpush/poll — called by the cron, polls SensorPush API and stores readings
+  app.post('/api/sensorpush/poll', asyncRoute(async (req: any, res: any) => {
+    const authHeader = req.headers['authorization'];
+    if (authHeader !== 'Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320') {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+      // 1. Authenticate with SensorPush
+      const authRes = await fetch('https://api.sensorpush.com/api/v1/oauth/authorize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'info@the-deli.com.au', password: 'Greenhorns123' }),
+      });
+      const authData = await authRes.json() as any;
+      if (!authData.authorization) return res.status(500).json({ error: 'SensorPush auth failed', detail: authData });
+
+      const tokenRes = await fetch('https://api.sensorpush.com/api/v1/oauth/accesstoken', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authorization: authData.authorization }),
+      });
+      const tokenData = await tokenRes.json() as any;
+      const accessToken = tokenData.accesstoken;
+      if (!accessToken) return res.status(500).json({ error: 'SensorPush token failed', detail: tokenData });
+
+      // 2. Fetch last 3 hours of samples for all sensors
+      const stopTs = new Date().toISOString();
+      const startTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
+        body: JSON.stringify({ limit: 20, startTime: startTs, stopTime: stopTs }),
+      });
+      const samplesData = await samplesRes.json() as any;
+      const sensorSamples = samplesData.sensors || {};
+
+      // 3. Load our sensor list
+      const { data: ourSensors } = await supabase.from('sensorpush_sensors').select('*').eq('active', true);
+
+      let inserted = 0;
+      const alerts: any[] = [];
+
+      for (const sensor of (ourSensors || [])) {
+        const samples = sensorSamples[sensor.id];
+        if (!samples || samples.length === 0) continue;
+
+        // Deduplicate by observed_at — check what we already have
+        const latestSample = samples[samples.length - 1];
+        const latestObserved = new Date(latestSample.observed * 1000).toISOString();
+
+        // Check if already stored
+        const { data: existing } = await supabase
+          .from('sensorpush_readings')
+          .select('id')
+          .eq('sensor_id', sensor.id)
+          .eq('observed_at', latestObserved)
+          .limit(1);
+        if (existing && existing.length > 0) continue;
+
+        // Insert new readings
+        const rows = samples.map((s: any) => ({
+          sensor_id: sensor.id,
+          observed_at: new Date(s.observed * 1000).toISOString(),
+          temperature: s.temperature,
+          humidity: s.humidity,
+        }));
+        const { error: insErr } = await supabase.from('sensorpush_readings').upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
+        if (!insErr) inserted += rows.length;
+
+        // Check latest reading for out-of-range
+        const latestTemp = latestSample.temperature;
+        const inRange = latestTemp >= sensor.temp_min && latestTemp <= sensor.temp_max;
+        if (!inRange) {
+          alerts.push({ sensor, temperature: latestTemp, observed_at: latestObserved });
+        }
+      }
+
+      // 4. Return results (alert handling done by cron)
+      res.json({ ok: true, inserted, alerts });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // ── BATCH TRACEABILITY ROUTES ───────────────────────────────────────────────
 
