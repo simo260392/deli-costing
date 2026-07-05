@@ -9141,46 +9141,78 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const accessToken = tokenData.accesstoken;
       if (!accessToken) return res.status(500).json({ error: 'SensorPush token failed', detail: tokenData });
 
-      // 2. Fetch last 12 hours of samples for all sensors (cloud API may lag several hours)
+      // 2. Get current sensor readings via /sensors endpoint (returns last known reading per sensor)
+      //    This is the authoritative "current" reading — no batch limit problem.
+      const sensorsListRes = await fetch('https://api.sensorpush.com/api/v1/sensors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
+        body: JSON.stringify({}),
+      });
+      const sensorsListData = await sensorsListRes.json() as any;
+      // sensorsListData is a map of sensorId -> sensor info including last_reading
+
+      // 3. Fetch recent samples per sensor individually to store history (2-hour window, 20 per sensor)
       const stopTs = new Date().toISOString();
-      const startTs = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+      const startTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
       const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
-        body: JSON.stringify({ limit: 100, startTime: startTs, stopTime: stopTs }),
+        body: JSON.stringify({ limit: 20, startTime: startTs, stopTime: stopTs }),
       });
       const samplesData = await samplesRes.json() as any;
       const sensorSamples = samplesData.sensors || {};
 
-      // 3. Load our sensor list
+      // 4. Load our sensor list
       const { data: ourSensors } = await supabase.from('sensorpush_sensors').select('*').eq('active', true);
 
       let inserted = 0;
       const alerts: any[] = [];
 
       for (const sensor of (ourSensors || [])) {
-        const samples = sensorSamples[sensor.id];
-        if (!samples || samples.length === 0) continue;
+        // ── Store history samples ────────────────────────────────────────────
+        const samples = sensorSamples[sensor.id] || [];
+        if (samples.length > 0) {
+          const rows = samples.map((s: any) => ({
+            sensor_id: sensor.id,
+            observed_at: new Date(s.observed).toISOString(),
+            temperature: s.temperature,
+            humidity: s.humidity,
+          }));
+          const { error: insErr } = await supabase.from('sensorpush_readings').upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
+          if (!insErr) inserted += rows.length;
+        }
 
-        // Always upsert all samples — unique constraint (sensor_id, observed_at) handles deduplication
-        // SensorPush returns observed as an ISO string e.g. "2026-07-04T21:10:57.000Z"
-        const rows = samples.map((s: any) => ({
-          sensor_id: sensor.id,
-          observed_at: new Date(s.observed).toISOString(),
-          temperature: s.temperature,
-          humidity: s.humidity,
-        }));
-        const { error: insErr } = await supabase.from('sensorpush_readings').upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
-        if (!insErr) inserted += rows.length;
+        // ── Get current reading from /sensors endpoint (most accurate) ───────
+        const sensorInfo = sensorsListData[sensor.id];
+        let latestTemp: number | null = null;
+        let latestObserved: string | null = null;
 
-        // Check most recent reading for out-of-range alert
-        // Sort descending by observed to find truly latest
-        const sorted = [...samples].sort((a: any, b: any) => new Date(b.observed).getTime() - new Date(a.observed).getTime());
-        const latestSample = sorted[0];
-        const latestTemp = latestSample.temperature;
-        const inRange = latestTemp >= sensor.temp_min && latestTemp <= sensor.temp_max;
-        if (!inRange) {
-          alerts.push({ sensor, temperature: latestTemp, observed_at: new Date(latestSample.observed).toISOString() });
+        if (sensorInfo?.last_reading) {
+          // /sensors returns last_reading with temperature/humidity/observed
+          latestTemp = sensorInfo.last_reading.temperature ?? null;
+          const obs = sensorInfo.last_reading.observed;
+          latestObserved = obs ? new Date(obs).toISOString() : null;
+
+          // Also upsert this latest reading so it's in our history
+          if (latestTemp !== null && latestObserved) {
+            await supabase.from('sensorpush_readings').upsert(
+              [{ sensor_id: sensor.id, observed_at: latestObserved, temperature: latestTemp, humidity: sensorInfo.last_reading.humidity }],
+              { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true }
+            );
+          }
+        } else if (samples.length > 0) {
+          // Fallback: use most recent sample
+          const sorted = [...samples].sort((a: any, b: any) => new Date(b.observed).getTime() - new Date(a.observed).getTime());
+          latestTemp = sorted[0].temperature;
+          latestObserved = new Date(sorted[0].observed).toISOString();
+        }
+
+        // ── Check for out-of-range ───────────────────────────────────────────
+        if (latestTemp !== null) {
+          const inRange = latestTemp >= sensor.temp_min && latestTemp <= sensor.temp_max;
+          if (!inRange) {
+            alerts.push({ sensor, temperature: latestTemp, observed_at: latestObserved });
+          }
         }
       }
 
