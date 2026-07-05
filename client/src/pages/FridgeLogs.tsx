@@ -215,15 +215,17 @@ type SensorReading = {
   temp_min: number; temp_max: number;
   latest_reading: { temperature: number; humidity: number; observed_at: string } | null;
   in_range: boolean | null;
+  avg_temp: number | null;
+  avg_sample_count: number;
 };
 
-function SensorLivePanel({ location }: { location: string }) {
+function SensorLivePanel({ location, date }: { location: string; date: string }) {
   // Map FridgeLogs location ID to sensorpush location
   const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
 
   const { data: sensors = [], isLoading, refetch, isRefetching, dataUpdatedAt } = useQuery<SensorReading[]>({
-    queryKey: ['/api/sensorpush/latest', spLocation],
-    queryFn: () => apiRequest('GET', `/api/sensorpush/latest?location=${spLocation}`).then(r => r.json()),
+    queryKey: ['/api/sensorpush/latest', spLocation, date],
+    queryFn: () => apiRequest('GET', `/api/sensorpush/latest?location=${spLocation}&date=${date}`).then(r => r.json()),
     refetchInterval: 5 * 60 * 1000, // refresh every 5 min client-side
     staleTime: 4 * 60 * 1000,
   });
@@ -334,6 +336,12 @@ function SensorLivePanel({ location }: { location: string }) {
                     {s.latest_reading.humidity?.toFixed(0)}% RH
                   </p>
                 </div>
+                {s.avg_temp !== null && (
+                  <p className="text-[10px] text-gray-500 font-medium">
+                    Avg: {s.avg_temp.toFixed(1)}°C
+                    <span className="text-gray-400 font-normal"> ({s.avg_sample_count} reads)</span>
+                  </p>
+                )}
                 <p className="text-[10px] text-gray-400">
                   Range: {s.temp_min}° to {s.temp_max}°C
                 </p>
@@ -525,7 +533,7 @@ export default function FridgeLogs() {
       </div>
 
       {/* SensorPush live readings */}
-      <SensorLivePanel location={location} />
+      <SensorLivePanel location={location} date={date} />
 
       {/* Date + summary bar */}
       <div className="flex items-center gap-4 flex-wrap">

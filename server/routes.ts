@@ -8977,7 +8977,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json(data);
   }));
 
-  // GET /api/sensorpush/latest — latest reading per sensor (with alert status)
+  // GET /api/sensorpush/latest — latest reading per sensor (with alert status + avg for date range)
+  // Optional query params: date=YYYY-MM-DD (single day avg) OR dateFrom+dateTo (range avg)
+  // Default: today in AWST
   app.get('/api/sensorpush/latest', asyncRoute(async (req: any, res: any) => {
     const location = req.query.location as string | undefined;
     let sensorsQuery = supabase.from('sensorpush_sensors').select('*').eq('active', true).order('name');
@@ -8985,19 +8987,42 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const { data: sensors, error: sErr } = await sensorsQuery;
     if (sErr) return res.status(500).json({ error: sErr.message });
 
-    // For each sensor fetch the latest reading
+    // Determine avg date range (AWST-based)
+    const awstOffset = 8 * 60 * 60 * 1000;
+    const nowAwst = new Date(Date.now() + awstOffset);
+    const todayAwst = nowAwst.toISOString().slice(0, 10);
+    const dateParam   = (req.query.date     as string) || todayAwst;
+    const dateFrom    = (req.query.dateFrom as string) || dateParam;
+    const dateTo      = (req.query.dateTo   as string) || dateParam;
+    // Convert AWST date boundaries to UTC ISO strings for Supabase query
+    const avgFrom = new Date(dateFrom + 'T00:00:00+08:00').toISOString();
+    const avgTo   = new Date(dateTo   + 'T23:59:59+08:00').toISOString();
+
+    // For each sensor fetch the latest reading + avg for the date range
     const results = await Promise.all((sensors || []).map(async (sensor: any) => {
-      const { data: readings } = await supabase
-        .from('sensorpush_readings')
-        .select('*')
-        .eq('sensor_id', sensor.id)
-        .order('observed_at', { ascending: false })
-        .limit(1);
+      const [{ data: readings }, { data: avgReadings }] = await Promise.all([
+        supabase
+          .from('sensorpush_readings')
+          .select('*')
+          .eq('sensor_id', sensor.id)
+          .order('observed_at', { ascending: false })
+          .limit(1),
+        supabase
+          .from('sensorpush_readings')
+          .select('temperature')
+          .eq('sensor_id', sensor.id)
+          .gte('observed_at', avgFrom)
+          .lte('observed_at', avgTo),
+      ]);
       const latest = readings?.[0] || null;
       const inRange = latest
         ? latest.temperature >= sensor.temp_min && latest.temperature <= sensor.temp_max
         : null;
-      return { ...sensor, latest_reading: latest, in_range: inRange };
+      const temps = (avgReadings || []).map((r: any) => r.temperature);
+      const avgTemp = temps.length > 0
+        ? Math.round((temps.reduce((a: number, b: number) => a + b, 0) / temps.length) * 10) / 10
+        : null;
+      return { ...sensor, latest_reading: latest, in_range: inRange, avg_temp: avgTemp, avg_sample_count: temps.length };
     }));
     res.json(results);
   }));
