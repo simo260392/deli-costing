@@ -9074,7 +9074,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
-        body: JSON.stringify({ limit: 20, startTime: startTs, stopTime: stopTs }),
+        body: JSON.stringify({ limit: 100, startTime: startTs, stopTime: stopTs }),
       });
       const samplesData = await samplesRes.json() as any;
       const sensorSamples = samplesData.sensors || {};
@@ -9089,21 +9089,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         const samples = sensorSamples[sensor.id];
         if (!samples || samples.length === 0) continue;
 
-        // Deduplicate by observed_at — check what we already have
+        // Always upsert all samples — unique constraint (sensor_id, observed_at) handles deduplication
         // SensorPush returns observed as an ISO string e.g. "2026-07-04T21:10:57.000Z"
-        const latestSample = samples[samples.length - 1];
-        const latestObserved = new Date(latestSample.observed).toISOString();
-
-        // Check if already stored
-        const { data: existing } = await supabase
-          .from('sensorpush_readings')
-          .select('id')
-          .eq('sensor_id', sensor.id)
-          .eq('observed_at', latestObserved)
-          .limit(1);
-        if (existing && existing.length > 0) continue;
-
-        // Insert new readings
         const rows = samples.map((s: any) => ({
           sensor_id: sensor.id,
           observed_at: new Date(s.observed).toISOString(),
@@ -9113,11 +9100,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         const { error: insErr } = await supabase.from('sensorpush_readings').upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
         if (!insErr) inserted += rows.length;
 
-        // Check latest reading for out-of-range
+        // Check most recent reading for out-of-range alert
+        // Sort descending by observed to find truly latest
+        const sorted = [...samples].sort((a: any, b: any) => new Date(b.observed).getTime() - new Date(a.observed).getTime());
+        const latestSample = sorted[0];
         const latestTemp = latestSample.temperature;
         const inRange = latestTemp >= sensor.temp_min && latestTemp <= sensor.temp_max;
         if (!inRange) {
-          alerts.push({ sensor, temperature: latestTemp, observed_at: latestObserved });
+          alerts.push({ sensor, temperature: latestTemp, observed_at: new Date(latestSample.observed).toISOString() });
         }
       }
 
