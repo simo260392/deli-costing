@@ -9068,9 +9068,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const accessToken = tokenData.accesstoken;
       if (!accessToken) return res.status(500).json({ error: 'SensorPush token failed', detail: tokenData });
 
-      // 2. Fetch last 3 hours of samples for all sensors
+      // 2. Fetch last 6 hours of samples for all sensors (cloud API may lag up to a few hours)
       const stopTs = new Date().toISOString();
-      const startTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      const startTs = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
       const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
