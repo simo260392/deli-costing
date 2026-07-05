@@ -100,10 +100,18 @@ function PdfPanel({ invoice }: { invoice: XeroImport }) {
         body: formData,
       }).then(r => r.json());
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       refetchStatus();
       setShowPdf(true);
-      toast({ title: "PDF uploaded", description: "Invoice PDF is now visible alongside your line items." });
+      queryClient.invalidateQueries({ queryKey: ["/api/xero/imports", invoice.id, "line-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/xero/imports"] });
+      const count = data?.lineItemsCreated ?? 0;
+      const warn = data?.parseWarning;
+      toast({
+        title: count > 0 ? `PDF parsed — ${count} line item${count !== 1 ? 's' : ''} found` : "PDF uploaded",
+        description: warn ? `Warning: ${warn}` : count > 0 ? "Line items have been populated below." : "No line items were detected — try adding them manually.",
+        variant: warn || count === 0 ? "destructive" : "default",
+      });
     },
     onError: (e: any) => toast({ title: "Upload failed", description: e.message, variant: "destructive" }),
   });
