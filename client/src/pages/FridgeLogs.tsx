@@ -371,19 +371,11 @@ function SensorReadingsGrid({ location, date }: { location: string; date: string
     refetchInterval: 10 * 60 * 1000,
   });
 
-  // For today, only show slots that have already started (AWST)
-  const nowAWST = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  const todayAWST = nowAWST.toISOString().slice(0, 10);
-  const isToday = date === todayAWST;
-  const currentHour = nowAWST.getUTCHours(); // AWST hour = UTC hour (since we offset the Date object)
-
   const slots = data?.slots ?? [];
   const rows  = data?.rows  ?? [];
 
-  // For today: only show slots that have already started
-  const visibleSlots = isToday
-    ? slots.filter(label => parseInt(label.split(':')[0], 10) <= currentHour)
-    : slots;
+  // Always show all 12 slots (00:00 to 22:00) — future slots just show —
+  const visibleSlots = slots;
 
   if (isLoading) {
     return (
