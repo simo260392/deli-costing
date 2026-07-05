@@ -4051,6 +4051,79 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     });
   });
 
+  // GET /api/dashboard-summary — fast aggregated summary for new dashboard
+  app.get('/api/dashboard-summary', asyncRoute(async (req: any, res: any) => {
+    const todayAWST = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // 1. Missing items today
+    const { data: missingItems } = await supabase
+      .from('missing_items_log')
+      .select('id, item_name, order_id, reason_type, reason_other, reason_ingredient, marked_by, created_at')
+      .eq('date', todayAWST)
+      .order('created_at', { ascending: false });
+
+    // 2. Out-of-range fridge sensors (latest reading per sensor)
+    const { data: sensors } = await supabase
+      .from('sensorpush_sensors')
+      .select('id, name, location, temp_min, temp_max')
+      .eq('active', true);
+
+    const fridgeAlerts: { name: string; location: string; temperature: number; temp_min: number; temp_max: number }[] = [];
+    for (const sensor of (sensors || [])) {
+      const { data: latest } = await supabase
+        .from('sensorpush_readings')
+        .select('temperature, observed_at')
+        .eq('sensor_id', sensor.id)
+        .order('observed_at', { ascending: false })
+        .limit(1);
+      if (!latest || latest.length === 0) continue;
+      const temp = latest[0].temperature;
+      if (temp < sensor.temp_min || temp > sensor.temp_max) {
+        fridgeAlerts.push({ name: sensor.name, location: sensor.location, temperature: temp, temp_min: sensor.temp_min, temp_max: sensor.temp_max });
+      }
+    }
+
+    // 3. Products not meeting FC target
+    const targetFCPct = parseFloat(await storage.getSetting('target_food_cost_percent') || '30');
+    const flexProducts = await storage.getFlexProducts();
+    const fcIssues: { id: number; name: string; fc: number }[] = [];
+    for (const p of flexProducts) {
+      const costing = await storage.getFlexProductCosting(p.id);
+      if (!costing || !costing.sellingPrice || !costing.totalCost) continue;
+      const fc = (costing.totalCost / costing.sellingPrice) * 100;
+      if (fc > targetFCPct) fcIssues.push({ id: p.id, name: p.name, fc: Math.round(fc * 10) / 10 });
+    }
+
+    // 4. Products with missing size configs
+    const missingSizes: { id: number; name: string }[] = [];
+    for (const p of flexProducts) {
+      const sizes = JSON.parse(p.sizesJson || '[]');
+      const hasSize = sizes.some((s: any) => s.name || s.size || s.label);
+      if (!hasSize) missingSizes.push({ id: p.id, name: p.name });
+    }
+
+    // 5. Compliance: in-progress logs from today that haven't been completed
+    const { data: pendingLogs } = await supabase
+      .from('compliance_logs')
+      .select('id, log_type, entity_name, status, entry_date, created_at')
+      .eq('status', 'in_progress')
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    // 6. Xero pending invoices
+    const pendingXero = await storage.getXeroPendingCount();
+
+    res.json({
+      todayAWST,
+      missingItems: missingItems || [],
+      fridgeAlerts,
+      fcIssues,
+      missingSizes,
+      pendingComplianceLogs: pendingLogs || [],
+      pendingXeroInvoices: pendingXero,
+    });
+  }));
+
 // ─── CSV Export/Import ───────────────────────────────────────────────────────
 
   // Ingredients CSV export

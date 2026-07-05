@@ -22,7 +22,7 @@ import PrepReports from "@/pages/PrepReports";
 import MissingItemsReport from "@/pages/MissingItemsReport";
 import WholesalePackaging from "@/pages/WholesalePackaging";
 import WagesDashboard from "@/pages/WagesDashboard";
-import SafetyDashboard from "@/pages/SafetyDashboard";
+
 import Deliveries from "@/pages/Deliveries";
 import DeliveryLog from "@/pages/DeliveryLog";
 import StockOrder from "@/pages/StockOrder";
@@ -56,7 +56,6 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "delivery-log",   path: "/delivery-log" },
   { slug: "prestart-check", path: "/prestart-check" },
   { slug: "wages", path: "/wages" },
-  { slug: "safety", path: "/safety" },
   { slug: "compliance",    path: "/compliance" },
   { slug: "fridge-logs",      path: "/compliance/fridge-logs" },
   { slug: "fridge-settings",  path: "/compliance/fridge-settings" },
@@ -119,7 +118,6 @@ function AuthenticatedApp() {
         <Route path="/recipe-book" component={RecipeBook} />
         <Route path="/wholesale" component={WholesalePackaging} />
         <Route path="/wages" component={WagesDashboard} />
-        <Route path="/safety" component={SafetyDashboard} />
         <Route path="/deliveries" component={Deliveries} />
         <Route path="/delivery-log" component={DeliveryLog} />
         <Route path="/prestart-check" component={PrestartCheck} />

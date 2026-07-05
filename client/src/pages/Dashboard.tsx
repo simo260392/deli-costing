@@ -1,425 +1,462 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import WagesDashboard from "@/pages/WagesDashboard";
-import {
-  UtensilsCrossed, Package, Truck, TrendingUp,
-  AlertTriangle, CheckCircle, ArrowRight, RefreshCw, FlaskConical, Sparkles, XCircle
-} from "lucide-react";
-import { useMutation } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
+import {
+  AlertTriangle, CheckCircle, Thermometer, Package, TrendingUp,
+  ClipboardCheck, DollarSign, ShoppingBag, FileText, ChevronRight,
+  Sparkles, Clock, Users
+} from "lucide-react";
 
-function fmt(n: number | null | undefined) {
+// ── helpers ──────────────────────────────────────────────────────────────────
+function currency(n: number | null | undefined) {
   if (n == null) return "—";
-  return `$${n.toFixed(2)}`;
+  return `$${n.toLocaleString("en-AU", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
-
 function pct(n: number | null | undefined) {
   if (n == null) return "—";
   return `${n.toFixed(1)}%`;
 }
-
-function FoodCostBadge({ totalCost, rrp, target }: { totalCost: number; rrp: number | null; target: number }) {
-  if (!rrp) return <Badge variant="outline" className="text-xs">No RRP set</Badge>;
-  const fc = (totalCost / rrp) * 100;
-  const ok = fc <= target;
-  return (
-    <Badge className={cn("text-xs tabular-nums", ok ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400" : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400")}>
-      {ok ? <CheckCircle size={10} className="mr-1" /> : <AlertTriangle size={10} className="mr-1" />}
-      {pct(fc)} FC
-    </Badge>
-  );
+function todayAWST() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+function thisWeekRange() {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const day = now.getUTCDay();
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - ((day + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+  return {
+    from: monday.toISOString().slice(0, 10),
+    to: sunday.toISOString().slice(0, 10),
+  };
+}
+function lastWeekRange() {
+  const { from } = thisWeekRange();
+  const lastMon = new Date(from);
+  lastMon.setUTCDate(lastMon.getUTCDate() - 7);
+  const lastSun = new Date(lastMon);
+  lastSun.setUTCDate(lastMon.getUTCDate() + 6);
+  return {
+    from: lastMon.toISOString().slice(0, 10),
+    to: lastSun.toISOString().slice(0, 10),
+  };
 }
 
-function MarginBadge({ rrp, totalCost }: { rrp: number | null; totalCost: number }) {
-  if (!rrp) return <span className="text-muted-foreground text-sm">—</span>;
-  const margin = ((rrp - totalCost) / rrp) * 100;
-  return (
-    <span className={cn("tabular-nums text-sm font-medium", margin >= 50 ? "success-text" : margin >= 30 ? "warning-text" : "error-text")}>
-      {pct(margin)}
-    </span>
-  );
+function delta(curr: number | null, prev: number | null) {
+  if (!curr || !prev || prev === 0) return null;
+  return ((curr - prev) / prev) * 100;
 }
 
-type NutritionIssue = {
-  ingredientId: number;
-  ingredientName: string;
-  usedIn: { type: string; name: string; id: number }[];
-};
+// ── sub-components ───────────────────────────────────────────────────────────
 
-function NutritionIssuesPanel({ issues }: { issues: NutritionIssue[] }) {
-  const { toast } = useToast();
-  const [expanded, setExpanded] = useState(false);
-  const [resolving, setResolving] = useState<number | null>(null);
-
-  const autoFillOne = useMutation({
-    mutationFn: (id: number) => {
-      setResolving(id);
-      return apiRequest("POST", `/api/ingredients/${id}/auto-nutrition`).then(r => r.json());
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/platters"] });
-      setResolving(null);
-    },
-    onError: (e: any) => {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
-      setResolving(null);
-    },
-  });
-
-  const autoFillAll = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/ingredients/auto-nutrition-bulk").then(r => r.json()),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/platters"] });
-      toast({ title: `Nutrition filled`, description: `${data.updated} of ${data.total} ingredients updated.` });
-    },
-    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
-  });
-
-  const visible = expanded ? issues : issues.slice(0, 5);
-
+function SectionHeader({ icon: Icon, label, count, color = "#256984" }: {
+  icon: any; label: string; count?: number; color?: string;
+}) {
   return (
-    <Card className="border-blue-200 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-950/10">
-      <CardHeader className="pb-2 pt-4">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <CardTitle className="text-sm font-semibold text-primary flex items-center gap-2">
-            <FlaskConical size={16} />
-            {issues.length} ingredient{issues.length !== 1 ? "s" : ""} missing nutrition data
-          </CardTitle>
-          <Button
-            size="sm" variant="outline"
-            className="h-7 text-xs gap-1 border-primary text-primary hover:bg-primary/10"
-            onClick={() => autoFillAll.mutate()}
-            disabled={autoFillAll.isPending}
-            data-testid="button-fill-all-nutrition"
-          >
-            <Sparkles size={12} />{autoFillAll.isPending ? "Calculating…" : "AI Fill All"}
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Nutrition panels in the Product Info PDF need per-100g values for each ingredient. Click AI Fill to estimate automatically.
-        </p>
-      </CardHeader>
-      <CardContent className="pb-4">
-        <div className="space-y-1.5">
-          {visible.map((issue) => (
-            <div key={issue.ingredientId} className="flex items-center justify-between gap-3 text-sm rounded px-2 py-1.5 bg-background border border-border">
-              <div className="min-w-0">
-                <p className="font-medium truncate">{issue.ingredientName}</p>
-                <p className="text-xs text-muted-foreground truncate">
-                  Used in: {issue.usedIn.map(u => u.name).join(", ")}
-                </p>
-              </div>
-              <Button
-                size="sm" variant="outline"
-                className="h-7 text-xs gap-1 shrink-0"
-                onClick={() => autoFillOne.mutate(issue.ingredientId)}
-                disabled={resolving === issue.ingredientId || autoFillOne.isPending}
-                data-testid={`button-fill-nutrition-${issue.ingredientId}`}
-              >
-                <Sparkles size={11} />{resolving === issue.ingredientId ? "…" : "AI Fill"}
-              </Button>
-            </div>
-          ))}
-        </div>
-        {issues.length > 5 && (
-          <button
-            className="text-xs text-primary mt-2 hover:underline"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? "Show less" : `Show ${issues.length - 5} more…`}
-          </button>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function MissingItemsAlert() {
-  const today = new Date().toISOString().slice(0, 10);
-  const { data } = useQuery<{ ok: boolean; items: any[] }>({
-    queryKey: ["/api/missing-items", today],
-    queryFn: () => apiRequest("GET", `/api/missing-items?date=${today}`).then(r => r.json()),
-    refetchInterval: 2 * 60 * 1000, // refresh every 2 min
-  });
-
-  const items = data?.items ?? [];
-  if (items.length === 0) return null;
-
-  // Group by item_name, summing qty_missing
-  const grouped: Record<string, { itemName: string; qtyMissing: number; qtyMade: number; totalRequired: number; reasons: string[] }> = {};
-  for (const it of items) {
-    if (!grouped[it.item_name]) {
-      grouped[it.item_name] = { itemName: it.item_name, qtyMissing: 0, qtyMade: 0, totalRequired: 0, reasons: [] };
-    }
-    grouped[it.item_name].qtyMissing += it.qty_missing ?? 0;
-    grouped[it.item_name].qtyMade += it.qty_made ?? 0;
-    grouped[it.item_name].totalRequired += it.total_required ?? 0;
-    if (it.reason_ingredient) grouped[it.item_name].reasons.push(it.reason_ingredient);
-    else if (it.reason_other) grouped[it.item_name].reasons.push(it.reason_other);
-  }
-  const rows = Object.values(grouped);
-  const totalMissing = rows.reduce((s, r) => s + r.qtyMissing, 0);
-
-  return (
-    <div className="px-6 pt-4">
-      <Card className="border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20">
-        <CardHeader className="pb-2 pt-4">
-          <CardTitle className="text-sm font-semibold text-red-700 dark:text-red-400 flex items-center gap-2">
-            <XCircle size={16} />
-            {totalMissing} item{totalMissing !== 1 ? "s" : ""} missing today
-          </CardTitle>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Logged during today's production — items that were not made
-          </p>
-        </CardHeader>
-        <CardContent className="pb-4">
-          <div className="space-y-1.5">
-            {rows.map((row) => {
-              const allMissing = row.qtyMade === 0;
-              return (
-                <div key={row.itemName} className="flex items-center justify-between gap-3 text-sm rounded px-2 py-1.5 bg-background border border-border">
-                  <div className="min-w-0 flex items-center gap-2">
-                    <span className={cn("inline-flex items-center justify-center w-5 h-5 rounded-full text-white text-xs font-bold shrink-0", allMissing ? "bg-red-500" : "bg-orange-500")}>
-                      !
-                    </span>
-                    <div>
-                      <p className="font-medium truncate">{row.itemName}</p>
-                      {row.reasons.length > 0 && (
-                        <p className="text-xs text-muted-foreground truncate">Reason: {row.reasons.join(", ")}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className={cn("font-semibold tabular-nums", allMissing ? "text-red-600 dark:text-red-400" : "text-orange-600 dark:text-orange-400")}>
-                      {row.qtyMissing} missing
-                    </span>
-                    {row.qtyMade > 0 && (
-                      <span className="text-xs text-muted-foreground ml-1">({row.qtyMade} made)</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+    <div className="flex items-center gap-2 mb-3">
+      <Icon size={16} style={{ color }} />
+      <h2 className="text-sm font-semibold text-gray-800">{label}</h2>
+      {count != null && count > 0 && (
+        <span className="ml-auto text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+          {count}
+        </span>
+      )}
+      {count === 0 && (
+        <span className="ml-auto">
+          <CheckCircle size={14} className="text-green-500" />
+        </span>
+      )}
     </div>
   );
 }
 
+function AlertRow({ label, sub, href }: { label: string; sub?: string; href: string }) {
+  return (
+    <Link href={href}>
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-gray-50 cursor-pointer group transition-colors">
+        <div>
+          <p className="text-sm text-gray-800 font-medium">{label}</p>
+          {sub && <p className="text-xs text-gray-500">{sub}</p>}
+        </div>
+        <ChevronRight size={14} className="text-gray-300 group-hover:text-[#256984] transition-colors" />
+      </div>
+    </Link>
+  );
+}
+
+function EmptyState({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 py-3 px-3 text-sm text-green-600">
+      <CheckCircle size={14} />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function Card({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("bg-white rounded-xl border border-gray-100 shadow-sm p-4", className)}>
+      {children}
+    </div>
+  );
+}
+
+// ── Sales KPI card ────────────────────────────────────────────────────────────
+function KpiCard({ label, value, prev, icon: Icon, href, loading }: {
+  label: string; value: number | null; prev: number | null; icon: any; href: string; loading?: boolean;
+}) {
+  const d = delta(value, prev);
+  return (
+    <Link href={href}>
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 cursor-pointer hover:border-[#256984]/40 hover:shadow-md transition-all group">
+        <div className="flex items-start justify-between mb-2">
+          <div className="p-1.5 rounded-lg" style={{ backgroundColor: "#256984" + "18" }}>
+            <Icon size={15} style={{ color: "#256984" }} />
+          </div>
+          {d != null && (
+            <span className={cn(
+              "text-xs font-medium px-1.5 py-0.5 rounded-full",
+              d >= 0 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+            )}>
+              {d >= 0 ? "↑" : "↓"} {Math.abs(d).toFixed(0)}%
+            </span>
+          )}
+        </div>
+        {loading ? (
+          <div className="space-y-1">
+            <div className="h-6 w-20 bg-gray-100 rounded animate-pulse" />
+            <div className="h-3 w-16 bg-gray-100 rounded animate-pulse" />
+          </div>
+        ) : (
+          <>
+            <p className="text-xl font-bold text-gray-900 tabular-nums">{currency(value)}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+            {prev != null && (
+              <p className="text-xs text-gray-400 mt-0.5">Last week: {currency(prev)}</p>
+            )}
+          </>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+// ── Wages row ────────────────────────────────────────────────────────────────
+function WagesRow({ label, wages, sales, target, loading }: {
+  label: string; wages: number | null; sales: number | null; target: number; loading: boolean;
+}) {
+  const actualPct = wages && sales ? (wages / sales) * 100 : null;
+  const ok = actualPct != null && actualPct <= target;
+  return (
+    <div className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+      <span className="text-sm text-gray-700">{label}</span>
+      {loading ? (
+        <div className="h-4 w-28 bg-gray-100 rounded animate-pulse" />
+      ) : (
+        <div className="flex items-center gap-3">
+          <span className="text-sm tabular-nums text-gray-600">{currency(wages)}</span>
+          <span className={cn(
+            "text-xs font-medium px-1.5 py-0.5 rounded-full tabular-nums",
+            actualPct == null ? "bg-gray-100 text-gray-500" :
+            ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+          )}>
+            {pct(actualPct)} <span className="opacity-60">/ {target}%</span>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Dashboard
+// ─────────────────────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const { data: summary, isLoading: loadingSummary } = useQuery({
-    queryKey: ["/api/dashboard"],
-    queryFn: () => apiRequest("GET", "/api/dashboard").then((r) => r.json()),
+  const { staff, hasAccess } = useAuth();
+  const isAdmin = staff?.accessLevel?.name === "Admin";
+
+  const today = todayAWST();
+  const thisWeek = thisWeekRange();
+  const lastWeek = lastWeekRange();
+
+  // Fast summary (alerts only — no external API calls)
+  const { data: summary, isLoading: summaryLoading } = useQuery({
+    queryKey: ["/api/dashboard-summary"],
+    queryFn: () => apiRequest("GET", "/api/dashboard-summary").then(r => r.json()),
+    staleTime: 2 * 60 * 1000,
   });
 
-  const { data: recipes = [], isLoading: loadingRecipes } = useQuery({
-    queryKey: ["/api/recipes"],
-    queryFn: () => apiRequest("GET", "/api/recipes").then((r) => r.json()),
+  // Wages + catering sales this week
+  const { data: wagesThis, isLoading: wagesThisLoading } = useQuery({
+    queryKey: ["/api/wages-dashboard", thisWeek.from, thisWeek.to],
+    queryFn: () => apiRequest("GET", `/api/wages-dashboard?from=${thisWeek.from}&to=${thisWeek.to}`).then(r => r.json()),
+    staleTime: 5 * 60 * 1000,
+    enabled: hasAccess("wages") || isAdmin,
   });
 
-  const { data: platters = [], isLoading: loadingPlatters } = useQuery({
-    queryKey: ["/api/platters"],
-    queryFn: () => apiRequest("GET", "/api/platters").then((r) => r.json()),
+  // Wages + catering sales last week
+  const { data: wagesLast, isLoading: wagesLastLoading } = useQuery({
+    queryKey: ["/api/wages-dashboard", lastWeek.from, lastWeek.to],
+    queryFn: () => apiRequest("GET", `/api/wages-dashboard?from=${lastWeek.from}&to=${lastWeek.to}`).then(r => r.json()),
+    staleTime: 30 * 60 * 1000,
+    enabled: hasAccess("wages") || isAdmin,
   });
 
-  const { data: settingsData = {} } = useQuery({
-    queryKey: ["/api/settings"],
-    queryFn: () => apiRequest("GET", "/api/settings").then((r) => r.json()),
+  // CBD store sales (Lightspeed — monthly, we'll use current month)
+  const { data: cbdData } = useQuery({
+    queryKey: ["/api/lightspeed/turnover"],
+    queryFn: () => apiRequest("GET", "/api/lightspeed/turnover").then(r => r.json()),
+    staleTime: 30 * 60 * 1000,
+    enabled: hasAccess("wages") || isAdmin,
   });
 
-  const { data: dietaryInconsistencies } = useQuery<{ count: number; items: any[] }>({
-    queryKey: ["/api/flex-products/costing-inconsistencies"],
-    queryFn: () => apiRequest("GET", "/api/flex-products/costing-inconsistencies").then((r) => r.json()),
-    refetchInterval: 5 * 60 * 1000,
-  });
+  const wagesLoading = wagesThisLoading || wagesLastLoading;
 
-  const targetFoodCost = parseFloat(settingsData.target_food_cost_percent || "30");
-  const markupPct = parseFloat(settingsData.markup_percent || "65");
+  // Extract values
+  const cateringThis = wagesThis?.flex?.cateringExGstInclWholesale ?? null;
+  const cateringLast = wagesLast?.flex?.cateringExGstInclWholesale ?? null;
 
-  const allItems = [
-    // Recipes: use foodCostPerServe (ingredients/sub-recipes/packaging only, no labour) — same as Recipes page FC% badge
-    ...recipes.filter((r: any) => r.isActive).map((r: any) => ({ ...r, _type: "Recipe", _displayCost: r.foodCostPerServe ?? r.costPerServe ?? r.totalCost })),
-    // Platters: totalCost is already per-platter (1 platter = 1 RRP unit)
-    ...platters.filter((p: any) => p.isActive).map((p: any) => ({ ...p, _type: "Product", _displayCost: p.totalCost })),
-  ];
+  const cbdRows: any[] = cbdData?.rows || [];
+  const currentMonthStr = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const lastMonthStr = new Date(Date.now() + 8 * 60 * 60 * 1000 - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const cbdThis = cbdRows.find((r: any) => r.month_start?.startsWith(currentMonthStr))?.net_amount ?? null;
+  const cbdLast = cbdRows.find((r: any) => r.month_start?.startsWith(lastMonthStr))?.net_amount ?? null;
 
-  const underperforming = allItems.filter((item: any) => {
-    if (!item.rrp || item._displayCost === 0) return false;
-    return (item._displayCost / item.rrp) * 100 > targetFoodCost;
-  });
+  const totalWagesThis = wagesThis?.areas
+    ? Object.values(wagesThis.areas).reduce((sum: number, a: any) => sum + (a.totalWages || 0), 0)
+    : null;
+  const totalWagesLast = wagesLast?.areas
+    ? Object.values(wagesLast.areas).reduce((sum: number, a: any) => sum + (a.totalWages || 0), 0)
+    : null;
 
-  const loading = loadingSummary || loadingRecipes || loadingPlatters;
+  const cbdWagesThis = (wagesThis?.areas as any)?.cbd_store?.totalWages ?? null;
+  const productionWagesThis = (wagesThis?.areas as any)?.production?.totalWages ?? null;
+  const driverWagesThis = (wagesThis?.areas as any)?.drivers?.totalWages ?? null;
+
+  // Alert counts from summary
+  const missingCount = summary?.missingItems?.length ?? 0;
+  const fridgeCount = summary?.fridgeAlerts?.length ?? 0;
+  const fcCount = summary?.fcIssues?.length ?? 0;
+  const complianceCount = summary?.pendingComplianceLogs?.length ?? 0;
+  const xeroCount = summary?.pendingXeroInvoices ?? 0;
+
+  const showSales = hasAccess("wages") || isAdmin;
+  const showCompliance = hasAccess("compliance") || isAdmin;
+  const showProducts = hasAccess("products") || isAdmin;
+  const showProduction = hasAccess("prep") || isAdmin;
+
+  const dayLabel = new Date(Date.now() + 8 * 60 * 60 * 1000)
+    .toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
 
   return (
-    <div className="space-y-0 max-w-screen-xl">
-      {/* Wages & Revenue section */}
-      <WagesDashboard embedded />
+    <div className="p-4 max-w-5xl mx-auto space-y-5">
 
-      {/* Missing items alert — shows if any items were not made today */}
-      <MissingItemsAlert />
-
-      <div className="p-6 space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-foreground" style={{ fontFamily: "'Cabinet Grotesk', sans-serif" }}>
-          Product Costing
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Live costing & RRP across all menu items — target food cost: <strong>{pct(targetFoodCost)}</strong> · markup: <strong>{pct(markupPct)}</strong>
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-[#256984]">Good morning{staff?.name ? `, ${staff.name.split(' ')[0]}` : ""}</h1>
+          <p className="text-sm text-gray-500">{dayLabel}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-gray-400">The Deli by Greenhorns</p>
+          {(missingCount + fridgeCount + complianceCount) > 0 && (
+            <p className="text-xs font-semibold text-red-500 mt-0.5">
+              {missingCount + fridgeCount + complianceCount} alert{missingCount + fridgeCount + complianceCount !== 1 ? "s" : ""} need attention
+            </p>
+          )}
+        </div>
       </div>
 
-      {/* KPI Cards — clickable shortcuts */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          {
-            label: "Ingredients", value: loading ? "—" : summary?.totalIngredients ?? 0,
-            icon: Package, href: "/ingredients", color: "text-primary"
-          },
-          {
-            label: "Suppliers", value: loading ? "—" : summary?.totalSuppliers ?? 0,
-            icon: Truck, href: "/suppliers", color: "text-primary"
-          },
-          {
-            label: "Recipes", value: loading ? "—" : summary?.totalRecipes ?? 0,
-            icon: UtensilsCrossed, href: "/recipes", color: "text-primary"
-          },
-          {
-            label: "Below Target", value: loading ? "—" : underperforming.length,
-            icon: AlertTriangle, href: "scroll:items-table",
-            color: underperforming.length > 0 ? "text-destructive" : "text-primary"
-          },
-        ].map(({ label, value, icon: Icon, href, color }) => {
-          const isScroll = href.startsWith("scroll:");
-          const scrollId = isScroll ? href.replace("scroll:", "") : null;
-
-          const cardInner = (
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">{label}</p>
-                  <p className={cn("text-2xl font-bold tabular-nums mt-1", color)}>{value}</p>
-                </div>
-                <Icon size={20} className={cn("mt-1", color)} />
-              </div>
-            </CardContent>
-          );
-
-          return (
-            <Card
-              key={label}
-              className="cursor-pointer hover:shadow-md transition-shadow hover:border-primary/40"
-              data-testid={`kpi-${label.toLowerCase().replace(/\s+/g, "-")}`}
-            >
-              {isScroll ? (
-                <div onClick={() => document.getElementById(scrollId!)?.scrollIntoView({ behavior: "smooth" })}>
-                  {cardInner}
-                </div>
-              ) : (
-                <Link href={href}>
-                  {cardInner}
-                </Link>
-              )}
-            </Card>
-          );
-        })}
-      </div>
-
-      {/* Invoice Pending Matches */}
-      {summary?.pendingXeroCount > 0 && (
-        <Link href="/xero-imports">
-          <Card className="border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/10 cursor-pointer hover:shadow-md transition-shadow hover:border-amber-400">
-            <CardContent className="py-4 px-5">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-full bg-amber-100 dark:bg-amber-900/40 p-2">
-                    <RefreshCw size={16} className="text-amber-600 dark:text-amber-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">
-                      {summary.pendingXeroCount} invoice{summary.pendingXeroCount !== 1 ? "s" : ""} awaiting review
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Match bills to ingredients, add new ingredients, or ignore — click to review
-                    </p>
-                  </div>
-                </div>
-                <ArrowRight size={16} className="text-muted-foreground shrink-0" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
+      {/* ── Sales KPIs ───────────────────────────────────────────────────── */}
+      {showSales && (
+        <section id="sales">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">This Week vs Last Week</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <KpiCard
+              label="Catering sales (ex GST)"
+              value={cateringThis}
+              prev={cateringLast}
+              icon={TrendingUp}
+              href="/wages"
+              loading={wagesLoading}
+            />
+            <KpiCard
+              label="CBD store (this month)"
+              value={cbdThis}
+              prev={cbdLast}
+              icon={ShoppingBag}
+              href="/wages"
+              loading={false}
+            />
+            <KpiCard
+              label="Total wages"
+              value={totalWagesThis}
+              prev={totalWagesLast}
+              icon={Users}
+              href="/wages"
+              loading={wagesLoading}
+            />
+          </div>
+        </section>
       )}
 
-      {/* Dietary Inconsistency Alert */}
-      {dietaryInconsistencies && dietaryInconsistencies.count > 0 && (
-        <Link href="/products">
-          <Card className="border-red-200 dark:border-red-800 bg-red-50/40 dark:bg-red-950/10 cursor-pointer hover:shadow-md transition-shadow hover:border-red-400">
-            <CardContent className="py-4 px-5">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-full bg-red-100 dark:bg-red-900/40 p-2">
-                    <AlertTriangle size={16} className="text-red-600 dark:text-red-400" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">
-                      {dietaryInconsistencies.count} product{dietaryInconsistencies.count !== 1 ? "s" : ""} with dietary inconsistencies
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Computed dietaries don't match Flex Catering — click to review
-                    </p>
-                  </div>
-                </div>
-                <ArrowRight size={16} className="text-muted-foreground shrink-0" />
-              </div>
-            </CardContent>
-          </Card>
-        </Link>
-      )}
-
-      {/* Nutrition Issues Panel */}
-      {summary?.nutritionIssues?.length > 0 && (
-        <NutritionIssuesPanel issues={summary.nutritionIssues} />
-      )}
-
-      {/* Underperforming alert */}
-      {underperforming.length > 0 && (
-        <Card className="border-red-200 dark:border-red-900 bg-red-50/40 dark:bg-red-950/10">
-          <CardHeader className="pb-2 pt-4">
-            <CardTitle className="text-sm font-semibold text-destructive flex items-center gap-2">
-              <AlertTriangle size={16} /> {underperforming.length} item{underperforming.length > 1 ? "s" : ""} not meeting target food cost
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pb-4">
-            <ul className="space-y-1">
-              {underperforming.map((item: any) => {
-                const fc = ((item._displayCost / item.rrp) * 100).toFixed(1);
-                return (
-                  <li key={`${item._type}-${item.id}`} className="flex justify-between text-sm">
-                    <span className="text-foreground">{item.name} <span className="text-muted-foreground text-xs">({item._type})</span></span>
-                    <span className="error-text font-medium tabular-nums">{fc}% FC (target: {pct(targetFoodCost)})</span>
-                  </li>
-                );
-              })}
-            </ul>
-          </CardContent>
+      {/* ── Wages breakdown ─────────────────────────────────────────────── */}
+      {showSales && (
+        <Card>
+          <SectionHeader icon={DollarSign} label="Wages vs Sales Targets" />
+          <WagesRow label="CBD Store" wages={cbdWagesThis} sales={cateringThis} target={26} loading={wagesLoading} />
+          <WagesRow label="Production Kitchen" wages={productionWagesThis} sales={cateringThis} target={16} loading={wagesLoading} />
+          <WagesRow label="Drivers" wages={driverWagesThis} sales={cateringThis} target={88} loading={wagesLoading} />
+          <div className="mt-3 pt-2">
+            <Link href="/wages">
+              <span className="text-xs text-[#256984] font-medium hover:underline cursor-pointer">
+                View full wages dashboard →
+              </span>
+            </Link>
+          </div>
         </Card>
       )}
-      </div> {/* end product costing */}
+
+      {/* ── Alerts grid ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+        {/* Missing items today */}
+        {showProduction && (
+          <Card id="missing-items">
+            <SectionHeader icon={Package} label="Missing Items Today" count={missingCount} />
+            {summaryLoading ? (
+              <div className="space-y-1">{[1,2].map(i => <div key={i} className="h-10 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+            ) : missingCount === 0 ? (
+              <EmptyState label="No missing items today" />
+            ) : (
+              <div className="-mx-1">
+                {summary.missingItems.slice(0, 5).map((item: any) => (
+                  <AlertRow
+                    key={item.id}
+                    label={item.item_name}
+                    sub={item.reason_ingredient ? `Out of stock: ${item.reason_ingredient}` : item.reason_other || undefined}
+                    href="/prep"
+                  />
+                ))}
+                {missingCount > 5 && (
+                  <Link href="/prep">
+                    <p className="text-xs text-[#256984] font-medium px-3 py-1 hover:underline cursor-pointer">
+                      +{missingCount - 5} more →
+                    </p>
+                  </Link>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* Fridge alerts */}
+        {showCompliance && (
+          <Card id="fridge-alerts">
+            <SectionHeader icon={Thermometer} label="Fridge Readings" count={fridgeCount} />
+            {summaryLoading ? (
+              <div className="space-y-1">{[1,2].map(i => <div key={i} className="h-10 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+            ) : fridgeCount === 0 ? (
+              <EmptyState label="All fridges in range" />
+            ) : (
+              <div className="-mx-1">
+                {summary.fridgeAlerts.map((a: any, i: number) => (
+                  <AlertRow
+                    key={i}
+                    label={a.name.replace(/ - (CBD|Osborne Park)$/i, "")}
+                    sub={`${a.temperature.toFixed(1)}°C — range ${a.temp_min} to ${a.temp_max}°C`}
+                    href="/compliance/fridge-logs"
+                  />
+                ))}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* Compliance in-progress */}
+        {showCompliance && (
+          <Card id="compliance">
+            <SectionHeader icon={ClipboardCheck} label="Compliance In Progress" count={complianceCount} />
+            {summaryLoading ? (
+              <div className="space-y-1">{[1,2].map(i => <div key={i} className="h-10 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+            ) : complianceCount === 0 ? (
+              <EmptyState label="No open compliance logs" />
+            ) : (
+              <div className="-mx-1">
+                {summary.pendingComplianceLogs.slice(0, 5).map((log: any) => {
+                  const typeLabel: Record<string, string> = {
+                    supplier_delivery: "Supplier Delivery",
+                    thawing: "Thawing",
+                    cooking: "Cooking",
+                    cooling: "Cooling",
+                    fridge_monitoring: "Fridge Monitoring",
+                    chemical: "Chemical",
+                  };
+                  return (
+                    <AlertRow
+                      key={log.id}
+                      label={log.entity_name || typeLabel[log.log_type] || log.log_type}
+                      sub={`${typeLabel[log.log_type] || log.log_type} — started ${new Date(log.created_at).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: true })}`}
+                      href="/compliance"
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* FC issues */}
+        {showProducts && (
+          <Card id="fc-issues">
+            <SectionHeader icon={Sparkles} label={`Products Over FC Target`} count={fcCount} />
+            {summaryLoading ? (
+              <div className="space-y-1">{[1,2].map(i => <div key={i} className="h-10 bg-gray-100 rounded-lg animate-pulse" />)}</div>
+            ) : fcCount === 0 ? (
+              <EmptyState label="All products on target" />
+            ) : (
+              <div className="-mx-1">
+                {summary.fcIssues.slice(0, 5).map((item: any) => (
+                  <AlertRow
+                    key={item.id}
+                    label={item.name}
+                    sub={`FC: ${item.fc}%`}
+                    href="/products"
+                  />
+                ))}
+                {fcCount > 5 && (
+                  <Link href="/products">
+                    <p className="text-xs text-[#256984] font-medium px-3 py-1 hover:underline cursor-pointer">
+                      +{fcCount - 5} more →
+                    </p>
+                  </Link>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
+      </div>
+
+      {/* ── Invoice imports pending ──────────────────────────────────────── */}
+      {(hasAccess("xero-imports") || isAdmin) && xeroCount > 0 && (
+        <Link href="/xero-imports">
+          <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 cursor-pointer hover:bg-amber-100 transition-colors group">
+            <div className="flex items-center gap-3">
+              <FileText size={16} className="text-amber-600" />
+              <div>
+                <p className="text-sm font-semibold text-amber-900">{xeroCount} invoice{xeroCount !== 1 ? "s" : ""} pending review</p>
+                <p className="text-xs text-amber-700">Tap to open Invoice Imports</p>
+              </div>
+            </div>
+            <ChevronRight size={16} className="text-amber-400 group-hover:text-amber-600 transition-colors" />
+          </div>
+        </Link>
+      )}
+
     </div>
   );
 }

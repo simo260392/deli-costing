@@ -39,18 +39,24 @@ async function masterRequest(method: string, url: string, data?: unknown): Promi
 }
 
 const ALL_PAGES = [
-  { slug: "dashboard", label: "Dashboard" },
-  { slug: "prep", label: "Production" },
-  { slug: "prep-reports", label: "Production Reports" },
-  { slug: "products", label: "Products" },
-  { slug: "recipe-book", label: "Recipe Book" },
-  { slug: "ingredients", label: "Ingredients" },
-  { slug: "suppliers", label: "Suppliers" },
-  { slug: "sub-recipes", label: "Sub Recipes" },
-  { slug: "recipes", label: "Recipes" },
-  { slug: "xero-imports", label: "Xero Imports" },
-  { slug: "custom-pricing", label: "Custom Pricing" },
-  { slug: "settings", label: "Settings" },
+  { slug: "dashboard",        label: "Dashboard" },
+  { slug: "prep",             label: "Production" },
+  { slug: "prep-reports",     label: "Production Reports" },
+  { slug: "stock-order",      label: "Stock Ordering" },
+  { slug: "wages",            label: "Wages" },
+  { slug: "deliveries",       label: "Deliveries / Grey Box" },
+  { slug: "prestart-check",   label: "Pre-Start Check" },
+  { slug: "compliance",       label: "Compliance" },
+  { slug: "products",         label: "Products" },
+  { slug: "ingredients",      label: "Ingredients" },
+  { slug: "recipes",          label: "Recipes" },
+  { slug: "sub-recipes",      label: "Sub Recipes" },
+  { slug: "suppliers",        label: "Suppliers" },
+  { slug: "recipe-book",      label: "Product Info PDF" },
+  { slug: "custom-pricing",   label: "Custom Pricing" },
+  { slug: "wholesale",        label: "Wholesale" },
+  { slug: "xero-imports",     label: "Invoice Imports" },
+  { slug: "settings",         label: "Settings" },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

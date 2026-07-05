@@ -5,7 +5,7 @@ import logoWhite from "/logo-white.png";
 import {
   LayoutDashboard, Package, Truck, BookOpen, BookMarked, UtensilsCrossed,
   Store, Settings, Moon, Sun, Menu, RefreshCw, Calculator, ChefHat,
-  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShieldCheck, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical, Car, Thermometer, AlertTriangle
+  BarChart3, LogOut, User, Archive, TrendingUp, Utensils, ChevronDown, ShoppingBag, ClipboardCheck, FileText, Leaf, FlaskConical, Car, Thermometer, AlertTriangle
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -27,8 +27,6 @@ const productionSubItems = [
 const midNavItems = [
   { href: "/stock-order",  label: "Stock Ordering",     icon: ShoppingBag, slug: "stock-order" },
   { href: "/wages",        label: "Wages",              icon: TrendingUp,  slug: "wages" },
-  { href: "/safety",       label: "Safety",             icon: ShieldCheck, slug: "safety" },
-  { href: "/xero-imports", label: "Invoice Imports",    icon: RefreshCw,   slug: "xero-imports" },
 ];
 
 // Deliveries sub-items
@@ -68,6 +66,7 @@ const complianceSubItems = [
 
 // Bottom-pinned items
 const bottomNavItems = [
+  { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw, slug: "xero-imports" },
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
 ];
 
