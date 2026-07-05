@@ -119,8 +119,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   });
   const xeroCount: number = xeroCountData?.count ?? 0;
 
+  // Exact-match-only hrefs: these are parent nav items whose sub-pages have their own nav entries
+  const exactMatchOnly = new Set(["/compliance"]);
+
   const isActive = (href: string) =>
-    href === "/" ? location === "/" || location === "" : location === href || location.startsWith(href + "/");
+    href === "/" ? location === "/" || location === "" :
+    exactMatchOnly.has(href) ? location === href :
+    location === href || location.startsWith(href + "/");
 
   const navLink = (href: string, label: string, Icon: any, slug: string, indent = false) => (
     <li key={href}>
