@@ -9175,7 +9175,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           const rows = samples.map((s: any) => ({
             sensor_id: sensor.id,
             observed_at: new Date(s.observed).toISOString(),
-            temperature: s.temperature,
+            temperature: parseFloat(((s.temperature - 32) * 5 / 9).toFixed(2)), // API returns °F, convert to °C
             humidity: s.humidity,
           }));
           const { error: insErr } = await supabase.from('sensorpush_readings').upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
@@ -9188,8 +9188,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         let latestObserved: string | null = null;
 
         if (sensorInfo?.last_reading) {
-          // /sensors returns last_reading with temperature/humidity/observed
-          latestTemp = sensorInfo.last_reading.temperature ?? null;
+          // /sensors returns last_reading with temperature in °F — convert to °C
+          const rawF = sensorInfo.last_reading.temperature ?? null;
+          latestTemp = rawF !== null ? parseFloat(((rawF - 32) * 5 / 9).toFixed(2)) : null;
           const obs = sensorInfo.last_reading.observed;
           latestObserved = obs ? new Date(obs).toISOString() : null;
 
@@ -9201,9 +9202,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             );
           }
         } else if (samples.length > 0) {
-          // Fallback: use most recent sample
+          // Fallback: use most recent sample (already converted above)
           const sorted = [...samples].sort((a: any, b: any) => new Date(b.observed).getTime() - new Date(a.observed).getTime());
-          latestTemp = sorted[0].temperature;
+          latestTemp = parseFloat(((sorted[0].temperature - 32) * 5 / 9).toFixed(2));
           latestObserved = new Date(sorted[0].observed).toISOString();
         }
 
