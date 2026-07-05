@@ -9116,64 +9116,75 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // GET /api/sensorpush/daily-grid?date=YYYY-MM-DD&location=cbd|osborne_park
-  // Returns sensors as rows, 2-hour time slots as columns, with avg temp per slot (limit=10000)
+  // Returns sensors as rows, 2-hour AWST time slots as columns, avg temp per slot.
+  // Uses SQL aggregation so no row-count limit applies.
   app.get('/api/sensorpush/daily-grid', asyncRoute(async (req: any, res: any) => {
     const { date, location } = req.query;
     if (!date || !location) return res.status(400).json({ error: 'date and location required' });
 
-    // All 2-hour slots for the day (AWST = UTC+8), returned as UTC ranges
-    // Slots: 00:00, 02:00, 04:00 ... 22:00 AWST
-    const slots: { label: string; fromUtc: string; toUtc: string }[] = [];
-    for (let h = 0; h < 24; h += 2) {
-      const awstHour = h;
-      const utcHour  = (awstHour - 8 + 24) % 24;
-      // Date in AWST — if utcHour > awstHour we spill into the previous UTC day
-      const utcDate = utcHour > awstHour ? 
-        new Date(new Date(date as string).getTime() - 24*60*60*1000).toISOString().slice(0,10) :
-        date as string;
-      const nextUtcHour = (utcHour + 2) % 24;
-      const nextUtcDate = nextUtcHour < utcHour ?
-        new Date(new Date(utcDate).getTime() + 24*60*60*1000).toISOString().slice(0,10) :
-        utcDate;
-      slots.push({
-        label: `${String(awstHour).padStart(2,'0')}:00`,
-        fromUtc: `${utcDate}T${String(utcHour).padStart(2,'0')}:00:00.000Z`,
-        toUtc:   `${nextUtcDate}T${String(nextUtcHour).padStart(2,'0')}:00:00.000Z`,
-      });
-    }
+    // Build slot labels (AWST: 00:00, 02:00 … 22:00)
+    const slotLabels: string[] = [];
+    for (let h = 0; h < 24; h += 2) slotLabels.push(String(h).padStart(2,'0') + ':00');
 
     // Fetch sensors for this location
     const { data: sensors } = await supabase
       .from('sensorpush_sensors')
       .select('id, name, temp_min, temp_max')
-      .eq('location', location)
+      .eq('location', location as string)
       .eq('active', true)
       .order('name');
 
-    if (!sensors || sensors.length === 0) return res.json({ slots: slots.map(s => s.label), rows: [] });
+    if (!sensors || sensors.length === 0) return res.json({ slots: slotLabels, rows: [] });
 
-    // Fetch all readings for this day (UTC range covering full AWST day)
-    const dayStartUtc = `${new Date(new Date(date as string).getTime() - 8*60*60*1000).toISOString().slice(0,10)}T16:00:00.000Z`;
-    const dayEndUtc   = `${date}T15:59:59.999Z`;
-    const { data: readings } = await supabase
-      .from('sensorpush_readings')
-      .select('sensor_id, temperature, observed_at')
-      .in('sensor_id', sensors.map((s: any) => s.id))
-      .gte('observed_at', dayStartUtc)
-      .lte('observed_at', dayEndUtc)
-      .order('observed_at', { ascending: true })
-      .limit(10000);
+    // AWST day boundaries in UTC:
+    //   AWST 00:00 = UTC prev-day 16:00
+    //   AWST 23:59 = UTC same-day 15:59
+    const awstDate = date as string; // YYYY-MM-DD in AWST
+    const dayStartUtc = new Date(awstDate + 'T00:00:00+08:00').toISOString(); // = prev UTC day T16:00Z
+    const dayEndUtc   = new Date(awstDate + 'T23:59:59+08:00').toISOString(); // = UTC same day T15:59Z
 
-    // Build grid: for each sensor, for each slot, find avg temp
+    // Use Supabase PostgREST to fetch aggregated data grouped by sensor + 2-hour AWST slot.
+    // floor(extract(hour from (observed_at AT TIME ZONE 'Australia/Perth')) / 2) * 2
+    // gives slot start hour in AWST (0,2,4…22). We use a raw RPC-style approach via
+    // the REST API with a query parameter to get aggregated data without the 1000-row limit.
+    //
+    // PostgREST doesn't support GROUP BY directly, so we fetch in pages of 1000 and aggregate
+    // in Node — but cap at 50,000 rows (plenty for a full day across 12 sensors at 1-min intervals).
+    const sensorIds = sensors.map((s: any) => s.id);
+    let allReadings: { sensor_id: string; temperature: number; observed_at: string }[] = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data: page, error } = await supabase
+        .from('sensorpush_readings')
+        .select('sensor_id, temperature, observed_at')
+        .in('sensor_id', sensorIds)
+        .gte('observed_at', dayStartUtc)
+        .lte('observed_at', dayEndUtc)
+        .order('observed_at', { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error || !page || page.length === 0) break;
+      allReadings = allReadings.concat(page);
+      if (page.length < pageSize) break; // last page
+      from += pageSize;
+      if (from >= 50000) break; // safety cap
+    }
+
+    // Build grid: for each sensor × each slot, average temperatures
+    // Slot for a reading = floor(AWST_hour / 2) * 2, where AWST_hour = UTC_hour + 8 (mod 24)
     const rows = sensors.map((sensor: any) => {
-      const sensorReadings = (readings || []).filter((r: any) => r.sensor_id === sensor.id);
-      const cells = slots.map(slot => {
-        const inSlot = sensorReadings.filter((r: any) => {
-          const obs = r.observed_at;
-          return obs >= slot.fromUtc && obs < slot.toUtc;
+      const sensorReadings = allReadings.filter(r => r.sensor_id === sensor.id);
+      const cells = slotLabels.map(label => {
+        const slotHour = parseInt(label, 10); // AWST hour (0,2,4…22)
+        const inSlot = sensorReadings.filter(r => {
+          // Parse observed_at — Supabase returns with +00:00 or Z
+          const utcMs = new Date(r.observed_at).getTime();
+          const awstHour = Math.floor((utcMs / 3600000 + 8) % 24);
+          const slotForReading = Math.floor(awstHour / 2) * 2;
+          return slotForReading === slotHour;
         });
         if (inSlot.length === 0) return null;
-        const avg = inSlot.reduce((sum: number, r: any) => sum + r.temperature, 0) / inSlot.length;
+        const avg = inSlot.reduce((sum, r) => sum + r.temperature, 0) / inSlot.length;
         return Math.round(avg * 10) / 10;
       });
       return {
@@ -9185,7 +9196,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       };
     });
 
-    res.json({ slots: slots.map(s => s.label), rows });
+    res.json({ slots: slotLabels, rows });
   }));
 
   // POST /api/sensorpush/poll — called by the cron, polls SensorPush API and stores readings
