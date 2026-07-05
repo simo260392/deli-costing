@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Thermometer, Plus, Download, Trash2, RefreshCw, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity } from "lucide-react";
+import { Thermometer, Plus, Download, Trash2, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity } from "lucide-react";
 import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
       <div className="rounded-xl border border-gray-200 bg-white p-4">
         <div className="flex items-center gap-2 mb-3">
           <Activity size={15} className="text-[#256984]" />
-          <span className="text-sm font-semibold text-[#256984]">Live Sensor Readings</span>
+          <span className="text-sm font-semibold text-[#256984]">Latest Sensor Readings</span>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {[1,2,3,4,5,6].map(i => (
@@ -286,7 +286,7 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Activity size={15} className="text-[#256984]" />
-          <span className="text-sm font-semibold text-[#256984]">Live Sensor Readings</span>
+          <span className="text-sm font-semibold text-[#256984]">Latest Sensor Readings</span>
           {allOk && (
             <Badge className="bg-green-100 text-green-700 border-green-200 text-xs px-2 py-0">
               <CheckCircle size={10} className="mr-1" /> All in range
@@ -304,9 +304,7 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
               Updated {new Date(dataUpdatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Perth' })}
             </span>
           )}
-          <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isRefetching} className="h-7 px-2">
-            <RefreshCw size={12} className={cn(isRefetching && "animate-spin")} />
-          </Button>
+
         </div>
       </div>
 
@@ -477,15 +475,6 @@ export default function FridgeLogs() {
           <h1 className="text-lg font-semibold text-[#256984]">Fridge Logs</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => refetch()}
-            disabled={isRefetching}
-          >
-            <RefreshCw size={13} className={cn("mr-1", isRefetching && "animate-spin")} />
-            Refresh
-          </Button>
           <Button
             variant="outline"
             size="sm"
