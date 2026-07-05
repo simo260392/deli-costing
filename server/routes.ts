@@ -9090,8 +9090,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         if (!samples || samples.length === 0) continue;
 
         // Deduplicate by observed_at — check what we already have
+        // SensorPush returns observed as an ISO string e.g. "2026-07-04T21:10:57.000Z"
         const latestSample = samples[samples.length - 1];
-        const latestObserved = new Date(latestSample.observed * 1000).toISOString();
+        const latestObserved = new Date(latestSample.observed).toISOString();
 
         // Check if already stored
         const { data: existing } = await supabase
@@ -9105,7 +9106,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         // Insert new readings
         const rows = samples.map((s: any) => ({
           sensor_id: sensor.id,
-          observed_at: new Date(s.observed * 1000).toISOString(),
+          observed_at: new Date(s.observed).toISOString(),
           temperature: s.temperature,
           humidity: s.humidity,
         }));
