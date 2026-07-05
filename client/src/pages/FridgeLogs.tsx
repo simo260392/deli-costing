@@ -358,11 +358,122 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
         <div className="text-xs text-red-700 font-medium flex items-start gap-1.5">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span>
-            {outOfRange.map(s => `${s.name.replace(/ - (CBD|Osborne Park)$/i, '')} (${s.latest_reading!.temperature.toFixed(1)}°C)`).join(', ')} {outOfRange.length === 1 ? 'is' : 'are'} out of range.
+            {outOfRange.map(s => `${s.name.replace(/ - (CBD|Osborne Park)$/i, '')} (${s.latest_reading!.temperature.toFixed(1)}\u00b0C)`).join(', ')} {outOfRange.length === 1 ? 'is' : 'are'} out of range.
             {' '}A WhatsApp alert is sent outside business hours.
           </span>
         </div>
       )}
+
+      {/* Daily readings grid */}
+      <SensorReadingsGrid location={spLocation} date={date} />
+    </div>
+  );
+}
+
+// ─── Daily Readings Grid ───────────────────────────────────────────────────────────────────
+interface GridRow {
+  sensor_id: string;
+  name: string;
+  temp_min: number;
+  temp_max: number;
+  cells: (number | null)[];
+}
+interface GridData {
+  slots: string[];
+  rows: GridRow[];
+}
+
+function SensorReadingsGrid({ location, date }: { location: string; date: string }) {
+  const { data, isLoading } = useQuery<GridData>({
+    queryKey: ['/api/sensorpush/daily-grid', location, date],
+    queryFn: () => apiRequest('GET', `/api/sensorpush/daily-grid?date=${date}&location=${location}`).then(r => r.json()),
+    staleTime: 2 * 60 * 1000,
+    refetchInterval: 10 * 60 * 1000,
+  });
+
+  // Only show slots up to the current AWST hour (don't show future slots)
+  const nowAWST = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const todayAWST = nowAWST.toISOString().slice(0, 10);
+  const isToday = date === todayAWST;
+  const currentHour = nowAWST.getUTCHours();
+
+  const slots = data?.slots || [];
+  const rows  = data?.rows  || [];
+
+  // Filter to slots that have already started (for today only)
+  const visibleSlots = isToday
+    ? slots.filter(label => {
+        const h = parseInt(label.split(':')[0], 10);
+        return h <= currentHour;
+      })
+    : slots;
+
+  if (isLoading) {
+    return (
+      <div className="mt-4 pt-4 border-t border-gray-100">
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Readings for the Day</p>
+        <div className="h-24 bg-gray-100 rounded-lg animate-pulse" />
+      </div>
+    );
+  }
+
+  if (!rows.length) return null;
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-100">
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Readings for the Day</p>
+      <div className="overflow-x-auto -mx-1">
+        <table className="w-full text-xs border-collapse" style={{ minWidth: `${160 + visibleSlots.length * 60}px` }}>
+          <thead>
+            <tr>
+              <th className="text-left font-medium text-gray-500 py-1.5 px-2 sticky left-0 bg-white z-10"
+                  style={{ minWidth: 160 }}>Sensor</th>
+              {visibleSlots.map(slot => (
+                <th key={slot} className="text-center font-medium text-gray-500 py-1.5 px-1"
+                    style={{ minWidth: 52 }}>{slot}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={row.sensor_id}
+                  className={ri % 2 === 0 ? 'bg-gray-50/60' : 'bg-white'}>
+                <td className="font-medium text-gray-700 py-2 px-2 sticky left-0 z-10"
+                    style={{ background: ri % 2 === 0 ? '#f9f9f8' : '#fff' }}>
+                  {row.name}
+                  <span className="text-gray-400 font-normal ml-1">
+                    ({row.temp_min}–{row.temp_max}\u00b0)
+                  </span>
+                </td>
+                {visibleSlots.map((slot, si) => {
+                  const slotIndex = slots.indexOf(slot);
+                  const val = row.cells[slotIndex];
+                  const outOfRange = val !== null && (val < row.temp_min || val > row.temp_max);
+                  const overByMore = outOfRange && Math.abs(val! > row.temp_max ? val! - row.temp_max : row.temp_min - val!) > 3;
+                  return (
+                    <td key={slot}
+                        className={cn(
+                          'text-center py-2 px-1 tabular-nums font-medium',
+                          val === null
+                            ? 'text-gray-300'
+                            : outOfRange && overByMore
+                              ? 'text-red-600 bg-red-50'
+                              : outOfRange
+                                ? 'text-amber-600 bg-amber-50'
+                                : 'text-green-700'
+                        )}>
+                      {val !== null ? `${val.toFixed(1)}\u00b0` : '\u2014'}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-gray-400 mt-2">
+        Average temperature per 2-hour slot • <span className="text-green-600">Green</span> = in range • <span className="text-amber-600">Amber</span> = slightly out • <span className="text-red-600">Red</span> = out by &gt;3\u00b0C
+      </p>
     </div>
   );
 }

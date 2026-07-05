@@ -9115,6 +9115,78 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json(data);
   }));
 
+  // GET /api/sensorpush/daily-grid?date=YYYY-MM-DD&location=cbd|osborne_park
+  // Returns sensors as rows, 2-hour time slots as columns, with avg temp per slot
+  app.get('/api/sensorpush/daily-grid', asyncRoute(async (req: any, res: any) => {
+    const { date, location } = req.query;
+    if (!date || !location) return res.status(400).json({ error: 'date and location required' });
+
+    // All 2-hour slots for the day (AWST = UTC+8), returned as UTC ranges
+    // Slots: 00:00, 02:00, 04:00 ... 22:00 AWST
+    const slots: { label: string; fromUtc: string; toUtc: string }[] = [];
+    for (let h = 0; h < 24; h += 2) {
+      const awstHour = h;
+      const utcHour  = (awstHour - 8 + 24) % 24;
+      // Date in AWST — if utcHour > awstHour we spill into the previous UTC day
+      const utcDate = utcHour > awstHour ? 
+        new Date(new Date(date as string).getTime() - 24*60*60*1000).toISOString().slice(0,10) :
+        date as string;
+      const nextUtcHour = (utcHour + 2) % 24;
+      const nextUtcDate = nextUtcHour < utcHour ?
+        new Date(new Date(utcDate).getTime() + 24*60*60*1000).toISOString().slice(0,10) :
+        utcDate;
+      slots.push({
+        label: `${String(awstHour).padStart(2,'0')}:00`,
+        fromUtc: `${utcDate}T${String(utcHour).padStart(2,'0')}:00:00.000Z`,
+        toUtc:   `${nextUtcDate}T${String(nextUtcHour).padStart(2,'0')}:00:00.000Z`,
+      });
+    }
+
+    // Fetch sensors for this location
+    const { data: sensors } = await supabase
+      .from('sensorpush_sensors')
+      .select('id, name, temp_min, temp_max')
+      .eq('location', location)
+      .eq('active', true)
+      .order('name');
+
+    if (!sensors || sensors.length === 0) return res.json({ slots: slots.map(s => s.label), rows: [] });
+
+    // Fetch all readings for this day (UTC range covering full AWST day)
+    const dayStartUtc = `${new Date(new Date(date as string).getTime() - 8*60*60*1000).toISOString().slice(0,10)}T16:00:00.000Z`;
+    const dayEndUtc   = `${date}T15:59:59.999Z`;
+    const { data: readings } = await supabase
+      .from('sensorpush_readings')
+      .select('sensor_id, temperature, observed_at')
+      .in('sensor_id', sensors.map((s: any) => s.id))
+      .gte('observed_at', dayStartUtc)
+      .lte('observed_at', dayEndUtc)
+      .order('observed_at', { ascending: true });
+
+    // Build grid: for each sensor, for each slot, find avg temp
+    const rows = sensors.map((sensor: any) => {
+      const sensorReadings = (readings || []).filter((r: any) => r.sensor_id === sensor.id);
+      const cells = slots.map(slot => {
+        const inSlot = sensorReadings.filter((r: any) => {
+          const obs = r.observed_at;
+          return obs >= slot.fromUtc && obs < slot.toUtc;
+        });
+        if (inSlot.length === 0) return null;
+        const avg = inSlot.reduce((sum: number, r: any) => sum + r.temperature, 0) / inSlot.length;
+        return Math.round(avg * 10) / 10;
+      });
+      return {
+        sensor_id: sensor.id,
+        name: sensor.name.replace(/ - (CBD|Osborne Park)$/i, ''),
+        temp_min: sensor.temp_min,
+        temp_max: sensor.temp_max,
+        cells,
+      };
+    });
+
+    res.json({ slots: slots.map(s => s.label), rows });
+  }));
+
   // POST /api/sensorpush/poll — called by the cron, polls SensorPush API and stores readings
   app.post('/api/sensorpush/poll', asyncRoute(async (req: any, res: any) => {
     const authHeader = req.headers['authorization'];
