@@ -9161,7 +9161,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .in('sensor_id', sensors.map((s: any) => s.id))
       .gte('observed_at', dayStartUtc)
       .lte('observed_at', dayEndUtc)
-      .order('observed_at', { ascending: true });
+      .order('observed_at', { ascending: true })
+      .limit(10000);
 
     // Build grid: for each sensor, for each slot, find avg temp
     const rows = sensors.map((sensor: any) => {
