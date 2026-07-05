@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Thermometer, Plus, Download, Trash2, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity } from "lucide-react";
+import { Thermometer, Plus, Download, Trash2, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity, CalendarDays } from "lucide-react";
 import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,14 +38,12 @@ interface FridgeUnitSetting {
   unit_type: string; min_temp: number; max_temp: number; active: boolean;
 }
 
-// Uses per-unit settings if available, falls back to sensible defaults
 function tempStatus(unitName: string, temp: number, unitSettings?: FridgeUnitSetting): "ok" | "warning" | "danger" {
   if (unitSettings) {
     if (temp <= unitSettings.max_temp) return "ok";
     if (temp <= unitSettings.max_temp + 3) return "warning";
     return "danger";
   }
-  // fallback defaults
   const isFreezer = unitName.toLowerCase().includes("freezer");
   if (isFreezer) { if (temp <= -15) return "ok"; if (temp <= -10) return "warning"; return "danger"; }
   if (temp <= 5) return "ok"; if (temp <= 8) return "warning"; return "danger";
@@ -126,7 +124,6 @@ function AddLogDialog({
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-1">
-          {/* Unit */}
           <div className="space-y-1">
             <Label className="text-xs">Unit</Label>
             <Select value={form.unit_name} onValueChange={v => setForm(p => ({ ...p, unit_name: v }))}>
@@ -136,8 +133,6 @@ function AddLogDialog({
               </SelectContent>
             </Select>
           </div>
-
-          {/* Temperature */}
           <div className="space-y-1">
             <Label className="text-xs">Temperature (°C) <span className="text-red-500">*</span></Label>
             <Input
@@ -159,8 +154,6 @@ function AddLogDialog({
               </p>
             )}
           </div>
-
-          {/* Time */}
           <div className="space-y-1">
             <Label className="text-xs">Time <span className="text-red-500">*</span></Label>
             <Input
@@ -170,8 +163,6 @@ function AddLogDialog({
               className="h-9"
             />
           </div>
-
-          {/* Recorded by */}
           <div className="space-y-1">
             <Label className="text-xs">Recorded by <span className="text-red-500">*</span></Label>
             <StaffSearchPicker
@@ -179,8 +170,6 @@ function AddLogDialog({
               onSelect={s => setForm(p => ({ ...p, recorded_by: s.displayName }))}
             />
           </div>
-
-          {/* Notes */}
           <div className="space-y-1">
             <Label className="text-xs">Notes (optional)</Label>
             <Textarea
@@ -208,7 +197,8 @@ function AddLogDialog({
   );
 }
 
-// ─── SensorPush Live Panel ──────────────────────────────────────────────────
+// ─── SensorPush Live Panel ────────────────────────────────────────────────────
+// Shows latest reading per sensor only — no grid
 
 type SensorReading = {
   id: string; name: string; location: string;
@@ -220,19 +210,17 @@ type SensorReading = {
 };
 
 function SensorLivePanel({ location, date }: { location: string; date: string }) {
-  // Map FridgeLogs location ID to sensorpush location
   const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
 
-  const { data: sensors = [], isLoading, refetch, isRefetching, dataUpdatedAt } = useQuery<SensorReading[]>({
+  const { data: sensors = [], isLoading, dataUpdatedAt } = useQuery<SensorReading[]>({
     queryKey: ['/api/sensorpush/latest', spLocation, date],
     queryFn: () => apiRequest('GET', `/api/sensorpush/latest?location=${spLocation}&date=${date}`).then(r => r.json()),
-    refetchInterval: 5 * 60 * 1000, // refresh every 5 min client-side
+    refetchInterval: 5 * 60 * 1000,
     staleTime: 4 * 60 * 1000,
   });
 
   const outOfRange = sensors.filter(s => s.in_range === false);
-  const noReading  = sensors.filter(s => s.in_range === null);
-  const allOk      = sensors.length > 0 && outOfRange.length === 0 && noReading.length === 0;
+  const allOk      = sensors.length > 0 && outOfRange.length === 0 && sensors.every(s => s.in_range !== null);
 
   function formatObserved(iso: string) {
     return new Date(iso).toLocaleTimeString('en-AU', {
@@ -244,10 +232,8 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
     if (s.in_range === null) return 'text-gray-400';
     if (s.in_range) return 'text-green-600';
     const t = s.latest_reading!.temperature;
-    // slightly over = amber, far over = red
-    const margin = s.temp_max - s.temp_min;
     const diff = Math.abs(t > s.temp_max ? t - s.temp_max : s.temp_min - t);
-    return diff > margin ? 'text-red-600' : 'text-amber-600';
+    return diff > 3 ? 'text-red-600' : 'text-amber-600';
   }
 
   if (isLoading) {
@@ -259,7 +245,7 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {[1,2,3,4,5,6].map(i => (
-            <div key={i} className="h-16 rounded-lg bg-gray-100 animate-pulse" />
+            <div key={i} className="h-20 rounded-lg bg-gray-100 animate-pulse" />
           ))}
         </div>
       </div>
@@ -298,17 +284,16 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          {dataUpdatedAt > 0 && (
-            <span className="text-xs text-gray-400">
-              Updated {new Date(dataUpdatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Perth' })}
-            </span>
-          )}
-
-        </div>
+        {dataUpdatedAt > 0 && (
+          <span className="text-xs text-gray-400">
+            Updated {new Date(dataUpdatedAt).toLocaleTimeString('en-AU', {
+              hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Perth'
+            })}
+          </span>
+        )}
       </div>
 
-      {/* Sensor grid */}
+      {/* Sensor cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {sensors.map(s => (
           <div key={s.id} className={cn(
@@ -318,7 +303,6 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
             "border-green-100 bg-green-50"
           )}>
             <p className="text-[11px] font-medium text-gray-600 leading-tight truncate" title={s.name}>
-              {/* Strip location suffix for cleaner display */}
               {s.name.replace(/ - (CBD|Osborne Park)$/i, '')}
             </p>
             {s.latest_reading ? (
@@ -327,12 +311,8 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
                   {s.latest_reading.temperature.toFixed(1)}°C
                 </p>
                 <div className="flex items-center justify-between">
-                  <p className="text-[10px] text-gray-400">
-                    {formatObserved(s.latest_reading.observed_at)}
-                  </p>
-                  <p className="text-[10px] text-gray-400">
-                    {s.latest_reading.humidity?.toFixed(0)}% RH
-                  </p>
+                  <p className="text-[10px] text-gray-400">{formatObserved(s.latest_reading.observed_at)}</p>
+                  <p className="text-[10px] text-gray-400">{s.latest_reading.humidity?.toFixed(0)}% RH</p>
                 </div>
                 {s.avg_temp !== null && (
                   <p className="text-[10px] text-gray-500 font-medium">
@@ -340,9 +320,7 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
                     <span className="text-gray-400 font-normal"> ({s.avg_sample_count} reads)</span>
                   </p>
                 )}
-                <p className="text-[10px] text-gray-400">
-                  Range: {s.temp_min}° to {s.temp_max}°C
-                </p>
+                <p className="text-[10px] text-gray-400">Range: {s.temp_min}° to {s.temp_max}°C</p>
               </>
             ) : (
               <div className="flex items-center gap-1 mt-1">
@@ -358,19 +336,19 @@ function SensorLivePanel({ location, date }: { location: string; date: string })
         <div className="text-xs text-red-700 font-medium flex items-start gap-1.5">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span>
-            {outOfRange.map(s => `${s.name.replace(/ - (CBD|Osborne Park)$/i, '')} (${s.latest_reading!.temperature.toFixed(1)}\u00b0C)`).join(', ')} {outOfRange.length === 1 ? 'is' : 'are'} out of range.
+            {outOfRange.map(s =>
+              `${s.name.replace(/ - (CBD|Osborne Park)$/i, '')} (${s.latest_reading!.temperature.toFixed(1)}°C)`
+            ).join(', ')} {outOfRange.length === 1 ? 'is' : 'are'} out of range.
             {' '}A WhatsApp alert is sent outside business hours.
           </span>
         </div>
       )}
-
-      {/* Daily readings grid */}
-      <SensorReadingsGrid location={spLocation} date={date} />
     </div>
   );
 }
 
-// ─── Daily Readings Grid ───────────────────────────────────────────────────────────────────
+// ─── Daily Readings Grid ──────────────────────────────────────────────────────
+
 interface GridRow {
   sensor_id: string;
   name: string;
@@ -384,96 +362,134 @@ interface GridData {
 }
 
 function SensorReadingsGrid({ location, date }: { location: string; date: string }) {
+  const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
+
   const { data, isLoading } = useQuery<GridData>({
-    queryKey: ['/api/sensorpush/daily-grid', location, date],
-    queryFn: () => apiRequest('GET', `/api/sensorpush/daily-grid?date=${date}&location=${location}`).then(r => r.json()),
+    queryKey: ['/api/sensorpush/daily-grid', spLocation, date],
+    queryFn: () => apiRequest('GET', `/api/sensorpush/daily-grid?date=${date}&location=${spLocation}`).then(r => r.json()),
     staleTime: 2 * 60 * 1000,
     refetchInterval: 10 * 60 * 1000,
   });
 
-  // Only show slots up to the current AWST hour (don't show future slots)
+  // For today, only show slots that have already started (AWST)
   const nowAWST = new Date(Date.now() + 8 * 60 * 60 * 1000);
   const todayAWST = nowAWST.toISOString().slice(0, 10);
   const isToday = date === todayAWST;
-  const currentHour = nowAWST.getUTCHours();
+  const currentHour = nowAWST.getUTCHours(); // AWST hour = UTC hour (since we offset the Date object)
 
-  const slots = data?.slots || [];
-  const rows  = data?.rows  || [];
+  const slots = data?.slots ?? [];
+  const rows  = data?.rows  ?? [];
 
-  // Filter to slots that have already started (for today only)
+  // For today: only show slots that have already started
   const visibleSlots = isToday
-    ? slots.filter(label => {
-        const h = parseInt(label.split(':')[0], 10);
-        return h <= currentHour;
-      })
+    ? slots.filter(label => parseInt(label.split(':')[0], 10) <= currentHour)
     : slots;
 
   if (isLoading) {
     return (
-      <div className="mt-4 pt-4 border-t border-gray-100">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Readings for the Day</p>
-        <div className="h-24 bg-gray-100 rounded-lg animate-pulse" />
+      <div className="rounded-xl border border-gray-200 bg-white p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <CalendarDays size={15} className="text-[#256984]" />
+          <span className="text-sm font-semibold text-[#256984]">Temperature Log</span>
+        </div>
+        <div className="h-32 bg-gray-100 rounded-lg animate-pulse" />
       </div>
     );
   }
 
-  if (!rows.length) return null;
-
+  // Show empty state even if no rows — grid structure is always visible
   return (
-    <div className="mt-4 pt-4 border-t border-gray-100">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Readings for the Day</p>
-      <div className="overflow-x-auto -mx-1">
-        <table className="w-full text-xs border-collapse" style={{ minWidth: `${160 + visibleSlots.length * 60}px` }}>
-          <thead>
-            <tr>
-              <th className="text-left font-medium text-gray-500 py-1.5 px-2 sticky left-0 bg-white z-10"
-                  style={{ minWidth: 160 }}>Sensor</th>
-              {visibleSlots.map(slot => (
-                <th key={slot} className="text-center font-medium text-gray-500 py-1.5 px-1"
-                    style={{ minWidth: 52 }}>{slot}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, ri) => (
-              <tr key={row.sensor_id}
-                  className={ri % 2 === 0 ? 'bg-gray-50/60' : 'bg-white'}>
-                <td className="font-medium text-gray-700 py-2 px-2 sticky left-0 z-10"
-                    style={{ background: ri % 2 === 0 ? '#f9f9f8' : '#fff' }}>
-                  {row.name}
-                  <span className="text-gray-400 font-normal ml-1">
-                    ({row.temp_min}–{row.temp_max}\u00b0)
-                  </span>
-                </td>
-                {visibleSlots.map((slot, si) => {
-                  const slotIndex = slots.indexOf(slot);
-                  const val = row.cells[slotIndex];
-                  const outOfRange = val !== null && (val < row.temp_min || val > row.temp_max);
-                  const overByMore = outOfRange && Math.abs(val! > row.temp_max ? val! - row.temp_max : row.temp_min - val!) > 3;
-                  return (
-                    <td key={slot}
-                        className={cn(
-                          'text-center py-2 px-1 tabular-nums font-medium',
-                          val === null
-                            ? 'text-gray-300'
-                            : outOfRange && overByMore
-                              ? 'text-red-600 bg-red-50'
-                              : outOfRange
-                                ? 'text-amber-600 bg-amber-50'
-                                : 'text-green-700'
-                        )}>
-                      {val !== null ? `${val.toFixed(1)}\u00b0` : '\u2014'}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="rounded-xl border border-gray-200 bg-white p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <CalendarDays size={15} className="text-[#256984]" />
+        <span className="text-sm font-semibold text-[#256984]">Temperature Log</span>
+        {rows.length > 0 && (
+          <span className="text-xs text-gray-400 ml-1">
+            — avg per 2-hour slot
+          </span>
+        )}
       </div>
-      <p className="text-[10px] text-gray-400 mt-2">
-        Average temperature per 2-hour slot • <span className="text-green-600">Green</span> = in range • <span className="text-amber-600">Amber</span> = slightly out • <span className="text-red-600">Red</span> = out by &gt;3\u00b0C
-      </p>
+
+      {rows.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-6">No sensor readings for this day yet.</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-xs border-collapse" style={{ minWidth: `${180 + visibleSlots.length * 58}px` }}>
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th
+                    className="text-left font-semibold text-gray-500 py-2 px-3 sticky left-0 bg-white z-10"
+                    style={{ minWidth: 180 }}
+                  >
+                    Sensor
+                  </th>
+                  {visibleSlots.map(slot => (
+                    <th
+                      key={slot}
+                      className="text-center font-semibold text-gray-500 py-2 px-1"
+                      style={{ minWidth: 52 }}
+                    >
+                      {slot}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, ri) => (
+                  <tr
+                    key={row.sensor_id}
+                    className={cn(
+                      "border-b border-gray-50 last:border-0",
+                      ri % 2 === 0 ? "bg-gray-50/40" : "bg-white"
+                    )}
+                  >
+                    <td
+                      className="py-2.5 px-3 sticky left-0 z-10"
+                      style={{ background: ri % 2 === 0 ? '#f9f9f8' : '#fff' }}
+                    >
+                      <span className="font-medium text-gray-700">{row.name}</span>
+                      <span className="text-gray-400 font-normal ml-1 text-[10px]">
+                        ({row.temp_min}° to {row.temp_max}°C)
+                      </span>
+                    </td>
+                    {visibleSlots.map(slot => {
+                      const slotIndex = slots.indexOf(slot);
+                      const val = row.cells[slotIndex];
+                      const outOfRange = val !== null && (val < row.temp_min || val > row.temp_max);
+                      const farOut = outOfRange && Math.abs(
+                        val! > row.temp_max ? val! - row.temp_max : row.temp_min - val!
+                      ) > 3;
+                      return (
+                        <td
+                          key={slot}
+                          className={cn(
+                            'text-center py-2.5 px-1 tabular-nums font-medium rounded-sm',
+                            val === null
+                              ? 'text-gray-300'
+                              : farOut
+                                ? 'text-red-600 bg-red-50'
+                                : outOfRange
+                                  ? 'text-amber-600 bg-amber-50'
+                                  : 'text-green-700'
+                          )}
+                        >
+                          {val !== null ? `${val.toFixed(1)}°` : '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-gray-400 mt-3 flex items-center gap-3">
+            <span><span className="text-green-600 font-medium">Green</span> = in range</span>
+            <span><span className="text-amber-600 font-medium">Amber</span> = slightly out</span>
+            <span><span className="text-red-600 font-medium">Red</span> = out by more than 3°C</span>
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -492,14 +508,14 @@ export default function FridgeLogs() {
 
   const locationInfo = LOCATIONS.find(l => l.id === location)!;
 
-  // ── Fetch logs ──
-  const { data, isLoading, isRefetching, refetch } = useQuery({
+  // ── Fetch logs (manual entries) ──
+  const { data, isLoading } = useQuery({
     queryKey: ["fridge-logs", date, location],
     queryFn: () => apiRequest("GET", `/api/fridge-logs?date=${date}&location=${location}`),
   });
   const logs: FridgeLog[] = (data as any)?.logs ?? [];
 
-  // ── Fetch unit settings (for per-unit alert ranges) ──
+  // ── Fetch unit settings ──
   const { data: unitsData } = useQuery({
     queryKey: ["fridge-units", location],
     queryFn: () => apiRequest("GET", `/api/fridge-units?location=${location}`),
@@ -507,8 +523,8 @@ export default function FridgeLogs() {
   const unitSettings: FridgeUnitSetting[] = (unitsData as any)?.units ?? [];
   const unitMap = new Map<string, FridgeUnitSetting>(unitSettings.map(u => [u.unit_name, u]));
 
-  // ── Fetch unresolved alerts for today ──
-  const { data: alertsData, refetch: refetchAlerts } = useQuery({
+  // ── Fetch unresolved alerts ──
+  const { data: alertsData } = useQuery({
     queryKey: ["fridge-alerts", date],
     queryFn: () => apiRequest("GET", `/api/fridge-alerts?resolved=false`),
     refetchInterval: 60000,
@@ -541,21 +557,16 @@ export default function FridgeLogs() {
   // ── Export CSV ──
   const handleExport = () => {
     const url = `/api/fridge-logs/export?date=${date}&location=${location}`;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `fridge-log-${date}-${location}.csv`;
-    // Add auth header via fetch then create blob URL
     fetch(url, { headers: { Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}` } })
       .then(r => r.blob())
       .then(blob => {
-        const blobUrl = URL.createObjectURL(blob);
-        a.href = blobUrl;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `fridge-log-${date}-${location}.csv`;
         a.click();
-        URL.revokeObjectURL(blobUrl);
+        URL.revokeObjectURL(a.href);
       })
-      .catch(() => {
-        window.open(url, "_blank");
-      });
+      .catch(() => window.open(url, "_blank"));
   };
 
   // ── Summary stats ──
@@ -565,7 +576,7 @@ export default function FridgeLogs() {
     return { total: logs.length, outOfRange, borderline };
   }, [logs]);
 
-  // ── Group by unit ──
+  // ── Group manual logs by unit ──
   const byUnit = useMemo(() => {
     const map = new Map<string, FridgeLog[]>();
     for (const l of logs) {
@@ -586,24 +597,22 @@ export default function FridgeLogs() {
           <h1 className="text-lg font-semibold text-[#256984]">Fridge Logs</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={logs.length === 0}
-          >
-            <Download size={13} className="mr-1" />
-            Export CSV
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={logs.length === 0}>
+            <Download size={13} className="mr-1" /> Export CSV
           </Button>
           <Button
             size="sm"
             className="bg-[#256984] hover:bg-[#1e5570] text-white"
             onClick={() => setAddOpen(true)}
           >
-            <Plus size={13} className="mr-1" />
-            Log Reading
+            <Plus size={13} className="mr-1" /> Log Reading
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => window.location.href = "/compliance/fridge-settings"} className="text-gray-400 hover:text-[#256984]">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => window.location.href = "/compliance/fridge-settings"}
+            className="text-gray-400 hover:text-[#256984]"
+          >
             <Settings size={14} />
           </Button>
         </div>
@@ -632,43 +641,34 @@ export default function FridgeLogs() {
         })}
       </div>
 
-      {/* SensorPush live readings */}
-      <SensorLivePanel location={location} date={date} />
+      {/* 1. Latest Sensor Readings (always live — not date-filtered) */}
+      <SensorLivePanel location={location} date={todayAWST} />
 
-      {/* Date + summary bar */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-2">
-          <Label className="text-xs text-gray-500 whitespace-nowrap">Date</Label>
-          <Input
-            type="date"
-            value={date}
-            onChange={e => setDate(e.target.value)}
-            className="h-8 text-sm w-40"
-          />
-        </div>
-        {!isLoading && logs.length > 0 && (
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-gray-500">{stats.total} reading{stats.total !== 1 ? "s" : ""}</span>
-            {stats.outOfRange > 0 && (
-              <Badge className="bg-red-100 text-red-700 border-red-200 text-xs px-2 py-0">
-                {stats.outOfRange} out of range
-              </Badge>
-            )}
-            {stats.borderline > 0 && (
-              <Badge className="bg-yellow-100 text-yellow-700 border-yellow-200 text-xs px-2 py-0">
-                {stats.borderline} borderline
-              </Badge>
-            )}
-            {stats.outOfRange === 0 && stats.borderline === 0 && (
-              <Badge className="bg-green-100 text-green-700 border-green-200 text-xs px-2 py-0">
-                All OK
-              </Badge>
-            )}
-          </div>
+      {/* 2. Date selector */}
+      <div className="flex items-center gap-3">
+        <CalendarDays size={15} className="text-gray-400" />
+        <Label className="text-sm text-gray-600 font-medium whitespace-nowrap">View date</Label>
+        <Input
+          type="date"
+          value={date}
+          max={todayAWST}
+          onChange={e => setDate(e.target.value)}
+          className="h-9 text-sm w-40"
+        />
+        {date !== todayAWST && (
+          <button
+            onClick={() => setDate(todayAWST)}
+            className="text-xs text-[#256984] hover:underline font-medium"
+          >
+            Back to today
+          </button>
         )}
       </div>
 
-      {/* Active alerts banner */}
+      {/* 3. Readings grid */}
+      <SensorReadingsGrid location={location} date={date} />
+
+      {/* Active alerts banner (for manual log alerts) */}
       {activeAlerts.length > 0 && (
         <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-2">
           <div className="flex items-center gap-2 mb-1">
@@ -702,24 +702,28 @@ export default function FridgeLogs() {
         </div>
       )}
 
-      {/* Content */}
-      {isLoading ? (
-        <div className="text-center py-12 text-gray-400 text-sm">Loading…</div>
-      ) : logs.length === 0 ? (
-        <div className="text-center py-16 border-2 border-dashed border-gray-200 rounded-xl">
-          <Thermometer size={32} className="mx-auto text-gray-300 mb-3" />
-          <p className="text-gray-500 text-sm font-medium">No readings for {date}</p>
-          <p className="text-gray-400 text-xs mt-1">Tap "Log Reading" to add the first entry</p>
-        </div>
-      ) : (
+      {/* Manual log entries (grouped by unit) — shown below the grid */}
+      {!isLoading && logs.length > 0 && (
         <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Manual Readings — {date}</p>
+            {stats.outOfRange > 0 && (
+              <Badge className="bg-red-100 text-red-700 border-red-200 text-xs px-2 py-0">
+                {stats.outOfRange} out of range
+              </Badge>
+            )}
+            {stats.borderline > 0 && (
+              <Badge className="bg-yellow-100 text-yellow-700 border-yellow-200 text-xs px-2 py-0">
+                {stats.borderline} borderline
+              </Badge>
+            )}
+          </div>
           {UNITS[location].filter(u => byUnit.has(u)).map(unitName => {
             const unitLogs = byUnit.get(unitName)!;
             const latestTemp = unitLogs[unitLogs.length - 1].temperature;
             const latestStatus = tempStatus(unitName, latestTemp, unitMap.get(unitName));
             return (
               <div key={unitName} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-                {/* Unit header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
                   <div className="flex items-center gap-2">
                     <Thermometer size={15} className="text-[#256984]" />
@@ -730,8 +734,6 @@ export default function FridgeLogs() {
                   </div>
                   <span className="text-xs text-gray-400">{unitLogs.length} reading{unitLogs.length !== 1 ? "s" : ""}</span>
                 </div>
-
-                {/* Readings table */}
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-xs text-gray-400 border-b border-gray-100">
@@ -750,16 +752,12 @@ export default function FridgeLogs() {
                       return (
                         <tr
                           key={log.id}
-                          className={cn(
-                            "border-b border-gray-50 last:border-0",
-                            idx % 2 === 0 ? "bg-white" : "bg-gray-50/40"
-                          )}
+                          className={cn("border-b border-gray-50 last:border-0", idx % 2 === 0 ? "bg-white" : "bg-gray-50/40")}
                         >
                           <td className="px-4 py-2.5 font-mono text-xs text-gray-700">{log.log_time}</td>
                           <td className="px-4 py-2.5">
-                            <span className={cn(
-                              "font-semibold text-sm",
-                              status === "ok"      ? "text-green-700" :
+                            <span className={cn("font-semibold text-sm",
+                              status === "ok" ? "text-green-700" :
                               status === "warning" ? "text-yellow-700" : "text-red-700"
                             )}>
                               {log.temperature > 0 ? "+" : ""}{log.temperature}°C
@@ -798,15 +796,8 @@ export default function FridgeLogs() {
         </div>
       )}
 
-      {/* Add dialog */}
-      <AddLogDialog
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        location={location}
-        date={date}
-      />
+      <AddLogDialog open={addOpen} onClose={() => setAddOpen(false)} location={location} date={date} />
 
-      {/* Delete confirm */}
       <AlertDialog open={!!deleteId} onOpenChange={v => { if (!v) setDeleteId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
