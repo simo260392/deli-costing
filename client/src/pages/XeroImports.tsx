@@ -92,13 +92,19 @@ function PdfPanel({ invoice }: { invoice: XeroImport }) {
   });
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => {
-      const formData = new FormData();
-      formData.append("pdf", file);
-      return fetch(`${API_BASE}/api/xero/imports/${invoice.id}/upload-pdf`, {
-        method: "POST",
-        body: formData,
-      }).then(r => r.json());
+    mutationFn: async (file: File) => {
+      // Convert file to base64 and POST as JSON — avoids Cloudflare blocking multipart uploads
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const filename = file.name;
+      // Save the PDF
+      await apiRequest("POST", `/api/xero/imports/${invoice.id}/save-pdf`, { base64, filename }).then(r => r.json());
+      // Reparse it and return the result
+      return apiRequest("POST", `/api/xero/imports/${invoice.id}/reparse`).then(r => r.json());
     },
     onSuccess: (data: any) => {
       refetchStatus();
