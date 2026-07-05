@@ -5751,7 +5751,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // AUTH ROUTES
   // ─────────────────────────────────────────────────────────────────────────
 
-  const AUTH_PASSWORD = process.env.AUTH_PASSWORD || "Greenhorns2016!";
+  const AUTH_PASSWORD = process.env.AUTH_PASSWORD || "2016";
   const MASTER_PASSWORD = process.env.MASTER_PASSWORD || "Burnfletch123!";
 
   function requireMaster(req: any, res: any, next: any) {
