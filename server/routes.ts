@@ -9116,7 +9116,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // GET /api/sensorpush/daily-grid?date=YYYY-MM-DD&location=cbd|osborne_park
-  // Returns sensors as rows, 2-hour time slots as columns, with avg temp per slot
+  // Returns sensors as rows, 2-hour time slots as columns, with avg temp per slot (limit=10000)
   app.get('/api/sensorpush/daily-grid', asyncRoute(async (req: any, res: any) => {
     const { date, location } = req.query;
     if (!date || !location) return res.status(400).json({ error: 'date and location required' });
