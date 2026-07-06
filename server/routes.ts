@@ -9232,7 +9232,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
-        body: JSON.stringify({ limit: 60 }), // no startTime — returns live data immediately
+        body: JSON.stringify({ limit: 300 }), // no startTime — returns live data immediately; 300 covers ~5h backfill if a cron run is missed
       });
       const samplesData = await samplesRes.json() as any;
       const sensorSamples = samplesData.sensors || {};
