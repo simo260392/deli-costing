@@ -9178,8 +9178,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         const slotHour = parseInt(label, 10); // AWST hour (0,2,4…22)
         const inSlot = sensorReadings.filter(r => {
           // Parse observed_at — Supabase returns with +00:00 or Z
-          const utcMs = new Date(r.observed_at).getTime();
-          const awstHour = Math.floor((utcMs / 3600000 + 8) % 24);
+          // Use integer seconds to avoid floating-point precision errors with large ms values.
+          const utcSec = Math.floor(new Date(r.observed_at).getTime() / 1000);
+          const awstHour = Math.floor((utcSec / 3600 + 8) % 24);
           const slotForReading = Math.floor(awstHour / 2) * 2;
           return slotForReading === slotHour;
         });
