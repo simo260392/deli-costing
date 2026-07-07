@@ -116,6 +116,7 @@ interface SupplierLine {
   packaging_ok: boolean | null;
   use_by_ok: boolean | null;
   ingredient_id: number | null;
+  condition: 'frozen' | 'fresh' | null;
 }
 
 interface WastageLine {
@@ -1904,6 +1905,29 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
             </div>
 
             <div className="flex items-center gap-6 flex-wrap">
+              {/* Frozen / Fresh toggle */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Condition</label>
+                <div className="flex gap-2">
+                  {(['frozen', 'fresh'] as const).map(val => (
+                    <button
+                      key={val}
+                      className={cn(
+                        "h-9 px-4 rounded-lg text-sm font-medium border transition-colors",
+                        line.condition === val
+                          ? val === 'frozen'
+                            ? "bg-blue-100 border-blue-400 text-blue-800"
+                            : "bg-green-100 border-green-400 text-green-800"
+                          : "border-border hover:bg-muted"
+                      )}
+                      onClick={() => updateLine(line.id, { condition: line.condition === val ? null : val })}
+                    >
+                      {val === 'frozen' ? '❄ Frozen' : '🌿 Fresh'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Packaging OK toggle */}
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Packaging intact</label>

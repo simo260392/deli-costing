@@ -8433,6 +8433,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         temp_on_arrival: body.temp_on_arrival ?? body.tempOnArrival ?? null,
         packaging_ok: body.packaging_ok ?? body.packagingOk ?? null,
         use_by_ok: body.use_by_ok ?? body.useByOk ?? null,
+        condition: body.condition ?? null,
       }).select().single();
       if (error) throw error;
       res.json(line);
@@ -8460,6 +8461,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (body.numBoxes !== undefined) updates.num_boxes = body.numBoxes;
       if (body.weight_kg !== undefined) updates.weight_kg = body.weight_kg;
       if (body.weightKg !== undefined) updates.weight_kg = body.weightKg;
+      if (body.condition !== undefined) updates.condition = body.condition; // 'frozen' | 'fresh' | null
       const { data: line, error } = await supabase.from('compliance_supplier_lines').update(updates).eq('id', req.params.lineId).select().single();
       if (error) throw error;
       res.json(line);
