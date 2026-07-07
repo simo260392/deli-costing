@@ -8381,21 +8381,27 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
           // ── Line items — two strategies for OCR layouts ──────────────────────
           // Strategy A: all on one line (OCR flattens columns)
-          // e.g. "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 4.00 CTN $9.60 $0.00 $576.00"
+          // e.g. "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 | KG | 4.00 CTN $9.60 $0.00 $576.00"
+          // Handles optional pipe separators around the unit (common in B&E Foods invoices)
           for (const line of allLines) {
-            // item code + description + ordered + shipped + CTN count + CTN + $price + $gst + $total
+            // item code + description + ordered + shipped + [|] unit [|] CTN count + CTN/BOX + $price + $gst + $total
             const mA = line.match(
-              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+([\d.]+)\s+CTN\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
+              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+\|?\s*(KG|CTN|EA|BOX|LTR|PKT|DOZ|EACH|PCS)\s*\|?\s+([\d.]+)\s+(?:CTN|BOX)\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
             );
             if (mA) {
+              const unitA = mA[4].toUpperCase();
+              const ctnCountA = parseFloat(mA[5]);
+              // weight is shipped qty when unit is KG, else null
+              const weightKgA = unitA === 'KG' ? parseFloat(mA[3]) : null;
               parsed.lineItems.push({
                 description: mA[2].trim(),
-                quantity:    parseFloat(mA[3]),          // shipped qty
-                unit:        'KG',                       // implied by column header
-                numBoxes:    Math.ceil(parseFloat(mA[4])),
-                unitPrice:   parseFloat(mA[5].replace(/,/g,'')),
-                lineTotal:   parseFloat(mA[6].replace(/,/g,''))
-              });
+                quantity:    parseFloat(mA[3]),
+                unit:        unitA,
+                numBoxes:    Math.ceil(ctnCountA),
+                unitPrice:   parseFloat(mA[6].replace(/,/g,'')),
+                lineTotal:   parseFloat(mA[7].replace(/,/g,'')),
+                weightKg:    weightKgA
+              } as any);
             }
           }
 
