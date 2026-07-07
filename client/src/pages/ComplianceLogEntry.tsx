@@ -1689,9 +1689,12 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
         body: fd,
       });
       const data = await res.json();
+      // Auto-select supplier if matched and not already set
+      if (data.supplierId && !log.supplier_id) {
+        await saveHeaderField({ supplierId: data.supplierId });
+      }
       if (data.invoiceNumber) {
         setInvoiceNumber(data.invoiceNumber);
-        // Also persist invoice number to the log
         await saveHeaderField({ invoiceNumber: data.invoiceNumber });
       }
       // Auto-populate supplier delivery lines from parsed line items
@@ -1711,6 +1714,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
       // Toast
       const parts = [];
       if (data.invoiceNumber) parts.push(`Invoice #${data.invoiceNumber} detected`);
+      if (data.supplierName) parts.push(`Supplier: ${data.supplierName}`);
       if (data.lineItems?.length > 0) parts.push(`${data.lineItems.length} items added`);
       if (data.invoiceId) parts.push(`saved to Invoice Uploads`);
       if (parts.length > 0) {
