@@ -1693,14 +1693,24 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
         // Also persist invoice number to the log
         await saveHeaderField({ invoiceNumber: data.invoiceNumber });
       }
-      // Save file URL to log state (backend already updated invoice_photo_url)
-      if (data.fileUrl) {
-        onRefresh();
+      // Auto-populate supplier delivery lines from parsed line items
+      if (data.lineItems && data.lineItems.length > 0) {
+        for (const li of data.lineItems) {
+          await apiRequest("POST", `/api/compliance/logs/${log.id}/supplier-lines`, {
+            item: li.description || '',
+            qty: li.quantity ? `${li.quantity} ${li.unit || ''}`.trim() : '',
+          });
+        }
       }
+      // Refresh to show updated photo URL + new lines
+      onRefresh();
       // Toast
-      if (data.invoiceNumber) {
-        const lineMsg = data.lineItemCount > 0 ? ` — ${data.lineItemCount} line items added to Invoice Uploads` : '';
-        toast({ description: `Invoice #${data.invoiceNumber} detected${lineMsg}` });
+      const parts = [];
+      if (data.invoiceNumber) parts.push(`Invoice #${data.invoiceNumber} detected`);
+      if (data.lineItems?.length > 0) parts.push(`${data.lineItems.length} items added`);
+      if (data.invoiceId) parts.push(`saved to Invoice Uploads`);
+      if (parts.length > 0) {
+        toast({ description: parts.join(' — ') });
       } else {
         toast({ description: "Invoice uploaded — number not detected, enter manually", variant: "destructive" });
       }

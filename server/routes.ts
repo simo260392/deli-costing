@@ -8192,22 +8192,81 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   app.post('/api/compliance/scan-invoice', invoicePhotoUpload.single('photo'), async (req: any, res: any) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      const { execFile } = await import('child_process');
-      const parsePath = path.join(__dirname, 'parse_invoice.py');
-      const parsed: any = await new Promise((resolve) => {
-        execFile(
-          'python3', [parsePath, req.file.path, req.file.originalname || 'invoice.jpg'],
-          { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
-          (_err: any, stdout: string) => {
-            const jsonStart = stdout.indexOf('{');
-            const jsonEnd = stdout.lastIndexOf('}');
-            if (jsonStart !== -1 && jsonEnd !== -1) {
-              try { return resolve(JSON.parse(stdout.slice(jsonStart, jsonEnd + 1))); } catch {}
+
+      // Parse PDF in Node.js using pdf-parse (works on Railway without Python deps)
+      const parsed: any = { invoiceNumber: null, invoiceDate: null, supplierName: null, lineItems: [] };
+      const isPdf = req.file.mimetype === 'application/pdf' || (req.file.originalname || '').toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        try {
+          const pdfParse = (await import('pdf-parse')).default;
+          const buffer = fs.readFileSync(req.file.path);
+          const pdfData = await pdfParse(buffer);
+          const raw = pdfData.text || '';
+
+          // ── Invoice number ────────────────────────────────────────────────
+          // Handles: "InvoiceNo: 6920960", "Invoice No: INV-123", "Invoice #123", "INV-00123"
+          const invNoMatch = raw.match(/invoice\s*no[.:# ]*([A-Z0-9\-]{3,20})/i)
+            || raw.match(/\bINV[-\s]?(\d{4,})/i)
+            || raw.match(/invoice\s*number[:\s#]*([A-Z0-9\-]{3,20})/i);
+          if (invNoMatch) parsed.invoiceNumber = invNoMatch[1].trim();
+
+          // ── Invoice date ──────────────────────────────────────────────────
+          // Handles: "InvoiceDate: 07/07/2026", "Date: 2026-07-07"
+          const dateMatch = raw.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
+            || raw.match(/invoice\s*date[:\s]*([\d]{4}-[\d]{2}-[\d]{2})/i)
+            || raw.match(/date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{4})/i);
+          if (dateMatch) {
+            const ds = dateMatch[1];
+            if (ds.includes('/')) {
+              const parts = ds.split('/');
+              // dd/mm/yyyy
+              if (parts[2]?.length === 4) parsed.invoiceDate = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+              else if (parts[2]?.length === 2) parsed.invoiceDate = `20${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+            } else {
+              parsed.invoiceDate = ds;
             }
-            resolve({ invoiceNumber: null });
           }
-        );
-      });
+
+          // ── Supplier name ─────────────────────────────────────────────────
+          // First non-empty line that isn't a keyword
+          const lines = raw.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
+          const skipPatterns = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d)/i;
+          for (const line of lines.slice(0, 6)) {
+            if (!skipPatterns.test(line) && line.length > 4 && /[a-zA-Z]{3}/.test(line)) {
+              parsed.supplierName = line.replace(/TAX\s*INVOICE/gi, '').trim();
+              if (parsed.supplierName) break;
+            }
+          }
+
+          // ── Line items ────────────────────────────────────────────────────
+          // Strategy 1: structured itemcode lines (B&E Foods, similar suppliers)
+          // Format: "10224 CHICKEN1/2BREAST 60.00 60.00 KG 4.00CTN $9.60 $0.00 $576.00"
+          for (const line of lines) {
+            // Three dollar amounts at end (price, gst, total)
+            const m3 = line.match(/^(\d{4,6})\s+(.+?)\s+([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH)\b.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i);
+            if (m3) {
+              parsed.lineItems.push({ description: m3[2].trim(), quantity: parseFloat(m3[4]), unit: m3[5].toUpperCase(), unitPrice: parseFloat(m3[6].replace(/,/g,'')), lineTotal: parseFloat(m3[7].replace(/,/g,'')) });
+              continue;
+            }
+            // Two dollar amounts at end (price, total — no gst column)
+            const m2 = line.match(/^(\d{4,6})\s+(.+?)\s+([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH)\b.*\$([\d.,]+)\s+\$([\d.,]+)\s*$/i);
+            if (m2) {
+              parsed.lineItems.push({ description: m2[2].trim(), quantity: parseFloat(m2[4]), unit: m2[5].toUpperCase(), unitPrice: parseFloat(m2[6].replace(/,/g,'')), lineTotal: parseFloat(m2[7].replace(/,/g,'')) });
+            }
+          }
+          // Strategy 2 fallback: any line ending in $xxx.xx that isn't a total
+          if (parsed.lineItems.length === 0) {
+            for (const line of lines) {
+              const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
+              if (pm && line.length > 10 && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand)/i.test(line)) {
+                parsed.lineItems.push({ description: line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim(), quantity: null, unit: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
+              }
+            }
+          }
+        } catch (pdfErr: any) {
+          console.error('pdf-parse error:', pdfErr.message);
+        }
+      }
 
       // Save the file permanently in compliance-invoices/
       const COMPLIANCE_INVOICES_DIR = path.join(process.cwd(), 'uploads', 'compliance-invoices');
@@ -8267,6 +8326,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         invoiceDate: parsed.invoiceDate || null,
         supplierName: parsed.supplierName || null,
         supplierId,
+        lineItems,          // full array so frontend can auto-populate lines
         lineItemCount: lineItems.length,
         fileUrl,
         invoiceId: createdInvoice?.id || null,
