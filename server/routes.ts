@@ -8326,13 +8326,66 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         }
       }
 
+      // ── Ingredient matching ───────────────────────────────────────────────
+      // Fetch all ingredients and fuzzy-match each parsed line item description
+      const { data: allIngredients } = await supabase.from('ingredients').select('id, name, unit');
+      const ingredients: { id: number; name: string; unit: string }[] = allIngredients || [];
+
+      // Normalise a string: lowercase, strip punctuation/sizes/noise words, split to tokens
+      const tokenise = (s: string): string[] =>
+        s.toLowerCase()
+          .replace(/[()\[\]/\-.,]/g, ' ')
+          .replace(/\b(\d+(\.\d+)?\s*(kg|g|ml|l|ltr|ctn|doz|ea|pcs|box|pack|pkt|each|frozen|chilled|fresh|f|r|w|b|l|s|off|iced|vac|r\/l|b\/l|r\/w|15kg|20kg|\d+kg))\b/gi, ' ')
+          .split(/\s+/)
+          .filter(t => t.length >= 3);
+
+      // Score a line item description against an ingredient name:
+      // count how many ingredient tokens appear in the description tokens
+      const matchScore = (desc: string, ingName: string): number => {
+        const descTokens = tokenise(desc);
+        const ingTokens = tokenise(ingName);
+        if (ingTokens.length === 0) return 0;
+        let hits = 0;
+        for (const t of ingTokens) {
+          if (descTokens.some(d => d.includes(t) || t.includes(d))) hits++;
+        }
+        // Score = proportion of ingredient tokens matched, boosted if ALL match
+        const score = hits / ingTokens.length;
+        return hits === ingTokens.length ? score + 1 : score; // bonus for full match
+      };
+
+      // For each parsed line item, find the best-matching ingredient (score > 0.5)
+      const matchedLineItems = (parsed.lineItems || []).map((li: any) => {
+        let bestId: number | null = null;
+        let bestScore = 0;
+        for (const ing of ingredients) {
+          const score = matchScore(li.description, ing.name);
+          if (score > bestScore) { bestScore = score; bestId = ing.id; }
+        }
+        const matchedIngredient = bestScore >= 0.5 ? ingredients.find(i => i.id === bestId) : null;
+
+        // weight_kg: use quantity when unit is KG, else null
+        const weightKg = (li.unit && li.unit.toUpperCase() === 'KG' && li.quantity != null)
+          ? li.quantity
+          : null;
+
+        return {
+          ...li,
+          ingredientId: matchedIngredient?.id ?? null,
+          ingredientName: matchedIngredient?.name ?? null,
+          weightKg,
+        };
+      });
+
       // Build line items in the invoices format
-      const lineItems = (parsed.lineItems || []).map((li: any) => ({
-        description: li.description || '',
+      const lineItems = matchedLineItems.map((li: any) => ({
+        description: li.ingredientName || li.description || '',
         quantity: li.quantity ?? null,
         unit: li.unit || null,
         unitCost: li.unitPrice ?? null,
         totalCost: li.lineTotal ?? null,
+        ingredientId: li.ingredientId ?? null,
+        weightKg: li.weightKg ?? null,
       }));
 
       let createdInvoice: any = null;

@@ -1699,6 +1699,8 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
           await apiRequest("POST", `/api/compliance/logs/${log.id}/supplier-lines`, {
             item: li.description || '',
             qty: li.quantity ? `${li.quantity} ${li.unit || ''}`.trim() : '',
+            ingredient_id: li.ingredientId ?? null,
+            weight_kg: li.weightKg ?? null,
           });
         }
       }
