@@ -15,7 +15,7 @@ import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 import { StatusPill } from "./Compliance";
 import {
   ChevronRight, AlertCircle, CheckCircle2, Clock, Thermometer,
-  Trash2, Plus, AlertTriangle, RotateCcw, Pencil, Check, Camera, ScanLine, Search
+  Trash2, Plus, AlertTriangle, RotateCcw, Pencil, Check, Camera, ScanLine, Search, FileUp
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -1647,6 +1647,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
   const [submitting, setSubmitting] = useState(false);
   const [batchModal, setBatchModal] = useState<{ batches: any[] } | null>(null);
   const invoicePhotoRef = useRef<HTMLInputElement>(null);
+  const invoicePdfRef = useRef<HTMLInputElement>(null);
 
   // Auto-save delivery datetime on first load if it was empty
   useEffect(() => {
@@ -1769,19 +1770,29 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
               placeholder="e.g. INV-00123"
               className="h-11 flex-1"
             />
+            {/* Camera capture — images only */}
             <input
               ref={invoicePhotoRef}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleInvoiceScan(f); }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleInvoiceScan(f); e.target.value = ''; }}
+            />
+            {/* PDF file picker */}
+            <input
+              ref={invoicePdfRef}
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleInvoiceScan(f); e.target.value = ''; }}
             />
             <Button
               variant="outline"
               className="h-11 gap-1.5 shrink-0"
               onClick={() => invoicePhotoRef.current?.click()}
               disabled={scanning}
+              title="Take photo of invoice"
             >
               {scanning ? (
                 <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
@@ -1789,8 +1800,21 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
                 <><Camera size={14} /><span className="text-xs">Scan</span></>
               )}
             </Button>
+            <Button
+              variant="outline"
+              className="h-11 gap-1.5 shrink-0"
+              onClick={() => invoicePdfRef.current?.click()}
+              disabled={scanning}
+              title="Upload PDF invoice"
+            >
+              {scanning ? (
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <><FileUp size={14} /><span className="text-xs">PDF</span></>
+              )}
+            </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground">Take a photo of the invoice to auto-extract the number, or type it in.</p>
+          <p className="text-[11px] text-muted-foreground">Scan a photo or upload a PDF to auto-extract the invoice number, or type it in.</p>
         </div>
       </div>
 
