@@ -8343,7 +8343,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           // Clean up temp files
           [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
 
-          console.log('[OCR] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
+          console.log('[OCR] raw text length:', raw.length, 'first 500:', raw.slice(0, 500));
+          (parsed as any)._rawOcr = raw.slice(0, 2000); // debug — temporary
 
           const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
 
@@ -8579,6 +8580,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         lineItemCount: lineItems.length,
         fileUrl,
         invoiceId: createdInvoice?.id || null,
+        _debug: (parsed as any)._rawOcr || null,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
