@@ -8357,41 +8357,36 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           console.error('pdf-parse error:', pdfErr.message);
         }
       } else if (isImage) {
-        // ── Image → searchable PDF via Tesseract, then reuse PDF pipeline ────
-        // Tesseract's PDF output mode embeds a text layer that pdf-parse can read.
-        // This works for any supplier invoice regardless of column layout.
+        // ── Image → plain text via Tesseract, then reuse same parser as PDF ─
+        // Uses Tesseract txt output (universally available on Railway nixpkg).
         // Supports HEIC, JPEG, PNG, WEBP — ffmpeg normalises to TIFF first.
         try {
           const { execSync } = await import('child_process');
 
-          // Step 1: normalise to TIFF (handles HEIC/JPEG/PNG/WEBP from any phone)
+          // Step 1: normalise to TIFF at 2× scale (handles any phone camera format)
           const tiffPath = req.file.path + '_ocr.tiff';
           execSync(
             `ffmpeg -y -i "${req.file.path}" -vf "scale=iw*2:ih*2" "${tiffPath}"`,
             { timeout: 20000 }
           );
 
-          // Step 2: Tesseract → searchable PDF (embeds selectable text layer)
-          const pdfBase = req.file.path + '_ocr';
+          // Step 2: Tesseract → plain text (txt mode works on all Railway builds)
+          const txtBase = req.file.path + '_ocr';
           execSync(
-            `tesseract "${tiffPath}" "${pdfBase}" pdf --oem 1`,
+            `tesseract "${tiffPath}" "${txtBase}" txt --oem 1 --psm 6`,
             { timeout: 30000 }
           );
-          const ocrPdfPath = pdfBase + '.pdf';
 
-          // Step 3: extract text from the searchable PDF using pdftotext (same as native PDF uploads)
+          // Step 3: read the text file
           let raw = '';
-          try {
-            const { execSync: exec2 } = await import('child_process');
-            raw = exec2(`pdftotext "${ocrPdfPath}" -`, { timeout: 10000 }).toString('utf8');
-          } catch (_) {}
+          try { raw = fs.readFileSync(txtBase + '.txt', 'utf8'); } catch (_) {}
 
           // Clean up temp files
-          [tiffPath, ocrPdfPath].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+          [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
 
-          console.log('[OCR-PDF] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
+          console.log('[OCR-TXT] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
 
-          if (!raw.trim()) throw new Error('Tesseract PDF produced no text');
+          if (!raw.trim()) throw new Error('Tesseract produced no text');
 
           const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
 
