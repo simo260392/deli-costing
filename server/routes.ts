@@ -8193,25 +8193,28 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     try {
       if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-      // Parse PDF in Node.js using pdf-parse (works on Railway without Python deps)
+      // Parse PDF in Node.js using pdf-parse v2 (works on Railway without Python deps)
       const parsed: any = { invoiceNumber: null, invoiceDate: null, supplierName: null, lineItems: [] };
       const isPdf = req.file.mimetype === 'application/pdf' || (req.file.originalname || '').toLowerCase().endsWith('.pdf');
       if (isPdf) {
         try {
-          const pdfParse = (await import('pdf-parse')).default;
-          const buffer = fs.readFileSync(req.file.path);
-          const pdfData = await pdfParse(buffer);
-          const raw = pdfData.text || '';
+          const { PDFParse } = await import('pdf-parse') as any;
+          // pdf-parse v2 requires a file:// URL, not a buffer
+          const fileUrl = 'file://' + path.resolve(req.file.path);
+          const parser = new PDFParse({ url: fileUrl });
+          const pdfData = await parser.getText();
+          const raw: string = pdfData.text || '';
+          const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
 
           // ── Invoice number ────────────────────────────────────────────────
-          // Handles: "InvoiceNo: 6920960", "Invoice No: INV-123", "Invoice #123", "INV-00123"
+          // Handles: "Invoice No: 6920960", "Invoice No: 6920960\tABN...", "INV-00123"
           const invNoMatch = raw.match(/invoice\s*no[.:# ]*([A-Z0-9\-]{3,20})/i)
             || raw.match(/\bINV[-\s]?(\d{4,})/i)
             || raw.match(/invoice\s*number[:\s#]*([A-Z0-9\-]{3,20})/i);
           if (invNoMatch) parsed.invoiceNumber = invNoMatch[1].trim();
 
           // ── Invoice date ──────────────────────────────────────────────────
-          // Handles: "InvoiceDate: 07/07/2026", "Date: 2026-07-07"
+          // Handles: "Invoice Date: 07/07/2026", "Date: 2026-07-07", even if prefixed by email
           const dateMatch = raw.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
             || raw.match(/invoice\s*date[:\s]*([\d]{4}-[\d]{2}-[\d]{2})/i)
             || raw.match(/date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{4})/i);
@@ -8228,35 +8231,63 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           }
 
           // ── Supplier name ─────────────────────────────────────────────────
-          // First non-empty line that isn't a keyword
-          const lines = raw.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
-          const skipPatterns = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d)/i;
-          for (const line of lines.slice(0, 6)) {
-            if (!skipPatterns.test(line) && line.length > 4 && /[a-zA-Z]{3}/.test(line)) {
-              parsed.supplierName = line.replace(/TAX\s*INVOICE/gi, '').trim();
-              if (parsed.supplierName) break;
+          // pdf-parse v2 may emit "TAX INVOICE\tSupplier Name" on one line (tab-separated)
+          // Strip the TAX INVOICE prefix and take the remainder as the supplier name.
+          const skipPatterns = /^(INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:|\(\d)/i;
+          for (const line of allLines.slice(0, 6)) {
+            const cleaned = line.replace(/^TAX\s*INVOICE\s*/i, '').trim();
+            if (!skipPatterns.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
+              parsed.supplierName = cleaned;
+              break;
             }
           }
 
-          // ── Line items ────────────────────────────────────────────────────
-          // Strategy 1: structured itemcode lines (B&E Foods, similar suppliers)
-          // Format: "10224 CHICKEN1/2BREAST 60.00 60.00 KG 4.00CTN $9.60 $0.00 $576.00"
-          for (const line of lines) {
-            // Three dollar amounts at end (price, gst, total)
-            const m3 = line.match(/^(\d{4,6})\s+(.+?)\s+([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH)\b.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i);
-            if (m3) {
-              parsed.lineItems.push({ description: m3[2].trim(), quantity: parseFloat(m3[4]), unit: m3[5].toUpperCase(), unitPrice: parseFloat(m3[6].replace(/,/g,'')), lineTotal: parseFloat(m3[7].replace(/,/g,'')) });
-              continue;
-            }
-            // Two dollar amounts at end (price, total — no gst column)
-            const m2 = line.match(/^(\d{4,6})\s+(.+?)\s+([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH)\b.*\$([\d.,]+)\s+\$([\d.,]+)\s*$/i);
-            if (m2) {
-              parsed.lineItems.push({ description: m2[2].trim(), quantity: parseFloat(m2[4]), unit: m2[5].toUpperCase(), unitPrice: parseFloat(m2[6].replace(/,/g,'')), lineTotal: parseFloat(m2[7].replace(/,/g,'')) });
+          // ── Line items — multi-line block parser ──────────────────────────
+          // pdf-parse v2 splits item description and qty/price onto separate lines:
+          //   "10224 CHICKEN 1/2 BREAST (F)"   <- item code + partial description
+          //   "S/OFF 15KG"                      <- description continuation
+          //   "60.00 60.00 KG 4.00 CTN $9.60 $0.00 $576.00" <- qty/price line
+          let li = 0;
+          while (li < allLines.length) {
+            const line = allLines[li];
+            const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
+            if (itemStart) {
+              let description = itemStart[2].trim();
+              let j = li + 1;
+              let matched = false;
+              while (j < allLines.length) {
+                const nextLine = allLines[j];
+                // Qty/price line: ordered shipped UOM ... $price $gst $total
+                const priceLineMatch = nextLine.match(
+                  /([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS)\b.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
+                );
+                if (priceLineMatch) {
+                  parsed.lineItems.push({
+                    description,
+                    quantity: parseFloat(priceLineMatch[2]),   // shipped qty
+                    unit: priceLineMatch[3].toUpperCase(),
+                    unitPrice: parseFloat(priceLineMatch[4].replace(/,/g,'')),
+                    lineTotal: parseFloat(priceLineMatch[5].replace(/,/g,''))
+                  });
+                  li = j + 1;
+                  matched = true;
+                  break;
+                }
+                // Next item code starts — stop accumulating description
+                if (/^\d{4,6}\s+/.test(nextLine)) break;
+                // Otherwise accumulate description continuation
+                description += ' ' + nextLine;
+                j++;
+              }
+              if (!matched) li++;
+            } else {
+              li++;
             }
           }
-          // Strategy 2 fallback: any line ending in $xxx.xx that isn't a total
+
+          // Strategy 2 fallback: any line ending in $xxx.xx that isn't a total/header
           if (parsed.lineItems.length === 0) {
-            for (const line of lines) {
+            for (const line of allLines) {
               const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
               if (pm && line.length > 10 && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand)/i.test(line)) {
                 parsed.lineItems.push({ description: line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim(), quantity: null, unit: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
