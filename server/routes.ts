@@ -8382,12 +8382,12 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
           // ── Line items — two strategies for OCR layouts ──────────────────────
           // Strategy A: all on one line (OCR flattens columns)
-          // e.g. "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 | KG | 4.00 CTN $9.60 $0.00 $576.00"
-          // Handles optional pipe separators around the unit (common in B&E Foods invoices)
+          // B&E Foods format: "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 | KG |4.00 CTN $9.60 $0.00 $576.00"
+          // Note: pipe chars are always present, no space between closing pipe and CTN count
           for (const line of allLines) {
-            // item code + description + ordered + shipped + [|] unit [|] CTN count + CTN/BOX + $price + $gst + $total
+            // item code + description + ordered + shipped + | unit | CTN count + CTN/BOX + $price + $gst + $total
             const mA = line.match(
-              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+\|?\s*(KG|CTN|EA|BOX|LTR|PKT|DOZ|EACH|PCS)\s*\|?\s+([\d.]+)\s+(?:CTN|BOX)\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
+              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+\|\s*(KG|CTN|EA|BOX|LTR|PKT|DOZ|EACH|PCS)\s*\|\s*([\d.]+)\s*(?:CTN|BOX)\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
             );
             if (mA) {
               const unitA = mA[4].toUpperCase();
@@ -8398,7 +8398,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
                 description: mA[2].trim(),
                 quantity:    parseFloat(mA[3]),
                 unit:        unitA,
-                numBoxes:    Math.ceil(ctnCountA),
+                numBoxes:    Math.ceil(ctnCountA) || null,
                 unitPrice:   parseFloat(mA[6].replace(/,/g,'')),
                 lineTotal:   parseFloat(mA[7].replace(/,/g,'')),
                 weightKg:    weightKgA
@@ -8450,12 +8450,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             }
           }
 
-          // Strategy C fallback: any line ending in $xxx.xx that isn't a total
+          // Strategy C fallback: any line ending in $xxx.xx that isn't a total/noise
           if (parsed.lineItems.length === 0) {
             for (const line of allLines) {
               const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
-              if (pm && line.length > 10 && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand)/i.test(line)) {
-                parsed.lineItems.push({ description: line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim(), quantity: null, unit: null, numBoxes: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
+              // Skip totals, long prose sentences (>60 chars before the $), and lines with too many words (notices)
+              const descPart = line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim();
+              const wordCount = descPart.split(/\s+/).length;
+              if (pm && line.length > 10 && wordCount <= 8
+                && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand|Dear|Please|Monday|Friday|June|July|Received)/i.test(line)) {
+                parsed.lineItems.push({ description: descPart, quantity: null, unit: null, numBoxes: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
               }
             }
           }
@@ -8580,7 +8584,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         lineItemCount: lineItems.length,
         fileUrl,
         invoiceId: createdInvoice?.id || null,
-        _debug: (parsed as any)._rawOcr || null,
+
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
