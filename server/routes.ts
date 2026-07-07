@@ -8357,35 +8357,41 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           console.error('pdf-parse error:', pdfErr.message);
         }
       } else if (isImage) {
-        // ── Image OCR via Tesseract (no external API key required) ────────────
-        // Converts phone photos (including HEIC) to text, then runs same regex
-        // pipeline as the PDF parser.
+        // ── Image → searchable PDF via Tesseract, then reuse PDF pipeline ────
+        // Tesseract's PDF output mode embeds a text layer that pdf-parse can read.
+        // This works for any supplier invoice regardless of column layout.
+        // Supports HEIC, JPEG, PNG, WEBP — ffmpeg normalises to TIFF first.
         try {
           const { execSync } = await import('child_process');
-          let tiffPath = req.file.path + '_ocr.tiff';
 
-          // Step 1: normalise to TIFF (Tesseract reads TIFF best, ffmpeg handles HEIC/JPEG/PNG/etc)
+          // Step 1: normalise to TIFF (handles HEIC/JPEG/PNG/WEBP from any phone)
+          const tiffPath = req.file.path + '_ocr.tiff';
           execSync(
             `ffmpeg -y -i "${req.file.path}" -vf "scale=iw*2:ih*2" "${tiffPath}"`,
             { timeout: 20000 }
           );
 
-          // Step 2: run Tesseract OCR — outputs to tiffPath + '.txt'
-          const txtBase = req.file.path + '_ocr_out';
+          // Step 2: Tesseract → searchable PDF (embeds selectable text layer)
+          const pdfBase = req.file.path + '_ocr';
           execSync(
-            `tesseract "${tiffPath}" "${txtBase}" --psm 6 --oem 1`,
+            `tesseract "${tiffPath}" "${pdfBase}" pdf --oem 1`,
             { timeout: 30000 }
           );
+          const ocrPdfPath = pdfBase + '.pdf';
 
-          const raw: string = fs.existsSync(txtBase + '.txt')
-            ? fs.readFileSync(txtBase + '.txt', 'utf8')
-            : '';
+          // Step 3: extract text from the searchable PDF using pdftotext (same as native PDF uploads)
+          let raw = '';
+          try {
+            const { execSync: exec2 } = await import('child_process');
+            raw = exec2(`pdftotext "${ocrPdfPath}" -`, { timeout: 10000 }).toString('utf8');
+          } catch (_) {}
 
           // Clean up temp files
-          [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+          [tiffPath, ocrPdfPath].forEach(f => { try { fs.unlinkSync(f); } catch {} });
 
-          console.log('[OCR] raw text length:', raw.length, 'first 500:', raw.slice(0, 500));
-          (parsed as any)._rawOcr = raw.slice(0, 2000); // debug — temporary
+          console.log('[OCR-PDF] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
+
+          if (!raw.trim()) throw new Error('Tesseract PDF produced no text');
 
           const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
 
@@ -8410,100 +8416,77 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             }
           }
 
-          // ── Supplier name ─────────────────────────────────────────────────
-          const ocrSkipPatterns = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:|\(\d)/i;
-          for (const line of allLines.slice(0, 8)) {
-            // Strip TAX INVOICE prefix (OCR may put supplier name on same line)
+          // ── Supplier name: first meaningful non-header line ───────────────
+          const skipPat = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:)/i;
+          for (const line of allLines.slice(0, 10)) {
             const cleaned = line.replace(/TAX\s*INVOICE/gi, '').trim();
-            if (!ocrSkipPatterns.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
+            if (!skipPat.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
               parsed.supplierName = cleaned;
               break;
             }
           }
 
-          // ── Line items — two strategies for OCR layouts ──────────────────────
-          // Strategy A: all on one line (OCR flattens columns)
-          // B&E Foods format: "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 | KG |4.00 CTN $9.60 $0.00 $576.00"
-          // Note: pipe chars are always present, no space between closing pipe and CTN count
-          for (const line of allLines) {
-            // item code + description + ordered + shipped + | unit | CTN count + CTN/BOX + $price + $gst + $total
-            const mA = line.match(
-              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+\|\s*(KG|CTN|EA|BOX|LTR|PKT|DOZ|EACH|PCS)\s*\|\s*([\d.]+)\s*(?:CTN|BOX)\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
-            );
-            if (mA) {
-              const unitA = mA[4].toUpperCase();
-              const ctnCountA = parseFloat(mA[5]);
-              // weight is shipped qty when unit is KG, else null
-              const weightKgA = unitA === 'KG' ? parseFloat(mA[3]) : null;
-              parsed.lineItems.push({
-                description: mA[2].trim(),
-                quantity:    parseFloat(mA[3]),
-                unit:        unitA,
-                numBoxes:    Math.ceil(ctnCountA) || null,
-                unitPrice:   parseFloat(mA[6].replace(/,/g,'')),
-                lineTotal:   parseFloat(mA[7].replace(/,/g,'')),
-                weightKg:    weightKgA
-              } as any);
-            }
-          }
-
-          // Strategy B: multi-line blocks (same as PDF parser — description then price line)
-          if (parsed.lineItems.length === 0) {
-            let li2 = 0;
-            while (li2 < allLines.length) {
-              const line = allLines[li2];
-              const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
-              if (itemStart) {
-                let description = itemStart[2].trim();
-                let j = li2 + 1;
-                let matched = false;
-                while (j < allLines.length) {
-                  const nextLine = allLines[j];
-                  const priceLineMatch = nextLine.match(
-                    /([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS)\b(?:\s+([\d.]+)\s+CTN)?.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
-                  );
-                  if (priceLineMatch) {
-                    const ctnRaw2 = priceLineMatch[4] ? parseFloat(priceLineMatch[4]) : null;
-                    const unitUpper2 = priceLineMatch[3].toUpperCase();
-                    let numBoxes2: number | null = null;
-                    if (ctnRaw2 != null) numBoxes2 = Math.ceil(ctnRaw2);
-                    else if (unitUpper2 === 'CTN' || unitUpper2 === 'BOX') numBoxes2 = Math.ceil(parseFloat(priceLineMatch[2]));
-                    parsed.lineItems.push({
-                      description,
-                      quantity: parseFloat(priceLineMatch[2]),
-                      unit: unitUpper2,
-                      numBoxes: numBoxes2,
-                      unitPrice: parseFloat(priceLineMatch[5].replace(/,/g,'')),
-                      lineTotal: parseFloat(priceLineMatch[6].replace(/,/g,''))
-                    });
-                    li2 = j + 1;
-                    matched = true;
-                    break;
-                  }
-                  if (/^\d{4,6}\s+/.test(nextLine)) break;
-                  description += ' ' + nextLine;
-                  j++;
+          // ── Line items: multi-line block parser ───────────────────────────
+          // Works for any supplier: looks for item code lines, then finds
+          // the price line that follows (qty + unit + price + total).
+          let li = 0;
+          while (li < allLines.length) {
+            const line = allLines[li];
+            const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
+            if (itemStart) {
+              let description = itemStart[2].trim();
+              let j = li + 1;
+              let matched = false;
+              while (j < allLines.length && j < li + 5) {
+                const nextLine = allLines[j];
+                // Price line: qty shipped + UOM + optional CTN count + $price + $gst + $total
+                const priceMatch = nextLine.match(
+                  /([\d.]+)\s+([\d.]+)\s*\|?\s*(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS|UNIT)\s*\|?\s*(?:([\d.]+)\s*(?:CTN|BOX))?.*?\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
+                );
+                if (priceMatch) {
+                  const unitUp = priceMatch[3].toUpperCase();
+                  const shipped = parseFloat(priceMatch[2]);
+                  const ctnCount = priceMatch[4] ? parseFloat(priceMatch[4]) : null;
+                  const numBoxes = ctnCount != null ? Math.ceil(ctnCount)
+                    : (unitUp === 'CTN' || unitUp === 'BOX') ? Math.ceil(shipped) : null;
+                  const weightKg = unitUp === 'KG' ? shipped : null;
+                  parsed.lineItems.push({
+                    description,
+                    quantity:  shipped,
+                    unit:      unitUp,
+                    numBoxes,
+                    unitPrice: parseFloat(priceMatch[5].replace(/,/g,'')),
+                    lineTotal: parseFloat(priceMatch[6].replace(/,/g,'')),
+                    weightKg,
+                  } as any);
+                  li = j + 1;
+                  matched = true;
+                  break;
                 }
-                if (!matched) li2++;
-              } else {
-                li2++;
+                // Stop if we hit the next item code
+                if (/^\d{4,6}\s+/.test(nextLine)) break;
+                description += ' ' + nextLine;
+                j++;
               }
+              if (!matched) li++;
+            } else {
+              li++;
             }
           }
 
-          // Strategy C fallback: any line ending in $xxx.xx that isn't a total/noise
+          // Fallback: lines with $x.xx total and ≤8 words (catches simple invoices)
           if (parsed.lineItems.length === 0) {
             for (const line of allLines) {
               const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
-              // Skip totals, long prose sentences (>60 chars before the $), and lines with too many words (notices)
-              const descPart = line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim();
-              const wordCount = descPart.split(/\s+/).length;
-              if (pm && line.length > 10 && wordCount <= 8
-                && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand|Dear|Please|Monday|Friday|June|July|Received)/i.test(line)) {
-                parsed.lineItems.push({ description: descPart, quantity: null, unit: null, numBoxes: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
+              const desc = line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim();
+              const wc = desc.split(/\s+/).length;
+              if (pm && wc <= 8 && wc >= 2
+                && !/^(Total|Sub|GST|Due|Balance|Dear|Please|Received)/i.test(line)) {
+                parsed.lineItems.push({ description: desc, quantity: null, unit: null, numBoxes: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) } as any);
               }
             }
           }
+
         } catch (ocrErr: any) {
           console.error('Image OCR error:', ocrErr.message);
         }
