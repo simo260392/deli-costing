@@ -7901,7 +7901,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         if (log.status !== 'pass' && log.status !== 'closed') {
           const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', log.id).order('stage_number');
           const { data: supplierLines } = log.log_type === 'supplier'
-            ? await supabase.from('compliance_supplier_lines').select('*').eq('log_id', log.id)
+            ? await supabase.from('compliance_supplier_lines').select('*').eq('log_id', log.id).order('id', { ascending: true })
             : { data: [] };
           log.derivedStatus = deriveComplianceStatus(log, stages || [], supplierLines || []);
           // Attach stage count for progress display
@@ -7994,7 +7994,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (error || !log) return res.status(404).json({ error: 'Not found' });
 
       const { data: stages } = await supabase.from('compliance_log_stages').select('*').eq('log_id', id).order('stage_number');
-      const { data: supplierLines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id);
+      const { data: supplierLines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id).order('id', { ascending: true });
       const { data: wastageLines } = await supabase.from('compliance_wastage_lines').select('*').eq('log_id', id);
       const { data: reviewCategories } = await supabase.from('compliance_review_categories').select('*').eq('log_id', id);
 
@@ -8491,7 +8491,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const { data: log, error: logErr } = await supabase.from('compliance_logs').select('*').eq('id', id).single();
       if (logErr || !log) return res.status(404).json({ error: 'Log not found' });
 
-      const { data: lines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id);
+      const { data: lines } = await supabase.from('compliance_supplier_lines').select('*').eq('log_id', id).order('id', { ascending: true });
       if (!lines || lines.length === 0) return res.json({ batches: [] });
 
       // Only lines with an ingredient_id
