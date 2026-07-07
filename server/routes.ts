@@ -8315,85 +8315,142 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         } catch (pdfErr: any) {
           console.error('pdf-parse error:', pdfErr.message);
         }
-      } else if (isImage && anthropic) {
-        // ── Image OCR via Claude vision ────────────────────────────────────
-        // Phone camera photos — send to Claude Haiku for structured extraction
+      } else if (isImage) {
+        // ── Image OCR via Tesseract (no external API key required) ────────────
+        // Converts phone photos (including HEIC) to text, then runs same regex
+        // pipeline as the PDF parser.
         try {
-          // Claude only accepts jpeg/png/webp/gif. iPhone sends image/heic — convert with ffmpeg.
-          const CLAUDE_SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-          let imagePath = req.file.path;
-          let mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' = 'image/jpeg';
-          const rawMime = (req.file.mimetype || '').toLowerCase();
+          const { execSync } = await import('child_process');
+          let tiffPath = req.file.path + '_ocr.tiff';
 
-          if (CLAUDE_SUPPORTED.includes(rawMime)) {
-            mimeType = rawMime as typeof mimeType;
-          } else {
-            // Convert unsupported format (HEIC, TIFF, BMP, etc.) to JPEG via ffmpeg
-            const { execSync } = await import('child_process');
-            const convertedPath = req.file.path + '_converted.jpg';
-            execSync(`ffmpeg -y -i "${req.file.path}" -q:v 2 "${convertedPath}"`, { timeout: 15000 });
-            imagePath = convertedPath;
-            mimeType = 'image/jpeg';
+          // Step 1: normalise to TIFF (Tesseract reads TIFF best, ffmpeg handles HEIC/JPEG/PNG/etc)
+          execSync(
+            `ffmpeg -y -i "${req.file.path}" -vf "scale=iw*2:ih*2" "${tiffPath}"`,
+            { timeout: 20000 }
+          );
+
+          // Step 2: run Tesseract OCR — outputs to tiffPath + '.txt'
+          const txtBase = req.file.path + '_ocr_out';
+          execSync(
+            `tesseract "${tiffPath}" "${txtBase}" --psm 6 --oem 1`,
+            { timeout: 30000 }
+          );
+
+          const raw: string = fs.existsSync(txtBase + '.txt')
+            ? fs.readFileSync(txtBase + '.txt', 'utf8')
+            : '';
+
+          // Clean up temp files
+          [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+
+          console.log('[OCR] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
+
+          const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
+
+          // ── Invoice number ────────────────────────────────────────────────
+          const invNoMatch = raw.match(/invoice\s*no[.:# ]*([A-Z0-9\-]{3,20})/i)
+            || raw.match(/\bINV[-\s]?(\d{4,})/i)
+            || raw.match(/invoice\s*number[:\s#]*([A-Z0-9\-]{3,20})/i);
+          if (invNoMatch) parsed.invoiceNumber = invNoMatch[1].trim();
+
+          // ── Invoice date ──────────────────────────────────────────────────
+          const dateMatch = raw.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
+            || raw.match(/invoice\s*date[:\s]*([\d]{4}-[\d]{2}-[\d]{2})/i)
+            || raw.match(/date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{4})/i);
+          if (dateMatch) {
+            const ds = dateMatch[1];
+            if (ds.includes('/')) {
+              const parts = ds.split('/');
+              if (parts[2]?.length === 4) parsed.invoiceDate = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+              else if (parts[2]?.length === 2) parsed.invoiceDate = `20${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+            } else {
+              parsed.invoiceDate = ds;
+            }
           }
 
-          const imgBuffer = fs.readFileSync(imagePath);
-          const base64 = imgBuffer.toString('base64');
-          // Clean up converted file if we made one
-          if (imagePath !== req.file.path && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+          // ── Supplier name ─────────────────────────────────────────────────
+          const ocrSkipPatterns = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:|\(\d)/i;
+          for (const line of allLines.slice(0, 8)) {
+            // Strip TAX INVOICE prefix (OCR may put supplier name on same line)
+            const cleaned = line.replace(/TAX\s*INVOICE/gi, '').trim();
+            if (!ocrSkipPatterns.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
+              parsed.supplierName = cleaned;
+              break;
+            }
+          }
 
-          const ocrMsg = await anthropic.messages.create({
-            model: 'claude-haiku-4-5',
-            max_tokens: 1024,
-            messages: [{
-              role: 'user',
-              content: [
-                {
-                  type: 'image',
-                  source: { type: 'base64', media_type: mimeType, data: base64 },
-                },
-                {
-                  type: 'text',
-                  text: `Extract the following fields from this invoice image and return ONLY valid JSON, no markdown, no explanation:
-{
-  "invoiceNumber": "string or null",
-  "invoiceDate": "YYYY-MM-DD or null",
-  "supplierName": "string or null",
-  "lineItems": [
-    {
-      "description": "product name only, no codes",
-      "quantity": number or null,
-      "unit": "KG|EA|CTN|BOX|LTR|PKT or null",
-      "numBoxes": integer or null,
-      "unitPrice": number or null,
-      "lineTotal": number or null
-    }
-  ]
-}
-For numBoxes: use the carton/CTN count if shown (e.g. "4.00 CTN" = 4 boxes), round up fractions.
-For quantity: use the shipped/delivered weight or count in the primary unit.
-For invoiceDate: convert any date format to YYYY-MM-DD.
-Return null for any field not found.`,
-                },
-              ],
-            }],
-          });
+          // ── Line items — two strategies for OCR layouts ──────────────────────
+          // Strategy A: all on one line (OCR flattens columns)
+          // e.g. "10224 CHICKEN 1/2 BREAST (F) 60.00 60.00 4.00 CTN $9.60 $0.00 $576.00"
+          for (const line of allLines) {
+            // item code + description + ordered + shipped + CTN count + CTN + $price + $gst + $total
+            const mA = line.match(
+              /^(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+([\d.]+)\s+CTN\s+\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)\s*$/i
+            );
+            if (mA) {
+              parsed.lineItems.push({
+                description: mA[2].trim(),
+                quantity:    parseFloat(mA[3]),          // shipped qty
+                unit:        'KG',                       // implied by column header
+                numBoxes:    Math.ceil(parseFloat(mA[4])),
+                unitPrice:   parseFloat(mA[5].replace(/,/g,'')),
+                lineTotal:   parseFloat(mA[6].replace(/,/g,''))
+              });
+            }
+          }
 
-          const rawJson = (ocrMsg.content[0] as any).text?.trim() || '';
-          // Strip any accidental markdown fences
-          const cleaned = rawJson.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '').trim();
-          const ocr = JSON.parse(cleaned);
-          parsed.invoiceNumber = ocr.invoiceNumber || null;
-          parsed.invoiceDate   = ocr.invoiceDate   || null;
-          parsed.supplierName  = ocr.supplierName  || null;
-          if (Array.isArray(ocr.lineItems)) {
-            parsed.lineItems = ocr.lineItems.map((li: any) => ({
-              description: li.description || '',
-              quantity:    li.quantity    != null ? parseFloat(li.quantity)  : null,
-              unit:        li.unit        ? String(li.unit).toUpperCase()    : null,
-              numBoxes:    li.numBoxes    != null ? Math.ceil(li.numBoxes)   : null,
-              unitPrice:   li.unitPrice   != null ? parseFloat(li.unitPrice) : null,
-              lineTotal:   li.lineTotal   != null ? parseFloat(li.lineTotal) : null,
-            }));
+          // Strategy B: multi-line blocks (same as PDF parser — description then price line)
+          if (parsed.lineItems.length === 0) {
+            let li2 = 0;
+            while (li2 < allLines.length) {
+              const line = allLines[li2];
+              const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
+              if (itemStart) {
+                let description = itemStart[2].trim();
+                let j = li2 + 1;
+                let matched = false;
+                while (j < allLines.length) {
+                  const nextLine = allLines[j];
+                  const priceLineMatch = nextLine.match(
+                    /([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS)\b(?:\s+([\d.]+)\s+CTN)?.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
+                  );
+                  if (priceLineMatch) {
+                    const ctnRaw2 = priceLineMatch[4] ? parseFloat(priceLineMatch[4]) : null;
+                    const unitUpper2 = priceLineMatch[3].toUpperCase();
+                    let numBoxes2: number | null = null;
+                    if (ctnRaw2 != null) numBoxes2 = Math.ceil(ctnRaw2);
+                    else if (unitUpper2 === 'CTN' || unitUpper2 === 'BOX') numBoxes2 = Math.ceil(parseFloat(priceLineMatch[2]));
+                    parsed.lineItems.push({
+                      description,
+                      quantity: parseFloat(priceLineMatch[2]),
+                      unit: unitUpper2,
+                      numBoxes: numBoxes2,
+                      unitPrice: parseFloat(priceLineMatch[5].replace(/,/g,'')),
+                      lineTotal: parseFloat(priceLineMatch[6].replace(/,/g,''))
+                    });
+                    li2 = j + 1;
+                    matched = true;
+                    break;
+                  }
+                  if (/^\d{4,6}\s+/.test(nextLine)) break;
+                  description += ' ' + nextLine;
+                  j++;
+                }
+                if (!matched) li2++;
+              } else {
+                li2++;
+              }
+            }
+          }
+
+          // Strategy C fallback: any line ending in $xxx.xx that isn't a total
+          if (parsed.lineItems.length === 0) {
+            for (const line of allLines) {
+              const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
+              if (pm && line.length > 10 && !/^(Total|Sub|GST|Due|Balance|Credit|EFTINFO|Outstand)/i.test(line)) {
+                parsed.lineItems.push({ description: line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim(), quantity: null, unit: null, numBoxes: null, unitPrice: null, lineTotal: parseFloat(pm[1].replace(/,/g,'')) });
+              }
+            }
           }
         } catch (ocrErr: any) {
           console.error('Image OCR error:', ocrErr.message);
