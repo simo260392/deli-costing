@@ -8174,8 +8174,21 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   });
 
   // ── POST /api/compliance/logs/:id/supplier-lines ──────────────────────────
-  // POST /api/compliance/scan-invoice — upload invoice photo, extract invoice number via OCR
+  // POST /api/compliance/scan-invoice — upload invoice photo/PDF, extract data, save file, create invoice record
+  // Query params: logId (optional) — if provided, updates the compliance log's invoice_photo_url
   const invoicePhotoUpload = multer({ dest: 'uploads/pdf-cache/' });
+
+  // Serve compliance invoice files
+  app.use('/uploads/compliance-invoices', (req: any, res: any, next: any) => {
+    const COMPLIANCE_INVOICES_DIR = path.join(process.cwd(), 'uploads', 'compliance-invoices');
+    const filePath = path.join(COMPLIANCE_INVOICES_DIR, path.basename(req.url));
+    if (fs.existsSync(filePath)) {
+      res.sendFile(filePath);
+    } else {
+      next();
+    }
+  });
+
   app.post('/api/compliance/scan-invoice', invoicePhotoUpload.single('photo'), async (req: any, res: any) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -8195,9 +8208,69 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           }
         );
       });
-      const fs2 = await import('fs');
-      fs2.default.unlink(req.file.path, () => {});
-      res.json({ ok: true, invoiceNumber: parsed.invoiceNumber || null });
+
+      // Save the file permanently in compliance-invoices/
+      const COMPLIANCE_INVOICES_DIR = path.join(process.cwd(), 'uploads', 'compliance-invoices');
+      if (!fs.existsSync(COMPLIANCE_INVOICES_DIR)) fs.mkdirSync(COMPLIANCE_INVOICES_DIR, { recursive: true });
+      const ext = path.extname(req.file.originalname || '') || (req.file.mimetype === 'application/pdf' ? '.pdf' : '.jpg');
+      const savedFilename = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+      const savedPath = path.join(COMPLIANCE_INVOICES_DIR, savedFilename);
+      fs.renameSync(req.file.path, savedPath);
+      const fileUrl = `/uploads/compliance-invoices/${savedFilename}`;
+
+      // If logId provided: update compliance log's invoice_photo_url
+      const logId = req.query.logId || req.body?.logId;
+      if (logId) {
+        await supabase.from('compliance_logs').update({ invoice_photo_url: fileUrl }).eq('id', logId);
+      }
+
+      // Auto-create invoice record — match supplier by name if possible
+      let supplierId: number | null = null;
+      if (parsed.supplierName) {
+        const { data: suppliers } = await supabase.from('suppliers').select('id, name');
+        if (suppliers) {
+          const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const parsedNorm = norm(parsed.supplierName);
+          const match = suppliers.find((s: any) => norm(s.name).includes(parsedNorm) || parsedNorm.includes(norm(s.name)));
+          if (match) supplierId = match.id;
+        }
+      }
+
+      // Build line items in the invoices format
+      const lineItems = (parsed.lineItems || []).map((li: any) => ({
+        description: li.description || '',
+        quantity: li.quantity ?? null,
+        unit: li.unit || null,
+        unitCost: li.unitPrice ?? null,
+        totalCost: li.lineTotal ?? null,
+      }));
+
+      let createdInvoice: any = null;
+      try {
+        createdInvoice = await storage.createInvoice({
+          supplierId,
+          filename: req.file.originalname || savedFilename,
+          uploadedAt: new Date().toISOString(),
+          invoiceDate: parsed.invoiceDate || null,
+          invoiceRef: parsed.invoiceNumber || null,
+          lineItemsJson: JSON.stringify(lineItems),
+          notes: logId ? `Auto-created from compliance log #${logId}` : null,
+        });
+      } catch (invErr: any) {
+        // Non-fatal — invoice creation failure shouldn't block the response
+        console.error('Failed to create invoice record:', invErr.message);
+      }
+
+      res.json({
+        ok: true,
+        invoiceNumber: parsed.invoiceNumber || null,
+        invoiceDate: parsed.invoiceDate || null,
+        supplierName: parsed.supplierName || null,
+        supplierId,
+        lineItemCount: lineItems.length,
+        fileUrl,
+        invoiceId: createdInvoice?.id || null,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

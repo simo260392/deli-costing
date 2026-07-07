@@ -1682,7 +1682,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
     try {
       const fd = new FormData();
       fd.append("photo", file);
-      const res = await fetch("/api/compliance/scan-invoice", {
+      const res = await fetch(`/api/compliance/scan-invoice?logId=${log.id}`, {
         method: "POST",
         headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
         body: fd,
@@ -1690,12 +1690,22 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
       const data = await res.json();
       if (data.invoiceNumber) {
         setInvoiceNumber(data.invoiceNumber);
-        toast({ description: `Invoice #${data.invoiceNumber} detected` });
+        // Also persist invoice number to the log
+        await saveHeaderField({ invoiceNumber: data.invoiceNumber });
+      }
+      // Save file URL to log state (backend already updated invoice_photo_url)
+      if (data.fileUrl) {
+        onRefresh();
+      }
+      // Toast
+      if (data.invoiceNumber) {
+        const lineMsg = data.lineItemCount > 0 ? ` — ${data.lineItemCount} line items added to Invoice Uploads` : '';
+        toast({ description: `Invoice #${data.invoiceNumber} detected${lineMsg}` });
       } else {
-        toast({ description: "Could not extract invoice number — enter manually", variant: "destructive" });
+        toast({ description: "Invoice uploaded — number not detected, enter manually", variant: "destructive" });
       }
     } catch {
-      toast({ description: "Scan failed", variant: "destructive" });
+      toast({ description: "Upload failed", variant: "destructive" });
     } finally {
       setScanning(false);
     }
@@ -1815,6 +1825,18 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground">Scan a photo or upload a PDF to auto-extract the invoice number, or type it in.</p>
+          {/* Show uploaded invoice file */}
+          {log.invoice_photo_url && (
+            <a
+              href={log.invoice_photo_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-primary underline underline-offset-2 mt-1"
+            >
+              <FileUp size={12} />
+              {log.invoice_photo_url.endsWith('.pdf') ? 'View uploaded invoice PDF' : 'View uploaded invoice photo'}
+            </a>
+          )}
         </div>
       </div>
 
