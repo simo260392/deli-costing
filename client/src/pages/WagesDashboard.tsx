@@ -78,6 +78,33 @@ function getWeekBounds(offsetWeeks = 0) {
   };
 }
 
+// Returns how many Mon–Fri days have been completed (or are today) within the given week.
+// If the week is in the past, returns 5. If in the future, returns 0.
+// Used to pro-rate the $3,000/day shop turnover estimate until Lightspeed is connected.
+const SHOP_DAILY_ESTIMATE = 3000;
+
+function getElapsedWeekdays(fromDate: string, toDate: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const weekStart = new Date(fromDate + "T00:00:00");
+  const weekEnd   = new Date(toDate   + "T00:00:00");
+
+  // Past week — full 5 days
+  if (today > weekEnd) return 5;
+  // Future week — 0 days
+  if (today < weekStart) return 0;
+
+  // Current week — count Mon–Fri days from weekStart up to and including today
+  let count = 0;
+  const cursor = new Date(weekStart);
+  while (cursor <= today) {
+    const dow = cursor.getDay(); // 0=Sun, 6=Sat
+    if (dow >= 1 && dow <= 5) count++;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return Math.min(count, 5);
+}
+
 function formatDateRange(from: string, to: string) {
   const f = new Date(from + "T12:00:00");
   const t = new Date(to + "T12:00:00");
@@ -176,7 +203,7 @@ function KpiCard({
             {/* Main metrics row */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-background rounded-lg border border-border p-2.5">
-                <p className="text-xs text-muted-foreground mb-0.5">Wages + Super</p>
+                <p className="text-xs text-muted-foreground mb-0.5">Wages (excl. super)</p>
                 <p className="text-lg font-bold tabular-nums text-foreground">
                   {fmt$(wages)}
                 </p>
@@ -372,6 +399,16 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
   const cateringGross = data?.flex?.cateringGross ?? null;
   const cateringExGstInclWholesale = data?.flex?.cateringExGstInclWholesale ?? null;
 
+  // Pro-rated shop turnover: $3,000 × weekdays elapsed in selected week (Mon–Fri)
+  // Replaces Lightspeed until that API is connected.
+  const elapsedWeekdays = getElapsedWeekdays(period.from, period.to);
+  const shopTurnoverEstimate = elapsedWeekdays * SHOP_DAILY_ESTIMATE; // e.g. Tue = $6,000
+
+  // Combined sales denominator for Production KPI: live Flex + pro-rated shop
+  const combinedSales = cateringExGstInclWholesale != null
+    ? cateringExGstInclWholesale + shopTurnoverEstimate
+    : null;
+
   // Total wages summary
   const totalWages = (cbdArea?.wages ?? 0) + (productionArea?.wages ?? 0) + (driversArea?.wages ?? 0);
   const totalHours = (cbdArea?.hours ?? 0) + (productionArea?.hours ?? 0) + (driversArea?.hours ?? 0);
@@ -429,7 +466,7 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="pt-4 pb-3 px-4">
-            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">Total Wages + Super</p>
+            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider mb-1">Total Wages (excl. super)</p>
             {isLoading ? <Skeleton className="h-8 w-24" /> : (
               <p className="text-2xl font-bold tabular-nums text-foreground">{fmt$(totalWages)}</p>
             )}
@@ -467,13 +504,13 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
           title="CBD Store"
           icon={Store}
           wages={cbdArea?.wages ?? null}
-          sales={null}
-          salesLabel="Lightspeed Turnover"
-          target={26}
+          sales={shopTurnoverEstimate > 0 ? shopTurnoverEstimate : null}
+          salesLabel="Shop Turnover (est.)"
+          target={25}
           hours={cbdArea?.hours}
           shifts={cbdArea?.shifts}
           pendingWages={cbdArea?.pendingWages}
-          salesNote="(credentials pending)"
+          salesNote={`$3k/day × ${elapsedWeekdays} day${elapsedWeekdays !== 1 ? 's' : ''} — Lightspeed pending`}
           isLoading={isLoading}
         />
 
@@ -482,13 +519,13 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
           title="Production Kitchen"
           icon={ChefHat}
           wages={productionArea?.wages ?? null}
-          sales={cateringExGstInclWholesale}
-          salesLabel="Catering Sales (incl. wholesale)"
-          target={16}
+          sales={combinedSales}
+          salesLabel="Catering + Shop Sales"
+          target={20}
           hours={productionArea?.hours}
           shifts={productionArea?.shifts}
           pendingWages={productionArea?.pendingWages}
-          salesNote="ex GST, incl. wholesale"
+          salesNote={`Flex ex GST + est. shop ($${shopTurnoverEstimate.toLocaleString()})`}
           isLoading={isLoading}
         />
 
@@ -499,7 +536,7 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
           wages={driversArea?.wages ?? null}
           sales={xeroDeliveryFee}
           salesLabel="Delivery Fee"
-          target={88}
+          target={100}
           hours={driversArea?.hours}
           shifts={driversArea?.shifts}
           pendingWages={driversArea?.pendingWages}
