@@ -1702,6 +1702,7 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
             qty: li.quantity ? `${li.quantity} ${li.unit || ''}`.trim() : '',
             ingredient_id: li.ingredientId ?? null,
             weight_kg: li.weightKg ?? null,
+            num_boxes: li.numBoxes ?? null,
           });
         }
       }

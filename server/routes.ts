@@ -8257,17 +8257,28 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
               let matched = false;
               while (j < allLines.length) {
                 const nextLine = allLines[j];
-                // Qty/price line: ordered shipped UOM ... $price $gst $total
+                // Qty/price line: ordered shipped UOM [ctnQty CTN] $price $gst $total
+                // e.g. "60.00 60.00 KG 4.00 CTN $9.60 $0.00 $576.00"
                 const priceLineMatch = nextLine.match(
-                  /([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS)\b.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
+                  /([\d.]+)\s+([\d.]+)\s+(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS)\b(?:\s+([\d.]+)\s+CTN)?.*\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
                 );
                 if (priceLineMatch) {
+                  // numBoxes: explicit CTN count if present, else 1 when unit itself is CTN/BOX
+                  const ctnRaw = priceLineMatch[4] ? parseFloat(priceLineMatch[4]) : null;
+                  const unitUpper = priceLineMatch[3].toUpperCase();
+                  let numBoxes: number | null = null;
+                  if (ctnRaw != null) {
+                    numBoxes = Math.ceil(ctnRaw); // round up fractional cartons
+                  } else if (unitUpper === 'CTN' || unitUpper === 'BOX') {
+                    numBoxes = Math.ceil(parseFloat(priceLineMatch[2])); // shipped qty is the box count
+                  }
                   parsed.lineItems.push({
                     description,
                     quantity: parseFloat(priceLineMatch[2]),   // shipped qty
-                    unit: priceLineMatch[3].toUpperCase(),
-                    unitPrice: parseFloat(priceLineMatch[4].replace(/,/g,'')),
-                    lineTotal: parseFloat(priceLineMatch[5].replace(/,/g,''))
+                    unit: unitUpper,
+                    numBoxes,
+                    unitPrice: parseFloat(priceLineMatch[5].replace(/,/g,'')),
+                    lineTotal: parseFloat(priceLineMatch[6].replace(/,/g,''))
                   });
                   li = j + 1;
                   matched = true;
@@ -8382,6 +8393,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         description: li.ingredientName || li.description || '',
         quantity: li.quantity ?? null,
         unit: li.unit || null,
+        numBoxes: li.numBoxes ?? null,
         unitCost: li.unitPrice ?? null,
         totalCost: li.lineTotal ?? null,
         ingredientId: li.ingredientId ?? null,
