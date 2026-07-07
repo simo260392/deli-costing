@@ -8195,7 +8195,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
       // Parse PDF in Node.js using pdf-parse v2 (works on Railway without Python deps)
       const parsed: any = { invoiceNumber: null, invoiceDate: null, supplierName: null, lineItems: [] };
-      const isPdf = req.file.mimetype === 'application/pdf' || (req.file.originalname || '').toLowerCase().endsWith('.pdf');
+      const origName = (req.file.originalname || '').toLowerCase();
+      const isPdf = req.file.mimetype === 'application/pdf' || origName.endsWith('.pdf');
+      // Treat as image if mime starts with image/ or filename is a known image extension
+      const isImage = !isPdf && (
+        (req.file.mimetype || '').startsWith('image/') ||
+        origName.match(/\.(jpe?g|png|webp|gif|heic|heif|tiff?|bmp)$/) != null ||
+        req.file.mimetype === 'application/octet-stream'
+      );
       if (isPdf) {
         try {
           const { PDFParse } = await import('pdf-parse') as any;
@@ -8308,13 +8315,31 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         } catch (pdfErr: any) {
           console.error('pdf-parse error:', pdfErr.message);
         }
-      } else if (anthropic) {
+      } else if (isImage && anthropic) {
         // ── Image OCR via Claude vision ────────────────────────────────────
         // Phone camera photos — send to Claude Haiku for structured extraction
         try {
-          const imgBuffer = fs.readFileSync(req.file.path);
+          // Claude only accepts jpeg/png/webp/gif. iPhone sends image/heic — convert with ffmpeg.
+          const CLAUDE_SUPPORTED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+          let imagePath = req.file.path;
+          let mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' = 'image/jpeg';
+          const rawMime = (req.file.mimetype || '').toLowerCase();
+
+          if (CLAUDE_SUPPORTED.includes(rawMime)) {
+            mimeType = rawMime as typeof mimeType;
+          } else {
+            // Convert unsupported format (HEIC, TIFF, BMP, etc.) to JPEG via ffmpeg
+            const { execSync } = await import('child_process');
+            const convertedPath = req.file.path + '_converted.jpg';
+            execSync(`ffmpeg -y -i "${req.file.path}" -q:v 2 "${convertedPath}"`, { timeout: 15000 });
+            imagePath = convertedPath;
+            mimeType = 'image/jpeg';
+          }
+
+          const imgBuffer = fs.readFileSync(imagePath);
           const base64 = imgBuffer.toString('base64');
-          const mimeType = (req.file.mimetype || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+          // Clean up converted file if we made one
+          if (imagePath !== req.file.path && fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
 
           const ocrMsg = await anthropic.messages.create({
             model: 'claude-haiku-4-5',
