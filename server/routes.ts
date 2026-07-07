@@ -8308,6 +8308,71 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         } catch (pdfErr: any) {
           console.error('pdf-parse error:', pdfErr.message);
         }
+      } else if (anthropic) {
+        // ── Image OCR via Claude vision ────────────────────────────────────
+        // Phone camera photos — send to Claude Haiku for structured extraction
+        try {
+          const imgBuffer = fs.readFileSync(req.file.path);
+          const base64 = imgBuffer.toString('base64');
+          const mimeType = (req.file.mimetype || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+
+          const ocrMsg = await anthropic.messages.create({
+            model: 'claude-haiku-4-5',
+            max_tokens: 1024,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'image',
+                  source: { type: 'base64', media_type: mimeType, data: base64 },
+                },
+                {
+                  type: 'text',
+                  text: `Extract the following fields from this invoice image and return ONLY valid JSON, no markdown, no explanation:
+{
+  "invoiceNumber": "string or null",
+  "invoiceDate": "YYYY-MM-DD or null",
+  "supplierName": "string or null",
+  "lineItems": [
+    {
+      "description": "product name only, no codes",
+      "quantity": number or null,
+      "unit": "KG|EA|CTN|BOX|LTR|PKT or null",
+      "numBoxes": integer or null,
+      "unitPrice": number or null,
+      "lineTotal": number or null
+    }
+  ]
+}
+For numBoxes: use the carton/CTN count if shown (e.g. "4.00 CTN" = 4 boxes), round up fractions.
+For quantity: use the shipped/delivered weight or count in the primary unit.
+For invoiceDate: convert any date format to YYYY-MM-DD.
+Return null for any field not found.`,
+                },
+              ],
+            }],
+          });
+
+          const rawJson = (ocrMsg.content[0] as any).text?.trim() || '';
+          // Strip any accidental markdown fences
+          const cleaned = rawJson.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '').trim();
+          const ocr = JSON.parse(cleaned);
+          parsed.invoiceNumber = ocr.invoiceNumber || null;
+          parsed.invoiceDate   = ocr.invoiceDate   || null;
+          parsed.supplierName  = ocr.supplierName  || null;
+          if (Array.isArray(ocr.lineItems)) {
+            parsed.lineItems = ocr.lineItems.map((li: any) => ({
+              description: li.description || '',
+              quantity:    li.quantity    != null ? parseFloat(li.quantity)  : null,
+              unit:        li.unit        ? String(li.unit).toUpperCase()    : null,
+              numBoxes:    li.numBoxes    != null ? Math.ceil(li.numBoxes)   : null,
+              unitPrice:   li.unitPrice   != null ? parseFloat(li.unitPrice) : null,
+              lineTotal:   li.lineTotal   != null ? parseFloat(li.lineTotal) : null,
+            }));
+          }
+        } catch (ocrErr: any) {
+          console.error('Image OCR error:', ocrErr.message);
+        }
       }
 
       // Save the file permanently in compliance-invoices/
