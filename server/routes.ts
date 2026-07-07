@@ -704,6 +704,13 @@ async function computePlatterCosts(
   return { itemsCost, packagingCost, labourCost, labourMinutes, totalCost, targetRrp, wholesaleTargetRrp, wholesaleMarginPercent, nutritionJson: JSON.stringify(nutritionPerServe) };
 }
 
+// ─── In-memory caches ────────────────────────────────────────────────────────
+const flexOrdersCache = new Map<string, { data: any; expiresAt: number }>();
+const FLEX_ORDERS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
+const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
 export function registerRoutes(httpServer: Server, app: Express) {
   // Helper to wrap async route handlers and forward errors to Express error handler
   function asyncRoute(fn: (req: any, res: any, next: any) => Promise<any>) {
@@ -2507,8 +2514,19 @@ Return ONLY the JSON object, no explanation.`;
     try {
       const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
       const raw  = req.query.raw === "true";
+      const refresh = req.query.refresh === "true";
       const from = `${date}T00:00:00+08:00`;
       const to   = `${date}T23:59:59+08:00`;
+
+      // ─ Cache check ─────────────────────────────────────────────────────────────────────────────
+      const cacheKey = `${date}:${raw ? 'raw' : 'agg'}`;
+      if (!refresh && flexOrdersCache.has(cacheKey)) {
+        const entry = flexOrdersCache.get(cacheKey)!;
+        if (Date.now() < entry.expiresAt) {
+          return res.json({ ...entry.data, _cached: true });
+        }
+        flexOrdersCache.delete(cacheKey);
+      }
 
       let allOrders: any[] = [];
       let page = 1;
@@ -2594,7 +2612,9 @@ Return ONLY the JSON object, no explanation.`;
           })),
           };
         });
-        return res.json({ date, totalOrders: orders.length, orders });
+        const rawResult = { date, totalOrders: orders.length, orders };
+        flexOrdersCache.set(cacheKey, { data: rawResult, expiresAt: Date.now() + FLEX_ORDERS_TTL_MS });
+        return res.json(rawResult);
       }
 
       // Consolidated product map (legacy / used by old import)
@@ -2612,7 +2632,9 @@ Return ONLY the JSON object, no explanation.`;
           }
         }
       }
-      res.json({ date, totalOrders: activeOrders.length, items: [...productMap.values()] });
+      const aggResult = { date, totalOrders: activeOrders.length, items: [...productMap.values()] };
+      flexOrdersCache.set(cacheKey, { data: aggResult, expiresAt: Date.now() + FLEX_ORDERS_TTL_MS });
+      res.json(aggResult);
     } catch (e: any) {
       console.error("Flex orders error:", e);
       res.status(500).json({ error: e.message });
@@ -6264,6 +6286,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // Returns structured data for the wages KPI dashboard
   app.get("/api/wages-dashboard", asyncRoute(async (req, res) => {
     const { from, to } = req.query as { from?: string; to?: string };
+    const refresh = req.query.refresh === "true";
     // Default to current ISO week (Mon–Sun)
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0=Sun
@@ -6276,6 +6299,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
     const fromDate = from || monday.toISOString().split("T")[0];
     const toDate = to || sunday.toISOString().split("T")[0];
+
+    // ─ Cache check ─────────────────────────────────────────────────────────────────────────────
+    const wagesCacheKey = `wages:${fromDate}:${toDate}`;
+    if (!refresh && wagesDashboardCache.has(wagesCacheKey)) {
+      const entry = wagesDashboardCache.get(wagesCacheKey)!;
+      if (Date.now() < entry.expiresAt) {
+        return res.json({ ...entry.data, _cached: true, _cachedAt: new Date(entry.expiresAt - WAGES_TTL_MS).toISOString() });
+      }
+      wagesDashboardCache.delete(wagesCacheKey);
+    }
 
     const result: any = {
       period: { from: fromDate, to: toDate },
@@ -6451,6 +6484,11 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       result.errors.push(`Xero cache read failed: ${e.message}`);
     }
 
+    // Store in cache (only if no errors — don't cache partial failures)
+    if (result.errors.length === 0) {
+      wagesDashboardCache.set(wagesCacheKey, { data: result, expiresAt: Date.now() + WAGES_TTL_MS });
+    }
+
     res.json(result);
   }));
 
@@ -6491,6 +6529,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const cacheKey = `xero_delivery_fee_${from}_${to}`;
     await storage.setSetting(cacheKey, deliveryFee.toFixed(2));
     await storage.setSetting(`${cacheKey}_updated`, new Date().toISOString());
+
+    // Invalidate wages dashboard cache so it picks up the new Xero fee immediately
+    wagesDashboardCache.delete(`wages:${from}:${to}`);
 
     res.json({
       ok: true,

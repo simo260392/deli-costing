@@ -312,12 +312,14 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
   const [xeroLastUpdated, setXeroLastUpdated] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
+  const [forceRefresh, setForceRefresh] = useState(false);
+
   const { data, isLoading, isError, refetch } = useQuery<WagesDashboardData>({
-    queryKey: ["/api/wages-dashboard", period.from, period.to],
+    queryKey: ["/api/wages-dashboard", period.from, period.to, forceRefresh],
     queryFn: () =>
-      apiRequest("GET", `/api/wages-dashboard?from=${period.from}&to=${period.to}`)
-        .then(r => r.json()),
-    staleTime: 5 * 60 * 1000,
+      apiRequest("GET", `/api/wages-dashboard?from=${period.from}&to=${period.to}${forceRefresh ? '&refresh=true' : ''}`)
+        .then(r => { setForceRefresh(false); return r.json(); }),
+    staleTime: 14 * 60 * 1000, // matches server 15min TTL
     refetchOnWindowFocus: false,
   });
 
@@ -359,7 +361,7 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
 
   function handleRefresh() {
     setLastRefresh(new Date());
-    refetch();
+    setForceRefresh(true); // bust server-side cache
     fetchXeroDelivery();
   }
 
@@ -578,7 +580,7 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
       {/* Deputy data note */}
       {data && !isLoading && (
         <p className="text-xs text-muted-foreground text-right">
-          Deputy data: approved timesheets only · last fetched {new Date(data.fetchedAt).toLocaleTimeString("en-AU")}
+          Deputy data: approved timesheets only · last fetched {new Date(data.fetchedAt).toLocaleTimeString("en-AU")}{(data as any)._cached ? ' · cached (tap Refresh for live data)' : ''}
         </p>
       )}
     </div>
