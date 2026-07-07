@@ -8618,7 +8618,6 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         lineItemCount: lineItems.length,
         fileUrl,
         invoiceId: createdInvoice?.id || null,
-        _ocrError: (parsed as any)._ocrError || null,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
