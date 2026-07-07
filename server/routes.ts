@@ -8421,49 +8421,63 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             }
           }
 
-          // ── Line items: multi-line block parser ───────────────────────────
-          // Works for any supplier: looks for item code lines, then finds
-          // the price line that follows (qty + unit + price + total).
+          // ── Line items parser ────────────────────────────────────────────
+          // Handles two OCR layouts from B&E Foods (and similar suppliers):
+          //   Format A (all-on-one-line): "10224 CHICKEN ... 60.00 4.00 CTN $9.60 $0.00 $576.00"
+          //   Format B (multi-line):      "10858 BEEF ..."  followed by "20.00 20.90 KG | 1.05 CTN $14.50 ..."
+          // Strategy: check if the item code line itself contains price data first (Format A),
+          // then fall back to scanning subsequent lines (Format B).
+          function extractPriceFields(text: string) {
+            // Matches: [ordered] [shipped] [|] UOM [|] [ctn count CTN/BOX] $price $gst $total
+            const m = text.match(
+              /[\d.]+\s+([\d.]+)\s*\|?\s*(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS|UNIT)\s*\|?\s*(?:([\d.]+)\s*(?:CTN|BOX))?.*?\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
+            );
+            if (!m) return null;
+            const unitUp = m[2].toUpperCase();
+            const shipped = parseFloat(m[1]);
+            const ctnCount = m[3] ? parseFloat(m[3]) : null;
+            return {
+              quantity:  shipped,
+              unit:      unitUp,
+              numBoxes:  ctnCount != null ? Math.ceil(ctnCount) : (unitUp === 'CTN' || unitUp === 'BOX') ? Math.ceil(shipped) : null,
+              unitPrice: parseFloat(m[4].replace(/,/g,'')),
+              lineTotal: parseFloat(m[5].replace(/,/g,'')),
+              weightKg:  unitUp === 'KG' ? shipped : null,
+            };
+          }
+
           let li = 0;
           while (li < allLines.length) {
             const line = allLines[li];
             const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
             if (itemStart) {
-              let description = itemStart[2].trim();
-              let j = li + 1;
-              let matched = false;
-              while (j < allLines.length && j < li + 5) {
-                const nextLine = allLines[j];
-                // Price line: qty shipped + UOM + optional CTN count + $price + $gst + $total
-                const priceMatch = nextLine.match(
-                  /([\d.]+)\s+([\d.]+)\s*\|?\s*(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS|UNIT)\s*\|?\s*(?:([\d.]+)\s*(?:CTN|BOX))?.*?\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
-                );
-                if (priceMatch) {
-                  const unitUp = priceMatch[3].toUpperCase();
-                  const shipped = parseFloat(priceMatch[2]);
-                  const ctnCount = priceMatch[4] ? parseFloat(priceMatch[4]) : null;
-                  const numBoxes = ctnCount != null ? Math.ceil(ctnCount)
-                    : (unitUp === 'CTN' || unitUp === 'BOX') ? Math.ceil(shipped) : null;
-                  const weightKg = unitUp === 'KG' ? shipped : null;
-                  parsed.lineItems.push({
-                    description,
-                    quantity:  shipped,
-                    unit:      unitUp,
-                    numBoxes,
-                    unitPrice: parseFloat(priceMatch[5].replace(/,/g,'')),
-                    lineTotal: parseFloat(priceMatch[6].replace(/,/g,'')),
-                    weightKg,
-                  } as any);
-                  li = j + 1;
-                  matched = true;
-                  break;
+              // Try Format A: price data on the same line as item code
+              const sameLinePrice = extractPriceFields(itemStart[2]);
+              if (sameLinePrice) {
+                // Description = everything before the first number sequence after the product name
+                const descOnly = itemStart[2].replace(/\s+[\d.]+\s+[\d.]+.*$/, '').trim();
+                parsed.lineItems.push({ description: descOnly, ...sameLinePrice } as any);
+                li++;
+              } else {
+                // Format B: look for price line on subsequent lines
+                let description = itemStart[2].trim();
+                let j = li + 1;
+                let matched = false;
+                while (j < allLines.length && j < li + 5) {
+                  const nextLine = allLines[j];
+                  const fields = extractPriceFields(nextLine);
+                  if (fields) {
+                    parsed.lineItems.push({ description, ...fields } as any);
+                    li = j + 1;
+                    matched = true;
+                    break;
+                  }
+                  if (/^\d{4,6}\s+/.test(nextLine)) break; // next item code
+                  description += ' ' + nextLine;
+                  j++;
                 }
-                // Stop if we hit the next item code
-                if (/^\d{4,6}\s+/.test(nextLine)) break;
-                description += ' ' + nextLine;
-                j++;
+                if (!matched) li++;
               }
-              if (!matched) li++;
             } else {
               li++;
             }
