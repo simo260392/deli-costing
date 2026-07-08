@@ -2737,14 +2737,12 @@ Return ONLY the JSON object, no explanation.`;
 
       // ── Extract text from PDF or image using pdftotext / Tesseract ────────
       let rawText = '';
-      let pdftotextErr = '';
-      let pdfParseErr = '';
       const { execSync } = await import('child_process');
       const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname?.toLowerCase().endsWith('.pdf');
       const isImg = /image\//i.test(req.file.mimetype || '');
 
       if (isPdf) {
-        try { rawText = execSync(`pdftotext -layout "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch(e: any) { pdftotextErr = e.message || String(e); }
+        try { rawText = execSync(`pdftotext -layout "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch {}
         // Fallback: pdf-parse v2
         if (!rawText.trim()) {
           try {
@@ -2753,7 +2751,7 @@ Return ONLY the JSON object, no explanation.`;
             const pdfParseLib = require('pdf-parse');
             const pdfData = await pdfParseLib(pdfBuf);
             rawText = pdfData.text || '';
-          } catch(e: any) { pdfParseErr = e.message || String(e); }
+          } catch {}
         }
       } else if (isImg) {
         try {
@@ -2970,7 +2968,7 @@ Return ONLY the JSON object, no explanation.`;
       });
 
       fs.unlink(req.file.path, () => {});
-      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched, _debug: { rawTextLen: rawText.length, rawTextSnippet: rawText.slice(0, 200), lineItemsBeforeEnrich: lineItems.length, pdftotextErr, pdfParseErr } });
+      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
