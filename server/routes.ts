@@ -10142,7 +10142,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // PUT /api/batches/:batchId — update batch (status, use_by_date, freezer info etc)
   app.put('/api/batches/:batchId', asyncRoute(async (req: any, res: any) => {
     const { batchId } = req.params;
-    const allowed = ['status', 'use_by_date', 'frozen_at', 'freezer_unit', 'notes', 'total_weight_kg', 'num_boxes', 'weight_per_box_kg', 'delivery_log_id'];
+    const allowed = ['status', 'use_by_date', 'frozen_at', 'freezer_unit', 'notes', 'total_weight_kg', 'num_boxes', 'weight_per_box_kg', 'delivery_log_id', 'arrival_state', 'product_name', 'product_code', 'parent_batch_id'];
     const updates: any = {};
     for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
     const { data, error } = await supabase.from('product_batches').update(updates).eq('batch_id', batchId).select().single();
