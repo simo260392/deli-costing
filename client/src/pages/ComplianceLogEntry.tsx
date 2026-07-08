@@ -1683,12 +1683,17 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
     try {
       const fd = new FormData();
       fd.append("photo", file);
-      const res = await fetch(`/api/compliance/scan-invoice?logId=${log.id}`, {
+      const _base = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+      const scanRes = await fetch(`${_base}/api/compliance/scan-invoice?logId=${log.id}`, {
         method: "POST",
         headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
         body: fd,
       });
-      const data = await res.json();
+      if (!scanRes.ok) {
+        const errText = await scanRes.text().catch(() => scanRes.statusText);
+        throw new Error(`Server error ${scanRes.status}: ${errText.slice(0, 200)}`);
+      }
+      const data = await scanRes.json();
       // Auto-select supplier if matched and not already set
       if (data.supplierId && !log.supplier_id) {
         await saveHeaderField({ supplierId: data.supplierId });
@@ -1722,8 +1727,8 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
       } else {
         toast({ description: "Invoice uploaded — number not detected, enter manually", variant: "destructive" });
       }
-    } catch {
-      toast({ description: "Upload failed", variant: "destructive" });
+    } catch (err: any) {
+      toast({ description: `Upload failed: ${err?.message || 'Unknown error'}`, variant: "destructive" });
     } finally {
       setScanning(false);
     }
