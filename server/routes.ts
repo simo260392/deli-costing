@@ -8580,51 +8580,55 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           console.error('pdf-parse error:', pdfErr.message);
         }
       } else if (isImage) {
-        // ── Image → plain text via Tesseract, then reuse same parser as PDF ─
-        // Uses Tesseract txt output (universally available on Railway nixpkg).
-        // Supports HEIC, JPEG, PNG, WEBP — ffmpeg normalises to TIFF first.
+        // ── Image → PDF via ImageMagick → pdftotext -layout (same parser as PDF path) ─
+        // Phone camera images (HEIC, JPEG, etc.) are converted to high-quality PDF
+        // first so that pdftotext -layout can produce the same clean columnar text
+        // that the working PDF upload path uses. Tesseract was producing garbage.
         try {
           const { execSync } = await import('child_process');
+          const tmpPdfPath = req.file.path + '_ocr.pdf';
 
-          // Step 1: normalise to TIFF at 2× scale (handles any phone camera format)
+          // Step 1: normalise to TIFF at 300 DPI via ffmpeg (handles HEIC/WEBP/etc)
           const tiffPath = req.file.path + '_ocr.tiff';
           execSync(
             `ffmpeg -y -i "${req.file.path}" -vf "scale=iw*2:ih*2" "${tiffPath}"`,
             { timeout: 20000 }
           );
 
-          // Step 2: Tesseract → plain text (txt mode works on all Railway builds)
-          const txtBase = req.file.path + '_ocr';
+          // Step 2: ImageMagick convert TIFF → PDF at 300 DPI
           execSync(
-            `tesseract "${tiffPath}" "${txtBase}" txt --oem 1 --psm 6`,
+            `convert -density 300 "${tiffPath}" -compress lzw "${tmpPdfPath}"`,
             { timeout: 30000 }
           );
 
-          // Step 3: read the text file
+          // Step 3: pdftotext -layout (identical to PDF upload path)
           let raw = '';
-          try { raw = fs.readFileSync(txtBase + '.txt', 'utf8'); } catch (_) {}
+          try {
+            raw = execSync(`pdftotext -layout "${tmpPdfPath}" -`, { timeout: 15000 }).toString('utf8');
+          } catch (ptErr: any) {
+            console.error('[OCR-IMG] pdftotext error:', ptErr.message);
+          }
 
           // Clean up temp files
-          [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
+          [tiffPath, tmpPdfPath].forEach(f => { try { fs.unlinkSync(f); } catch {} });
 
-          console.log('[OCR-TXT] raw text length:', raw.length, 'first 300:', raw.slice(0, 300));
+          console.log('[OCR-IMG] pdftotext raw length:', raw.length, 'first 300:', raw.slice(0, 300));
 
-          if (!raw.trim()) throw new Error('Tesseract produced no text');
+          if (!raw.trim()) throw new Error('pdftotext produced no text from image-derived PDF');
 
-          const allLines: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
-
-          // ── Invoice number ────────────────────────────────────────────────
-          const invNoMatch = raw.match(/invoice\s*no[.:# ]*([A-Z0-9\-]{3,20})/i)
+          // ── Reuse identical parsing logic as the PDF path above ─────────────
+          // Invoice number
+          const invNoMatchImg = raw.match(/invoice\s*no[.:# ]*([A-Z0-9\-]{3,20})/i)
             || raw.match(/\bINV[-\s]?(\d{4,})/i)
             || raw.match(/invoice\s*number[:\s#]*([A-Z0-9\-]{3,20})/i);
-          if (invNoMatch) parsed.invoiceNumber = invNoMatch[1].trim();
+          if (invNoMatchImg) parsed.invoiceNumber = invNoMatchImg[1].trim();
 
-          // ── Invoice date ──────────────────────────────────────────────────
-          const dateMatch = raw.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
+          // Invoice date
+          const dateMatchImg = raw.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
             || raw.match(/invoice\s*date[:\s]*([\d]{4}-[\d]{2}-[\d]{2})/i)
             || raw.match(/date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{4})/i);
-          if (dateMatch) {
-            const ds = dateMatch[1];
+          if (dateMatchImg) {
+            const ds = dateMatchImg[1];
             if (ds.includes('/')) {
               const parts = ds.split('/');
               if (parts[2]?.length === 4) parsed.invoiceDate = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
@@ -8634,24 +8638,20 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             }
           }
 
-          // ── Supplier name: first meaningful non-header line ───────────────
-          const skipPat = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:)/i;
-          for (const line of allLines.slice(0, 10)) {
+          // Supplier name: first meaningful non-header line
+          const skipPatImg = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:)/i;
+          const allLinesImg: string[] = raw.split('\n').map((l: string) => l.trim()).filter(Boolean);
+          for (const line of allLinesImg.slice(0, 10)) {
             const cleaned = line.replace(/TAX\s*INVOICE/gi, '').trim();
-            if (!skipPat.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
+            if (!skipPatImg.test(cleaned) && cleaned.length > 4 && /[a-zA-Z]{3}/.test(cleaned)) {
               parsed.supplierName = cleaned;
               break;
             }
           }
 
-          // ── Line items parser ────────────────────────────────────────────
-          // Handles two OCR layouts from B&E Foods (and similar suppliers):
-          //   Format A (all-on-one-line): "10224 CHICKEN ... 60.00 4.00 CTN $9.60 $0.00 $576.00"
-          //   Format B (multi-line):      "10858 BEEF ..."  followed by "20.00 20.90 KG | 1.05 CTN $14.50 ..."
-          // Strategy: check if the item code line itself contains price data first (Format A),
-          // then fall back to scanning subsequent lines (Format B).
-          function extractPriceFields(text: string) {
-            // Matches: [ordered] [shipped] [|] UOM [|] [ctn count CTN/BOX] $price $gst $total
+          // ── Strategy 0: B&E Foods item-code rows ────────────────────────────
+          // Format: "10224  CHICKEN BREAST  60.00  60.00  KG  4.00 CTN  $9.60  $0.00  $576.00"
+          function extractPriceFieldsImg(text: string) {
             const m = text.match(
               /[\d.]+\s+([\d.]+)\s*\|?\s*(KG|EA|CTN|BOX|LTR|PKT|DOZ|EACH|PCS|UNIT)\s*\|?\s*(?:([\d.]+)\s*(?:CTN|BOX))?.*?\$([\d.,]+)\s+\$[\d.,]+\s+\$([\d.,]+)/i
             );
@@ -8669,46 +8669,71 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             };
           }
 
-          let li = 0;
-          while (li < allLines.length) {
-            const line = allLines[li];
+          let liImg = 0;
+          while (liImg < allLinesImg.length) {
+            const line = allLinesImg[liImg];
             const itemStart = line.match(/^(\d{4,6})\s+(.+)$/);
             if (itemStart) {
-              // Try Format A: price data on the same line as item code
-              const sameLinePrice = extractPriceFields(itemStart[2]);
+              const sameLinePrice = extractPriceFieldsImg(itemStart[2]);
               if (sameLinePrice) {
-                // Description = everything before the first number sequence after the product name
                 const descOnly = itemStart[2].replace(/\s+[\d.]+\s+[\d.]+.*$/, '').trim();
                 parsed.lineItems.push({ description: descOnly, ...sameLinePrice } as any);
-                li++;
+                liImg++;
               } else {
-                // Format B: look for price line on subsequent lines
                 let description = itemStart[2].trim();
-                let j = li + 1;
+                let j = liImg + 1;
                 let matched = false;
-                while (j < allLines.length && j < li + 5) {
-                  const nextLine = allLines[j];
-                  const fields = extractPriceFields(nextLine);
+                while (j < allLinesImg.length && j < liImg + 5) {
+                  const nextLine = allLinesImg[j];
+                  const fields = extractPriceFieldsImg(nextLine);
                   if (fields) {
                     parsed.lineItems.push({ description, ...fields } as any);
-                    li = j + 1;
+                    liImg = j + 1;
                     matched = true;
                     break;
                   }
-                  if (/^\d{4,6}\s+/.test(nextLine)) break; // next item code
+                  if (/^\d{4,6}\s+/.test(nextLine)) break;
                   description += ' ' + nextLine;
                   j++;
                 }
-                if (!matched) li++;
+                if (!matched) liImg++;
               }
             } else {
-              li++;
+              liImg++;
             }
           }
 
-          // Fallback: lines with $x.xx total and ≤8 words (catches simple invoices)
+          // ── Strategy 1: pdftotext -layout column split ───────────────────────
           if (parsed.lineItems.length === 0) {
-            for (const line of allLines) {
+            const layoutLines = raw.split('\n').filter((l: string) => l.trim());
+            for (const ll of layoutLines) {
+              const cols = ll.split(/  +/);
+              if (cols.length >= 3) {
+                const last = cols[cols.length - 1].replace(/[^0-9.]/g, '');
+                const second = cols[1]?.replace(/[^0-9.]/g, '');
+                if (last && second && parseFloat(last) > 0 && parseFloat(second) > 0) {
+                  const desc = cols[0].trim();
+                  const wc = desc.split(/\s+/).length;
+                  if (wc >= 1 && wc <= 8 && /[a-zA-Z]{2}/.test(desc)
+                    && !/^(Total|Sub|GST|Due|Balance|Dear|Please|Invoice|Tax|ABN)/i.test(desc)) {
+                    parsed.lineItems.push({
+                      description: desc,
+                      quantity: parseFloat(second) || null,
+                      unit: null,
+                      numBoxes: null,
+                      unitPrice: null,
+                      lineTotal: parseFloat(last) || null,
+                      weightKg: null,
+                    } as any);
+                  }
+                }
+              }
+            }
+          }
+
+          // ── Strategy 2: $ total fallback ─────────────────────────────────────
+          if (parsed.lineItems.length === 0) {
+            for (const line of allLinesImg) {
               const pm = line.match(/\$([\d,]+\.\d{2})\s*$/);
               const desc = line.replace(/\$[\d,]+\.\d{2}\s*$/, '').trim();
               const wc = desc.split(/\s+/).length;
@@ -8721,7 +8746,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
         } catch (ocrErr: any) {
           console.error('Image OCR error:', ocrErr.message);
-          (parsed as any)._ocrError = ocrErr.message; // surface for debug
+          (parsed as any)._ocrError = ocrErr.message;
         }
       }
 
