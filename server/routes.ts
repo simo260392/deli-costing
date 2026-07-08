@@ -2737,15 +2737,15 @@ Return ONLY the JSON object, no explanation.`;
 
       // ── Extract text from PDF or image using pdftotext / Tesseract ────────
       let rawText = '';
+      let pdftotextErr = '';
+      let pdfParseErr = '';
       const { execSync } = await import('child_process');
       const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname?.toLowerCase().endsWith('.pdf');
       const isImg = /image\//i.test(req.file.mimetype || '');
 
       if (isPdf) {
-        let pdftotextErr = '';
         try { rawText = execSync(`pdftotext -layout "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch(e: any) { pdftotextErr = e.message || String(e); }
         // Fallback: pdf-parse v2
-        let pdfParseErr = '';
         if (!rawText.trim()) {
           try {
             const { PDFParse } = await import('pdf-parse/lib/pdf-parse.js' as any) as any;
