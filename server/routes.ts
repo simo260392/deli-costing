@@ -2731,39 +2731,159 @@ Return ONLY the JSON object, no explanation.`;
   app.post("/api/invoices/upload", upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-      const supplierId = req.body.supplierId ? Number(req.body.supplierId) : undefined;
+      const supplierIdParam = req.body.supplierId ? Number(req.body.supplierId) : null;
       const invoiceDate = req.body.invoiceDate || null;
       const invoiceRef = req.body.invoiceRef || null;
 
-      // Try to parse PDF line items
-      let lineItems: any[] = [];
-      if (req.file.mimetype === "application/pdf") {
+      // ── Extract text from PDF or image using pdftotext / Tesseract ────────
+      let rawText = '';
+      const { execSync } = await import('child_process');
+      const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname?.toLowerCase().endsWith('.pdf');
+      const isImg = /image\//i.test(req.file.mimetype || '');
+
+      if (isPdf) {
+        try { rawText = execSync(`pdftotext "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch {}
+        // Fallback: pdf-parse v2
+        if (!rawText.trim()) {
+          try {
+            const { PDFParse } = await import('pdf-parse/lib/pdf-parse.js' as any) as any;
+            const p = new PDFParse({ url: `file://${req.file.path}` });
+            rawText = await p.getText();
+          } catch {}
+        }
+      } else if (isImg) {
         try {
-          const pdfParse = (await import("pdf-parse")).default;
-          const buffer = fs.readFileSync(req.file.path);
-          const data = await pdfParse(buffer);
-          // Simple heuristic: look for lines with numbers that could be prices
-          const lines = data.text.split("\n").filter((l: string) => l.trim());
-          lineItems = lines
-            .filter((l: string) => /\$?\d+\.?\d*/.test(l))
-            .slice(0, 50)
-            .map((l: string) => ({ rawText: l.trim() }));
+          const tiffPath = req.file.path + '_inv.tiff';
+          const txtBase  = req.file.path + '_inv';
+          execSync(`ffmpeg -y -i "${req.file.path}" -vf "scale=iw*2:ih*2" "${tiffPath}"`, { timeout: 20000 });
+          execSync(`tesseract "${tiffPath}" "${txtBase}" txt --oem 1 --psm 6`, { timeout: 30000 });
+          try { rawText = fs.readFileSync(txtBase + '.txt', 'utf8'); } catch {}
+          [tiffPath, txtBase + '.txt'].forEach(f => { try { fs.unlinkSync(f); } catch {} });
         } catch {}
       }
 
+      // ── Parse invoice header ───────────────────────────────────────────────
+      const allLines = rawText.split('\n').map((l: string) => l.trim()).filter(Boolean);
+
+      // Invoice number
+      let parsedInvoiceRef: string | null = invoiceRef;
+      if (!parsedInvoiceRef) {
+        const m = rawText.match(/invoice\s*(?:no|number|#)[.:# ]*([A-Z0-9\-]{3,20})/i)
+          || rawText.match(/\b(INV[-\s]?\d{4,})/i);
+        if (m) parsedInvoiceRef = m[1].trim();
+      }
+
+      // Invoice date
+      let parsedDate: string | null = invoiceDate;
+      if (!parsedDate) {
+        const dm = rawText.match(/invoice\s*date[:\s]*([\d]{1,2}\/[\d]{1,2}\/[\d]{2,4})/i)
+          || rawText.match(/([\d]{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+[\d]{4})/i);
+        if (dm) {
+          const ds = dm[1];
+          if (ds.includes('/')) {
+            const parts = ds.split('/');
+            const yr = parts[2]?.length === 2 ? '20' + parts[2] : parts[2];
+            parsedDate = `${yr}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+          } else {
+            // "24 Mar 2026" → ISO
+            try { parsedDate = new Date(ds).toISOString().split('T')[0]; } catch {}
+          }
+        }
+      }
+
+      // Supplier name
+      let parsedSupplierName: string | null = null;
+      const skipPat2 = /^(TAX\s*INVOICE|INVOICE|RECEIPT|ABN|www\.|http|tel:|fax:|page\s+\d|email:|paid|invoice to)/i;
+      for (const line of allLines.slice(0, 12)) {
+        const cleaned = line.replace(/TAX\s*INVOICE/gi,'').replace(/PAID/gi,'').trim();
+        if (!skipPat2.test(cleaned) && cleaned.length > 3 && /[a-zA-Z]{3}/.test(cleaned)) {
+          parsedSupplierName = cleaned;
+          break;
+        }
+      }
+
+      // ── Parse line items (description + qty + unit_price + total) ─────────
+      // Format: description line, then qty / unit_price / tax / total on same or next line
+      const lineItems: any[] = [];
+      const priceLineRx = /^([\d.]+)\s+([\d.]+)\s+(?:GST\s*\w+\s+)?([\d.]+)\s*$/i;
+      const inlinePriceRx = /^(.+?)\s+([\d.]+)\s+([\d.]+)\s+(?:GST\s*\w+\s+)?([\d.]+)\s*$/i;
+      const skipLines = /^(description|qty|unit\s*price|total|gst|subtotal|balance|order\s*total|powered|link\s*to|for\s*any|card\s*trans|supplier\s*notes|notes:|po:|delivery)/i;
+
+      let idx2 = 0;
+      while (idx2 < allLines.length) {
+        const line = allLines[idx2];
+        if (skipLines.test(line) || line.length < 2) { idx2++; continue; }
+
+        // Check if next line is a standalone price line: "qty  unitprice  total"
+        const nextLine = allLines[idx2 + 1] || '';
+        const nextPrice = nextLine.match(priceLineRx);
+        if (nextPrice && !/^[A-Z]/.test(nextLine[0] || '')) {
+          const qty  = parseFloat(nextPrice[1]);
+          const unit = parseFloat(nextPrice[2]);
+          const tot  = parseFloat(nextPrice[3]);
+          if (qty > 0 && tot > 0 && !skipLines.test(line)) {
+            lineItems.push({ description: line, quantity: qty, unitPrice: unit, lineTotal: tot });
+            idx2 += 2;
+            continue;
+          }
+        }
+
+        // Check inline format: "Mondo 1kg  6.00  32.00  GST Free  192.00"
+        const inlineM = line.match(inlinePriceRx);
+        if (inlineM && !skipLines.test(line)) {
+          const qty  = parseFloat(inlineM[2]);
+          const unit = parseFloat(inlineM[3]);
+          const tot  = parseFloat(inlineM[4]);
+          if (qty > 0 && tot > 0) {
+            lineItems.push({ description: inlineM[1].trim(), quantity: qty, unitPrice: unit, lineTotal: tot });
+            idx2++;
+            continue;
+          }
+        }
+        idx2++;
+      }
+
+      // ── Fuzzy-match ingredients ────────────────────────────────────────────
+      const allIngredients = await storage.getIngredients();
+      function tokenise(s: string) { return s.toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean); }
+      function fuzzyScore(a: string, b: string) {
+        const ta = tokenise(a); const tb = tokenise(b);
+        const hits = ta.filter(t => tb.some(u => u.includes(t) || t.includes(u)));
+        return hits.length / Math.max(ta.length, tb.length);
+      }
+      const enriched = lineItems.map((li: any) => {
+        let best: any = null; let bestScore = 0;
+        for (const ing of allIngredients) {
+          const sc = fuzzyScore(li.description, ing.name);
+          if (sc > bestScore) { bestScore = sc; best = ing; }
+        }
+        return { ...li, ingredientId: bestScore >= 0.4 ? best?.id : null, ingredientName: bestScore >= 0.4 ? best?.name : null };
+      });
+
+      // ── Fuzzy-match supplier ───────────────────────────────────────────────
+      let resolvedSupplierId = supplierIdParam;
+      if (!resolvedSupplierId && parsedSupplierName) {
+        const allSuppliers = await storage.getSuppliers();
+        let bestSup: any = null; let bestSupScore = 0;
+        for (const s of allSuppliers) {
+          const sc = fuzzyScore(parsedSupplierName, s.name);
+          if (sc > bestSupScore) { bestSupScore = sc; bestSup = s; }
+        }
+        if (bestSupScore >= 0.3) resolvedSupplierId = bestSup.id;
+      }
+
       const invoice = await storage.createInvoice({
-        supplierId: supplierId || null,
+        supplierId: resolvedSupplierId || null,
         filename: req.file.originalname,
         uploadedAt: new Date().toISOString(),
-        invoiceDate,
-        invoiceRef,
-        lineItemsJson: JSON.stringify(lineItems),
+        invoiceDate: parsedDate,
+        invoiceRef: parsedInvoiceRef,
+        lineItemsJson: JSON.stringify(enriched),
         notes: req.body.notes || null,
       });
 
-      // Clean up temp file
       fs.unlink(req.file.path, () => {});
-      res.json(invoice);
+      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
