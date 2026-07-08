@@ -1463,9 +1463,18 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
           <p>Item must be kept at ≤5°C throughout the thaw. Thaw must be completed within the planned timeframe.</p>
           <p>Fridge temperature must remain at or below 5°C at all times.</p>
         </div>
-        <Button className="h-11 px-5 font-medium" style={{ backgroundColor: "#256984" }} onClick={handleSave} disabled={saving}>
-          {saving ? "Saving…" : "Save details"}
-        </Button>
+        {!targetIso ? (
+          <p className="text-xs text-amber-700 font-medium">Set a start time and thaw duration to start the timer.</p>
+        ) : (
+          <Button
+            className="h-11 px-5 font-medium gap-2 w-full"
+            style={{ backgroundColor: "#256984" }}
+            onClick={handleSave}
+            disabled={saving || !startTime || !thawDays}
+          >
+            {saving ? "Saving…" : log.thaw_start_time ? "Update details" : "⏱ Start timer"}
+          </Button>
+        )}
       </div>
 
       {/* ═══ 3. COUNTDOWN ═══ */}

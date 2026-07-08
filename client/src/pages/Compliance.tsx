@@ -196,8 +196,30 @@ function ThawCountdown({ log }: { log: ComplianceLog }) {
 
   const targetLabel = format(new Date(log.thaw_target_completion), "EEE d MMM, HH:mm");
 
+  // Batch + boxes info row
+  const hasBatchInfo = log.thaw_item || log.thaw_num_boxes != null || log.thaw_weight_kg != null;
+
   return (
-    <div className="mt-2 space-y-1">
+    <div className="mt-2 space-y-1.5">
+      {/* Batch details row */}
+      {hasBatchInfo && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {log.thaw_item && (
+            <span className="text-xs font-semibold text-foreground">{log.thaw_item}</span>
+          )}
+          {log.thaw_num_boxes != null && (
+            <span className="text-xs bg-sky-100 text-sky-700 font-semibold px-2 py-0.5 rounded-full">
+              {log.thaw_num_boxes} box{log.thaw_num_boxes !== 1 ? "es" : ""}
+            </span>
+          )}
+          {log.thaw_weight_kg != null && (
+            <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
+              {log.thaw_weight_kg}kg
+            </span>
+          )}
+        </div>
+      )}
+      {/* Countdown row */}
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold" style={{ color: barColor }}>
           {countdownLabel}
