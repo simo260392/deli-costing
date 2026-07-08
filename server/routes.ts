@@ -2816,8 +2816,24 @@ Return ONLY the JSON object, no explanation.`;
       const hasAZ = (s: string) => /[a-zA-Z]{2}/.test(s);
       const near  = (a: number, b: number) => Math.abs(a - b) < Math.max(a, b) * 0.02 + 0.02;
 
-      // ── Strategy 1: Layout line parser ──────────────────────────────────────
-      // Each item line has fields separated by 2+ spaces (pdftotext -layout output)
+      // ── Strategy 0: Item-code prefixed rows (e.g. B&E Foods format) ───────────
+      // Lines like: "10224  CHICKEN BREAST (F)  60.00  60.00  KG  4.00 CTN  $9.60  $0.00  $576.00"
+      const itemCodeRx = /^\s*(\d{4,6})\s+(.+?)\s+[\d.]+\s+([\d.]+)\s+\w+\s+[\d.]+\s+\w+\s+\$([\d.]+)\s+\$[\d.]+\s+\$([\d.]+)/;
+      for (const rawLine of rawText.split('\n')) {
+        const icM = rawLine.match(itemCodeRx);
+        if (icM) {
+          const desc = icM[2].trim();
+          const qty  = parseFloat(icM[3]);
+          const unit = parseFloat(icM[4]);
+          const tot  = parseFloat(icM[5]);
+          if (desc.length > 2 && qty > 0 && tot > 0 && hasAZ(desc)) {
+            lineItems.push({ description: desc, quantity: qty, unitPrice: unit, lineTotal: tot });
+          }
+        }
+      }
+
+      // ── Strategy 1: Layout line parser (only if Strategy 0 found nothing) ──────
+      if (lineItems.length === 0) {
       const layoutLines = rawText.split('\n');
       for (const rawLine of layoutLines) {
         if (!rawLine.trim()) continue;
@@ -2867,6 +2883,8 @@ Return ONLY the JSON object, no explanation.`;
           lineItems.push({ description: desc, quantity: qty, unitPrice: unit, lineTotal: tot });
         }
       }
+
+      } // end Strategy 1
 
       // ── Strategy 2: Stacked parser (fallback for OCR/plain text) ────────────
       // Used when layout parsing finds nothing (e.g. scanned images run through Tesseract)
