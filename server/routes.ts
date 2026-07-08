@@ -2803,44 +2803,92 @@ Return ONLY the JSON object, no explanation.`;
       }
 
       // ── Parse line items (description + qty + unit_price + total) ─────────
-      // Format: description line, then qty / unit_price / tax / total on same or next line
+      // Supports multiple invoice formats:
+      //   A) SupplyWise (Brew Coffee): desc on line, then qty / unitPrice / "GST Free" / total each on own line
+      //   B) Inline: "Description  qty  unitPrice  [GST label]  total" all on one line
+      //   C) Combined next-line: desc line followed by "qty  unitPrice  total" on next single line
       const lineItems: any[] = [];
-      const priceLineRx = /^([\d.]+)\s+([\d.]+)\s+(?:GST\s*\w+\s+)?([\d.]+)\s*$/i;
-      const inlinePriceRx = /^(.+?)\s+([\d.]+)\s+([\d.]+)\s+(?:GST\s*\w+\s+)?([\d.]+)\s*$/i;
-      const skipLines = /^(description|qty|unit\s*price|total|gst|subtotal|balance|order\s*total|powered|link\s*to|for\s*any|card\s*trans|supplier\s*notes|notes:|po:|delivery)/i;
+      const skipLines = /^(description|qty|unit\s*price|gst\s*amount|amount\s*aud|amount|subtotal|balance|order\s*total|powered|link\s*to|for\s*any|card\s*trans|supplier\s*notes|notes:|po:|delivery\s*date|invoice\s*date|invoice\s*no|credit\s*terms|due\s*date|drop\s*seq|item\s*code|item\s*desc|uom|ship\s*doc|received|ownership|outstanding|receiver|date\s*received|page\s+\d|sales\s*rep|driver|run\s*no|key\s*code|ordered|shipped)/i;
+      const isNumericVal = (s: string) => /^[\d]{1,8}[.,]?[\d]{0,4}$/.test(s.trim()) && parseFloat(s.replace(/,/g,'')) > 0;
+      const isGstLabel = (s: string) => /^(GST\s*(Free|Inc|Incl|Exempt|\d+%)?|Tax\s*Free|Tax\s*Exempt)$/i.test(s.trim());
+      const parseNum = (s: string) => parseFloat(s.replace(/,/g, ''));
+      const hasLetters = (s: string) => /[a-zA-Z]{2}/.test(s);
 
-      let idx2 = 0;
-      while (idx2 < allLines.length) {
-        const line = allLines[idx2];
-        if (skipLines.test(line) || line.length < 2) { idx2++; continue; }
+      // Build filtered line array (non-blank, preserve order)
+      const filteredLines: string[] = allLines.filter((l: string) => l.length > 1);
 
-        // Check if next line is a standalone price line: "qty  unitprice  total"
-        const nextLine = allLines[idx2 + 1] || '';
-        const nextPrice = nextLine.match(priceLineRx);
-        if (nextPrice && !/^[A-Z]/.test(nextLine[0] || '')) {
-          const qty  = parseFloat(nextPrice[1]);
-          const unit = parseFloat(nextPrice[2]);
-          const tot  = parseFloat(nextPrice[3]);
-          if (qty > 0 && tot > 0 && !skipLines.test(line)) {
-            lineItems.push({ description: line, quantity: qty, unitPrice: unit, lineTotal: tot });
-            idx2 += 2;
-            continue;
+      let fi = 0;
+      while (fi < filteredLines.length) {
+        const line = filteredLines[fi];
+
+        // Skip header/footer lines and pure numbers
+        if (skipLines.test(line) || isNumericVal(line) || isGstLabel(line) || !hasLetters(line)) {
+          fi++; continue;
+        }
+
+        // ── Format B: Inline — "Description qty unitPrice [GST label] total"
+        const inlineRx = /^(.+?)\s+([\d.]+)\s+([\d.]+)\s+(?:GST\s*\S*\s+)([\d.]+)\s*$/i;
+        const inlineRx3 = /^(.+?)\s+([\d.]+)\s+([\d.]+)\s*$/;
+        const inlineM = line.match(inlineRx);
+        if (inlineM) {
+          const desc = inlineM[1].trim();
+          const qty  = parseNum(inlineM[2]);
+          const unit = parseNum(inlineM[3]);
+          const tot  = parseNum(inlineM[4]);
+          if (!skipLines.test(desc) && qty > 0 && tot > 0 && hasLetters(desc) && desc.length > 3) {
+            lineItems.push({ description: desc, quantity: qty, unitPrice: unit, lineTotal: tot });
+            fi++; continue;
+          }
+        }
+        const inlineM3 = !inlineM ? line.match(inlineRx3) : null;
+        if (inlineM3) {
+          const desc = inlineM3[1].trim();
+          const qty  = parseNum(inlineM3[2]);
+          const tot  = parseNum(inlineM3[3]);
+          if (!skipLines.test(desc) && qty > 0 && tot > 0 && hasLetters(desc) && desc.length > 3) {
+            lineItems.push({ description: desc, quantity: qty, unitPrice: parseFloat((tot/qty).toFixed(4)), lineTotal: tot });
+            fi++; continue;
           }
         }
 
-        // Check inline format: "Mondo 1kg  6.00  32.00  GST Free  192.00"
-        const inlineM = line.match(inlinePriceRx);
-        if (inlineM && !skipLines.test(line)) {
-          const qty  = parseFloat(inlineM[2]);
-          const unit = parseFloat(inlineM[3]);
-          const tot  = parseFloat(inlineM[4]);
+        // ── Format A: SupplyWise stacked — gather next numeric lines (skip GST labels)
+        // After description: qty, unitPrice, [GST Free], total — each on its own line
+        const numStack: number[] = [];
+        let stackConsumed = 0;
+        for (let k = 1; k <= 8 && (fi + k) < filteredLines.length; k++) {
+          const t = filteredLines[fi + k];
+          if (isGstLabel(t)) { stackConsumed = k; continue; }          // skip GST label lines
+          if (isNumericVal(t)) { numStack.push(parseNum(t)); stackConsumed = k; }
+          else break;  // hit a non-numeric non-label → next description
+        }
+        if (numStack.length >= 2 && !skipLines.test(line) && hasLetters(line)) {
+          let qty: number, unit: number, tot: number;
+          if (numStack.length >= 3) {
+            qty  = numStack[0]; unit = numStack[1]; tot = numStack[numStack.length - 1];
+          } else {
+            qty  = numStack[0]; tot  = numStack[1]; unit = parseFloat((tot / qty).toFixed(4));
+          }
           if (qty > 0 && tot > 0) {
-            lineItems.push({ description: inlineM[1].trim(), quantity: qty, unitPrice: unit, lineTotal: tot });
-            idx2++;
-            continue;
+            lineItems.push({ description: line.trim(), quantity: qty, unitPrice: unit, lineTotal: tot });
+            fi += stackConsumed + 1; continue;
           }
         }
-        idx2++;
+
+        // ── Format C: desc + "qty  unitPrice  total" on combined next line
+        const nextCombined = filteredLines[fi + 1] || '';
+        const combinedRx = /^([\d.]+)\s+([\d.]+)\s+(?:[A-Z][A-Z ]*\s+)?([\d.]+)\s*$/;
+        const cM = nextCombined.match(combinedRx);
+        if (cM && !skipLines.test(line) && hasLetters(line)) {
+          const qty  = parseNum(cM[1]);
+          const unit = parseNum(cM[2]);
+          const tot  = parseNum(cM[3]);
+          if (qty > 0 && tot > 0) {
+            lineItems.push({ description: line.trim(), quantity: qty, unitPrice: unit, lineTotal: tot });
+            fi += 2; continue;
+          }
+        }
+
+        fi++;
       }
 
       // ── Fuzzy-match ingredients ────────────────────────────────────────────
