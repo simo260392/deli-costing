@@ -1,1064 +1,859 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  ShoppingCart,
-  Plus,
-  Trash2,
-  Printer,
-  ChevronDown,
-  ChevronRight,
-  Check,
-  X,
-  ClipboardList,
-  ArrowLeft,
-  Send,
-  Truck,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
-  Search,
-  Minus,
-  Package,
-  Tag,
-  List,
+  ShoppingCart, Plus, Trash2, Printer, ChevronDown, ChevronRight,
+  Check, X, ClipboardList, ArrowLeft, Send, Truck, Clock,
+  CheckCircle2, AlertCircle, Search, Package, Tag, Copy,
+  Phone, Mail, Globe, MessageSquare, Pencil,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { format } from "date-fns";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Ingredient {
-  id: number;
-  name: string;
-  category?: string;
-  unit?: string;
-  bestSupplierId?: number;
-  bestSupplierName?: string;
-}
-
+// ─── Types ─────────────────────────────────────────────────────────────────────
 interface Supplier {
-  id: number;
-  name: string;
+  id: number; name: string; contact_name?: string; email?: string; phone?: string;
+  how_to_order?: string; order_contact?: string; order_cutoff?: string;
+  min_order_amount?: number; delivery_days?: string; notes?: string;
 }
-
-interface DraftOrder {
-  id: number;
-  name: string;
-  status: string;
-  notes?: string;
-  created_at: string;
-  updated_at: string;
+interface IngredientRaw {
+  id: number; name: string; category?: string; unit?: string;
+  best_supplier_id?: number; best_cost_per_unit?: number;
 }
-
-interface SupplierItem {
-  id: number;
-  draft_id: number;
-  supplier_key: string;
-  item_key: string;
-  section_key: string;
-  item_name: string;
-  qty: number;
-  received_qty?: number;
-  notes?: string;
+interface SupplierIngredient {
+  id: number; supplier_id: number; ingredient_id: number;
+  cost_per_unit?: number; pack_size?: number; pack_cost?: number;
+  invoice_date?: string; supplier_sku?: string; supplier_ingredient_name?: string;
+  unit_size_qty?: number; unit_size_unit?: string;
+  is_preferred?: boolean; has_gst?: boolean;
+  suppliers?: { id: number; name: string; how_to_order?: string; order_contact?: string };
 }
+interface StockOrder {
+  id: number; name: string; order_type: "supplier" | "category";
+  type_keys?: string; status: string; notes?: string;
+  placed_at?: string; received_at?: string; created_at: string; updated_at?: string;
+}
+interface OrderItem {
+  id: number; order_id: number; ingredient_id: number; supplier_id?: number;
+  supplier_ingredient_id?: number; qty_ordered: number; qty_received?: number;
+  unit_size_qty?: number; unit_size_unit?: string; supplier_sku?: string;
+  supplier_ingredient_name?: string; pack_cost?: number; has_gst?: boolean;
+  notes?: string; ingredient_name?: string; ingredient_unit?: string;
+  ingredient_category?: string;
+}
+interface ParLevel { ingredient_id: number; par_level: number; unit: string; }
+interface IngredientHistory { last_ordered: string | null; last_qty: number | null; avg_qty: number | null; }
 
-// ─── Status Config ────────────────────────────────────────────────────────────
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: any }> = {
-  draft:     { label: "Draft",     color: "#92400E", bg: "#FEF3C7", icon: Clock },
-  submitted: { label: "Submitted", color: "#1E5470", bg: "#DBEAFE", icon: Send },
-  received:  { label: "Received",  color: "#166534", bg: "#DCFCE7", icon: CheckCircle2 },
-  partial:   { label: "Partial",   color: "#7C2D12", bg: "#FFEDD5", icon: AlertCircle },
-  cancelled: { label: "Cancelled", color: "#6B7280", bg: "#F3F4F6", icon: X },
-};
-
-// Brand blue for primary actions
+// ─── Constants ─────────────────────────────────────────────────────────────────
 const BRAND = "#256984";
 const BRAND_LIGHT = "#EBF4F8";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const STATUS: Record<string, { label: string; color: string; bg: string; Icon: any }> = {
+  draft:     { label: "Draft",     color: "#92400E", bg: "#FEF3C7", Icon: Clock },
+  placed:    { label: "Placed",    color: "#1E5470", bg: "#DBEAFE", Icon: Send },
+  received:  { label: "Received",  color: "#166534", bg: "#DCFCE7", Icon: CheckCircle2 },
+  partial:   { label: "Partial",   color: "#7C2D12", bg: "#FFEDD5", Icon: AlertCircle },
+  cancelled: { label: "Cancelled", color: "#6B7280", bg: "#F3F4F6", Icon: X },
+};
 
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleDateString("en-AU", {
-    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-  });
+const ORDER_COLORS = [
+  "#256984","#5AB693","#A84B2F","#7A39BB","#D19900",
+  "#006494","#A13544","#848456","#1B474D","#6E522B",
+];
+
+const HOW_TO_ORDER_ICONS: Record<string, any> = {
+  email: Mail, phone: Phone, online: Globe, text: MessageSquare,
+};
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function fmtDate(iso?: string | null) {
+  if (!iso) return "—";
+  return format(new Date(iso), "d MMM yy");
 }
-
-function itemKey(ingredientId: number) {
-  return `ingredient::${ingredientId}`;
+function fmtDateTime(iso?: string | null) {
+  if (!iso) return "—";
+  return format(new Date(iso), "d MMM yy, HH:mm");
+}
+function supplierColor(supplierId: number) {
+  return ORDER_COLORS[supplierId % ORDER_COLORS.length];
+}
+function autoOrderName(orderType: "supplier" | "category", keys: string[], suppliers: Supplier[], categories: string[]) {
+  const today = format(new Date(), "d MMM yy");
+  if (orderType === "supplier") {
+    const names = keys.map(k => suppliers.find(s => String(s.id) === k)?.name || k);
+    return `${names.join(" & ")} Order — ${today}`;
+  }
+  return `${keys.join(" & ")} Order — ${today}`;
 }
 
 // ─── Status Badge ──────────────────────────────────────────────────────────────
-
 function StatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.draft;
-  const Icon = cfg.icon;
+  const cfg = STATUS[status] || STATUS.draft;
   return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
-      style={{ color: cfg.color, backgroundColor: cfg.bg }}
-    >
-      <Icon className="w-3 h-3" />
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold"
+      style={{ color: cfg.color, background: cfg.bg }}>
+      <cfg.Icon className="w-3 h-3" />
       {cfg.label}
     </span>
   );
 }
 
-// ─── Qty Stepper ──────────────────────────────────────────────────────────────
+// ─── Copy Button ───────────────────────────────────────────────────────────────
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button variant="outline" size="sm" className="gap-1.5"
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}>
+      {copied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? "Copied!" : label}
+    </Button>
+  );
+}
 
-function QtyInput({
-  value,
-  onChange,
-  unit,
-  disabled,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  unit?: string;
-  disabled?: boolean;
+// ─── Place New Order Modal ──────────────────────────────────────────────────────
+function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate }: {
+  suppliers: Supplier[]; ingredients: IngredientRaw[];
+  onClose: () => void; onCreate: (order: StockOrder) => void;
 }) {
-  const num = parseFloat(value) || 0;
-  const hasVal = num > 0;
+  const [step, setStep] = useState<"type" | "select">("type");
+  const [orderType, setOrderType] = useState<"supplier" | "category">("supplier");
+  const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const { toast } = useToast();
 
-  const decrement = () => {
-    const next = Math.max(0, num - 1);
-    onChange(next === 0 ? "" : String(next));
-  };
-  const increment = () => onChange(String(num + 1));
+  const categories = Array.from(new Set(ingredients.map(i => i.category || "General"))).sort();
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const name = autoOrderName(orderType, selectedKeys, suppliers, categories);
+      const res = await apiRequest("POST", "/api/orders", { name, order_type: orderType, type_keys: selectedKeys });
+      if (!res.ok) throw new Error("Failed to create order");
+      return res.json();
+    },
+    onSuccess: (order) => { onCreate(order); onClose(); },
+    onError: (e: any) => toast({ description: e.message, variant: "destructive" }),
+  });
+
+  const options = orderType === "supplier"
+    ? suppliers.map(s => ({ key: String(s.id), label: s.name }))
+    : categories.map(c => ({ key: c, label: c }));
+
+  const toggle = (key: string) =>
+    setSelectedKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
 
   return (
-    <div className="flex items-center gap-1">
-      <button
-        type="button"
-        disabled={disabled || num === 0}
-        onClick={decrement}
-        className="w-9 h-9 flex items-center justify-center rounded-lg border transition-colors touch-manipulation disabled:opacity-30"
-        style={hasVal ? { borderColor: BRAND, color: BRAND } : { borderColor: "#E5E7EB", color: "#9CA3AF" }}
-      >
-        <Minus className="w-3.5 h-3.5" />
-      </button>
-      <input
-        type="number"
-        min="0"
-        step="1"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        disabled={disabled}
-        placeholder="0"
-        className="w-14 h-9 text-center text-sm font-semibold rounded-lg border outline-none transition-all"
-        style={hasVal
-          ? { borderColor: BRAND, color: BRAND, backgroundColor: "white" }
-          : { borderColor: "#E5E7EB", color: "#374151" }
-        }
-      />
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={increment}
-        className="w-9 h-9 flex items-center justify-center rounded-lg border transition-colors touch-manipulation"
-        style={hasVal
-          ? { borderColor: BRAND, backgroundColor: BRAND, color: "white" }
-          : { borderColor: "#E5E7EB", color: "#374151", backgroundColor: "white" }
-        }
-      >
-        <Plus className="w-3.5 h-3.5" />
-      </button>
-      {unit && <span className="text-xs text-gray-400 ml-0.5">{unit}</span>}
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="px-6 py-4" style={{ background: BRAND }}>
+          <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Stock Ordering</p>
+          <h2 className="text-lg font-bold text-white mt-0.5">Place New Order</h2>
+        </div>
+
+        {step === "type" && (
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-muted-foreground">How would you like to organise this order?</p>
+            <div className="grid grid-cols-2 gap-3">
+              {([["supplier", "By Supplier", Package, "Group items by who we buy from"],
+                 ["category", "By Category", Tag, "Group items by ingredient type"]] as const).map(([val, label, Icon, desc]) => (
+                <button key={val} onClick={() => setOrderType(val)}
+                  className="flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all text-center"
+                  style={orderType === val ? { borderColor: BRAND, background: BRAND_LIGHT } : { borderColor: "#E5E7EB" }}>
+                  <Icon size={22} style={{ color: orderType === val ? BRAND : "#9CA3AF" }} />
+                  <span className="text-sm font-semibold" style={{ color: orderType === val ? BRAND : "#374151" }}>{label}</span>
+                  <span className="text-xs text-muted-foreground">{desc}</span>
+                </button>
+              ))}
+            </div>
+            <Button className="w-full h-11 font-semibold" style={{ background: BRAND }}
+              onClick={() => setStep("select")}>
+              Next — Select {orderType === "supplier" ? "Suppliers" : "Categories"}
+            </Button>
+          </div>
+        )}
+
+        {step === "select" && (
+          <div className="p-6 space-y-4">
+            <button onClick={() => setStep("type")} className="text-xs text-muted-foreground flex items-center gap-1 hover:underline">
+              <ArrowLeft size={12} /> Back
+            </button>
+            <p className="text-sm font-medium">Select {orderType === "supplier" ? "supplier(s)" : "categor(ies)"} to order from:</p>
+            <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+              {options.map(opt => (
+                <button key={opt.key} onClick={() => toggle(opt.key)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm text-left transition-all"
+                  style={selectedKeys.includes(opt.key)
+                    ? { borderColor: BRAND, background: BRAND_LIGHT, color: BRAND, fontWeight: 600 }
+                    : { borderColor: "#E5E7EB" }}>
+                  <div className="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0"
+                    style={selectedKeys.includes(opt.key) ? { background: BRAND, borderColor: BRAND } : { borderColor: "#D1D5DB" }}>
+                    {selectedKeys.includes(opt.key) && <Check size={10} className="text-white" />}
+                  </div>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {selectedKeys.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Order will be named: <strong>{autoOrderName(orderType, selectedKeys, suppliers, categories)}</strong>
+              </p>
+            )}
+            <Button className="w-full h-11 font-semibold" style={{ background: BRAND }}
+              disabled={selectedKeys.length === 0 || createMutation.isPending}
+              onClick={() => createMutation.mutate()}>
+              {createMutation.isPending ? "Creating…" : "Generate Order Table →"}
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── Ingredient Selection Dialog ───────────────────────────────────────────────
-
-type FilterTab = "all" | "supplier" | "category";
-
-type FilterMode = "all" | "supplier" | "category";
-
-function OrderScopeDialog({
-  open,
-  onClose,
-  ingredients,
-  suppliers,
-  onConfirm,
-}: {
-  open: boolean;
-  onClose: () => void;
-  ingredients: Ingredient[];
-  suppliers: Supplier[];
-  onConfirm: (selected: Ingredient[]) => void;
+// ─── Order Table (filling in qty to order) ─────────────────────────────────────
+function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPlaced }: {
+  order: StockOrder; suppliers: Supplier[]; ingredients: IngredientRaw[];
+  parLevels: ParLevel[]; onBack: () => void; onPlaced: () => void;
 }) {
-  const [mode, setMode] = useState<FilterMode>("all");
-  const [selectedSuppliers, setSelectedSuppliers] = useState<number[]>([]);
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const typeKeys: string[] = (() => { try { return JSON.parse(order.type_keys || "[]"); } catch { return []; } })();
 
-  const allCategories = Array.from(
-    new Set(ingredients.map(i => i.category || "Uncategorised"))
-  ).sort();
-
-  const toggleSupplier = (id: number) =>
-    setSelectedSuppliers(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
-
-  const toggleCategory = (cat: string) =>
-    setSelectedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
-
-  const previewCount = (() => {
-    if (mode === "all") return ingredients.length;
-    if (mode === "supplier") {
-      if (selectedSuppliers.length === 0) return 0;
-      return ingredients.filter(i => selectedSuppliers.includes(i.bestSupplierId || -1)).length;
+  // Filter ingredients by order scope
+  const scopedIngredients = ingredients.filter(ing => {
+    if (order.order_type === "supplier") {
+      return typeKeys.some(k => String(ing.best_supplier_id) === k);
     }
-    if (selectedCategories.length === 0) return 0;
-    return ingredients.filter(i => selectedCategories.includes(i.category || "Uncategorised")).length;
-  })();
-
-  const canConfirm =
-    mode === "all" ||
-    (mode === "supplier" && selectedSuppliers.length > 0) ||
-    (mode === "category" && selectedCategories.length > 0);
-
-  const handleConfirm = () => {
-    let selected: Ingredient[];
-    if (mode === "all") {
-      selected = ingredients;
-    } else if (mode === "supplier") {
-      selected = ingredients.filter(i => selectedSuppliers.includes(i.bestSupplierId || -1));
-    } else {
-      selected = ingredients.filter(i => selectedCategories.includes(i.category || "Uncategorised"));
-    }
-    onConfirm(selected);
-    onClose();
-  };
-
-  const modes: { key: FilterMode; label: string; icon: any }[] = [
-    { key: "all",      label: "All Ingredients", icon: List },
-    { key: "supplier", label: "By Supplier",     icon: Package },
-    { key: "category", label: "By Category",     icon: Tag },
-  ];
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle style={{ color: BRAND }}>What would you like to order?</DialogTitle>
-        </DialogHeader>
-
-        {/* Mode toggle */}
-        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
-          {modes.map(m => {
-            const Icon = m.icon;
-            return (
-              <button
-                key={m.key}
-                onClick={() => setMode(m.key)}
-                className="flex-1 flex flex-col items-center gap-1 py-2 px-1 rounded-md transition-all text-xs font-medium"
-                style={mode === m.key
-                  ? { backgroundColor: "white", color: BRAND, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
-                  : { color: "#6B7280" }
-                }
-              >
-                <Icon className="w-4 h-4" />
-                {m.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* All — no extra UI needed */}
-        {mode === "all" && (
-          <p className="text-sm text-gray-500 text-center py-2">
-            An order sheet will be generated for all {ingredients.length} ingredients.
-          </p>
-        )}
-
-        {/* Supplier checkboxes */}
-        {mode === "supplier" && (
-          <div className="space-y-2 mt-1">
-            <p className="text-xs text-gray-500 font-medium">Select suppliers to include:</p>
-            {suppliers.map(sup => {
-              const ingCount = ingredients.filter(i => i.bestSupplierId === sup.id).length;
-              if (ingCount === 0) return null;
-              const checked = selectedSuppliers.includes(sup.id);
-              return (
-                <label
-                  key={sup.id}
-                  className="flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
-                  style={checked ? { borderColor: BRAND, backgroundColor: BRAND_LIGHT } : { borderColor: "#E5E7EB" }}
-                >
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={() => toggleSupplier(sup.id)}
-                  />
-                  <span className="flex-1 text-sm font-medium text-gray-800">{sup.name}</span>
-                  <span className="text-xs text-gray-400">{ingCount} items</span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Category checkboxes */}
-        {mode === "category" && (
-          <div className="space-y-2 mt-1 max-h-64 overflow-y-auto pr-1">
-            <p className="text-xs text-gray-500 font-medium">Select categories to include:</p>
-            {allCategories.map(cat => {
-              const ingCount = ingredients.filter(i => (i.category || "Uncategorised") === cat).length;
-              const checked = selectedCategories.includes(cat);
-              return (
-                <label
-                  key={cat}
-                  className="flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer hover:bg-gray-50 transition-colors"
-                  style={checked ? { borderColor: BRAND, backgroundColor: BRAND_LIGHT } : { borderColor: "#E5E7EB" }}
-                >
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={() => toggleCategory(cat)}
-                  />
-                  <span className="flex-1 text-sm font-medium text-gray-800">{cat}</span>
-                  <span className="text-xs text-gray-400">{ingCount} items</span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Preview count */}
-        {canConfirm && previewCount > 0 && (
-          <p className="text-xs text-center" style={{ color: BRAND }}>
-            {previewCount} ingredient{previewCount !== 1 ? "s" : ""} will be added to the order sheet
-          </p>
-        )}
-
-        {/* Footer */}
-        <div className="flex gap-2 pt-1">
-          <Button variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
-          <Button
-            className="flex-1 text-white gap-1.5"
-            style={{ backgroundColor: canConfirm ? BRAND : "#D1D5DB" }}
-            disabled={!canConfirm}
-            onClick={handleConfirm}
-          >
-            <Check className="w-4 h-4" />
-            Generate Order
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function OrderForm({
-  draft,
-  items,
-  ingredients,
-  onSaveItem,
-  onAddIngredients,
-  disabled,
-  receivingMode,
-}: {
-  draft: DraftOrder;
-  items: SupplierItem[];
-  ingredients: Ingredient[];
-  onSaveItem: (item: SupplierItem, qty: number | null, receivedQty?: number) => void;
-  onAddIngredients: () => void;
-  disabled?: boolean;
-  receivingMode?: boolean;
-}) {
-  const [localQty, setLocalQty] = useState<Record<string, string>>({});
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-
-  const ingMap: Record<number, Ingredient> = {};
-  ingredients.forEach(i => { ingMap[i.id] = i; });
-
-  // Sync from server items
-  useEffect(() => {
-    const map: Record<string, string> = {};
-    items.forEach(it => {
-      const field = receivingMode ? (it.received_qty ?? it.qty) : it.qty;
-      map[it.item_key] = (field || 0) > 0 ? String(field) : "";
-    });
-    setLocalQty(map);
-  }, [items, receivingMode]);
-
-  // Group items by supplier (using bestSupplierName from ingredient)
-  const grouped: Record<string, { item: SupplierItem; ing?: Ingredient }[]> = {};
-  items.forEach(serverItem => {
-    const match = serverItem.item_key.match(/^ingredient::(\d+)$/);
-    const ing = match ? ingMap[Number(match[1])] : undefined;
-    const group = ing?.bestSupplierName || serverItem.section_key || "Other";
-    if (!grouped[group]) grouped[group] = [];
-    grouped[group].push({ item: serverItem, ing });
+    return typeKeys.includes(ing.category || "General");
   });
 
-  const handleChange = useCallback((item: SupplierItem, value: string) => {
-    setLocalQty(prev => ({ ...prev, [item.item_key]: value }));
-    clearTimeout(saveTimers.current[item.item_key]);
-    saveTimers.current[item.item_key] = setTimeout(() => {
-      const qty = parseFloat(value);
-      const n = isNaN(qty) ? 0 : qty;
-      if (receivingMode) {
-        onSaveItem(item, null, n);
-      } else {
-        onSaveItem(item, n);
-      }
-    }, 600);
-  }, [onSaveItem, receivingMode]);
+  // Group by supplier or category
+  const groups: Record<string, IngredientRaw[]> = {};
+  for (const ing of scopedIngredients) {
+    const key = order.order_type === "supplier"
+      ? String(ing.best_supplier_id || "unknown")
+      : (ing.category || "General");
+    groups[key] = groups[key] || [];
+    groups[key].push(ing);
+  }
 
-  const toggleGroup = (grp: string) => {
-    setCollapsedGroups(p => ({ ...p, [grp]: !p[grp] }));
+  // State: qty per ingredient
+  const [qtys, setQtys] = useState<Record<number, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [confirmedSent, setConfirmedSent] = useState(false);
+
+  // Fetch supplier ingredients for pricing/sku
+  const { data: allSupplierIngs = [] } = useQuery<SupplierIngredient[]>({
+    queryKey: ["/api/supplier-ingredients"],
+    queryFn: () => apiRequest("GET", "/api/supplier-ingredients").then(r => r.json()),
+    staleTime: 60000,
+  });
+
+  // Fetch ingredient history in batch
+  const { data: historyMap = {} } = useQuery<Record<number, IngredientHistory>>({
+    queryKey: ["/api/orders/history-batch", scopedIngredients.map(i => i.id).join(",")],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        scopedIngredients.map(async (ing) => {
+          const r = await apiRequest("GET", `/api/orders/ingredient-history/${ing.id}`);
+          const d = await r.json();
+          return [ing.id, d] as [number, IngredientHistory];
+        })
+      );
+      return Object.fromEntries(entries);
+    },
+    enabled: scopedIngredients.length > 0,
+    staleTime: 60000,
+  });
+
+  const getSI = (ingId: number, suppId?: number) =>
+    allSupplierIngs.find(si => si.ingredient_id === ingId && (!suppId || si.supplier_id === suppId));
+
+  const getParLevel = (ingId: number) =>
+    parLevels.find(p => p.ingredient_id === ingId);
+
+  const totalItems = Object.values(qtys).filter(v => parseFloat(v) > 0).length;
+
+  const saveItems = async () => {
+    setSaving(true);
+    const items = scopedIngredients
+      .filter(ing => parseFloat(qtys[ing.id] || "0") > 0)
+      .map(ing => {
+        const si = getSI(ing.id);
+        return {
+          ingredient_id: ing.id,
+          supplier_id: ing.best_supplier_id || null,
+          supplier_ingredient_id: si?.id || null,
+          qty_ordered: parseFloat(qtys[ing.id]),
+          unit_size_qty: si?.unit_size_qty || si?.pack_size || null,
+          unit_size_unit: si?.unit_size_unit || ing.unit || null,
+          supplier_sku: si?.supplier_sku || null,
+          supplier_ingredient_name: si?.supplier_ingredient_name || ing.name,
+          pack_cost: si?.pack_cost || null,
+          has_gst: si?.has_gst ?? true,
+          ingredient_name: ing.name,
+          ingredient_unit: ing.unit,
+          ingredient_category: ing.category || "General",
+        };
+      });
+    try {
+      await apiRequest("PUT", `/api/orders/${order.id}/items`, { items });
+      await apiRequest("PATCH", `/api/orders/${order.id}`, { status: "placed", placed_at: new Date().toISOString() });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      setShowTemplates(true);
+    } catch (e: any) {
+      toast({ description: e.message || "Failed to save", variant: "destructive" });
+    }
+    setSaving(false);
   };
 
-  const filledCount = items.filter(i => (i.qty || 0) > 0).length;
+  const confirmSent = async () => {
+    setConfirmedSent(true);
+    onPlaced();
+  };
 
-  if (items.length === 0) {
+  // Build message templates grouped by supplier
+  const buildTemplates = () => {
+    const supplierGroups: Record<string, { supplier: Supplier; items: Array<{ name: string; sku?: string; qty: number; unit: string }> }> = {};
+    for (const ing of scopedIngredients) {
+      const qty = parseFloat(qtys[ing.id] || "0");
+      if (qty <= 0) continue;
+      const sid = String(ing.best_supplier_id || "0");
+      const sup = suppliers.find(s => String(s.id) === sid);
+      if (!sup) continue;
+      if (!supplierGroups[sid]) supplierGroups[sid] = { supplier: sup, items: [] };
+      const si = getSI(ing.id);
+      supplierGroups[sid].items.push({ name: si?.supplier_ingredient_name || ing.name, sku: si?.supplier_sku, qty, unit: si?.unit_size_unit || ing.unit || "" });
+    }
+    return Object.values(supplierGroups);
+  };
+
+  const templates = buildTemplates();
+
+  if (showTemplates) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
-        <Package className="w-12 h-12 text-gray-200 mb-4" />
-        <p className="text-gray-500 font-medium mb-1">No items added yet</p>
-        <p className="text-sm text-gray-400 mb-5">
-          Tap below to choose ingredients to include in this order
-        </p>
-        {!disabled && (
-          <Button
-            onClick={onAddIngredients}
-            className="text-white gap-1.5"
-            style={{ backgroundColor: BRAND }}
-          >
-            <Plus className="w-4 h-4" />
-            Add Ingredients
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
+          <div>
+            <h2 className="text-base font-bold">{order.name}</h2>
+            <p className="text-xs text-muted-foreground">Order placed — send to suppliers</p>
+          </div>
+        </div>
+
+        {templates.map(({ supplier, items }) => {
+          const deliveryDays = (() => { try { return JSON.parse(supplier.delivery_days || "[]"); } catch { return []; } })();
+          const HowIcon = HOW_TO_ORDER_ICONS[supplier.how_to_order || "email"] || Mail;
+
+          const emailText = [
+            `Hi ${supplier.contact_name || supplier.name},`,
+            ``,
+            `Please process the following order for The Deli by Greenhorns:`,
+            ``,
+            ...items.map(it => `  • ${it.name}${it.sku ? ` (SKU: ${it.sku})` : ""} — ${it.qty} ${it.unit}`),
+            ``,
+            `Please confirm receipt of this order.`,
+            ``,
+            `Thanks,`,
+            `The Deli by Greenhorns`,
+          ].join("\n");
+
+          const smsText = [
+            `Hi ${supplier.contact_name || supplier.name}, order from The Deli by Greenhorns:`,
+            ...items.map(it => `${it.name}${it.sku ? ` (${it.sku})` : ""} x${it.qty}`),
+            `Thanks`,
+          ].join("\n");
+
+          return (
+            <div key={supplier.id} className="border border-border rounded-xl overflow-hidden">
+              {/* Supplier header */}
+              <div className="px-4 py-3 flex items-center justify-between" style={{ background: BRAND_LIGHT }}>
+                <div>
+                  <p className="text-sm font-bold" style={{ color: BRAND }}>{supplier.name}</p>
+                  <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                    {supplier.how_to_order && (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground capitalize">
+                        <HowIcon size={11} /> {supplier.how_to_order}
+                      </span>
+                    )}
+                    {supplier.order_contact && (
+                      <span className="text-xs text-muted-foreground">{supplier.order_contact}</span>
+                    )}
+                    {supplier.order_cutoff && (
+                      <span className="text-xs text-amber-700 font-medium">Cut-off: {supplier.order_cutoff}</span>
+                    )}
+                    {supplier.min_order_amount && (
+                      <span className="text-xs text-muted-foreground">Min: ${supplier.min_order_amount}</span>
+                    )}
+                    {deliveryDays.length > 0 && (
+                      <span className="text-xs text-muted-foreground">Delivers: {deliveryDays.join(", ")}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Email template */}
+              <div className="p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Email Template</span>
+                  <CopyButton text={emailText} label="Copy email" />
+                </div>
+                <pre className="text-xs bg-muted/50 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">{emailText}</pre>
+              </div>
+
+              {/* SMS template */}
+              <div className="px-4 pb-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Text/SMS Template</span>
+                  <CopyButton text={smsText} label="Copy SMS" />
+                </div>
+                <pre className="text-xs bg-muted/50 rounded-lg p-3 whitespace-pre-wrap font-mono leading-relaxed">{smsText}</pre>
+              </div>
+            </div>
+          );
+        })}
+
+        {!confirmedSent && (
+          <Button className="w-full h-12 font-semibold gap-2" style={{ background: BRAND }} onClick={confirmSent}>
+            <CheckCircle2 size={16} /> Confirm Order Has Been Sent
           </Button>
+        )}
+        {confirmedSent && (
+          <div className="text-center py-3 text-sm text-green-700 font-medium flex items-center justify-center gap-2">
+            <CheckCircle2 size={16} /> Order confirmed as sent
+          </div>
         )}
       </div>
     );
   }
 
   return (
-    <div>
-      {/* Progress */}
-      <div
-        className="px-4 py-2 border-b flex items-center justify-between text-xs text-gray-500"
-        style={{ backgroundColor: BRAND_LIGHT }}
-      >
-        <span>{filledCount} / {items.length} items with quantities</span>
-        <div className="w-28 h-1.5 rounded-full bg-gray-200 overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-500"
-            style={{
-              width: items.length > 0 ? `${(filledCount / items.length) * 100}%` : "0%",
-              backgroundColor: BRAND,
-            }}
-          />
+    <div className="space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-base font-bold truncate">{order.name}</h2>
+          <p className="text-xs text-muted-foreground">{scopedIngredients.length} ingredients · {totalItems} selected</p>
         </div>
+        <Button size="sm" variant="outline" onClick={() => window.print()} className="gap-1.5 hidden sm:flex">
+          <Printer size={14} /> Print
+        </Button>
       </div>
 
-      {/* Add more button */}
-      {!disabled && (
-        <div className="px-4 py-2 border-b">
-          <button
-            onClick={onAddIngredients}
-            className="flex items-center gap-1.5 text-sm font-medium"
-            style={{ color: BRAND }}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add / edit ingredients
-          </button>
-        </div>
-      )}
-
-      {/* Grouped items */}
-      {Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([group, groupItems]) => {
-        const isCollapsed = collapsedGroups[group];
-        const groupFilled = groupItems.filter(({ item }) => (parseFloat(localQty[item.item_key] || "0") || 0) > 0).length;
-        const allDone = groupFilled === groupItems.length;
+      {Object.entries(groups).map(([key, ings]) => {
+        const groupLabel = order.order_type === "supplier"
+          ? (suppliers.find(s => String(s.id) === key)?.name || "Unknown Supplier")
+          : key;
+        const suppId = order.order_type === "supplier" ? Number(key) : undefined;
+        const color = suppId ? supplierColor(suppId) : BRAND;
 
         return (
-          <div key={group} className="border-b last:border-b-0">
-            <button
-              className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50 transition-colors"
-              onClick={() => toggleGroup(group)}
-            >
-              <div className="flex items-center gap-2">
-                {isCollapsed
-                  ? <ChevronRight className="w-4 h-4 text-gray-400" />
-                  : <ChevronDown className="w-4 h-4 text-gray-400" />
-                }
-                <span className="text-sm font-semibold text-gray-700">{group}</span>
-                <span className="text-xs text-gray-400">({groupItems.length})</span>
-                {groupFilled > 0 && (
-                  <span
-                    className="text-xs px-1.5 py-0.5 rounded-full font-medium"
-                    style={{ color: BRAND, backgroundColor: BRAND_LIGHT }}
-                  >
-                    {groupFilled}
-                  </span>
-                )}
-              </div>
-              {allDone && (
-                <span className="flex items-center gap-1 text-xs" style={{ color: BRAND }}>
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Done
-                </span>
-              )}
-            </button>
+          <div key={key} className="rounded-xl border border-border overflow-hidden">
+            <div className="px-4 py-2.5 flex items-center gap-2" style={{ background: `${color}15`, borderBottom: `2px solid ${color}` }}>
+              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: color }} />
+              <span className="text-sm font-bold" style={{ color }}>{groupLabel}</span>
+              <span className="text-xs text-muted-foreground ml-auto">{ings.length} items</span>
+            </div>
 
-            {!isCollapsed && (
-              <div className="divide-y divide-gray-50">
-                {groupItems.map(({ item, ing }) => {
-                  const val = localQty[item.item_key] ?? "";
-                  const hasVal = (parseFloat(val) || 0) > 0;
+            {/* Table header */}
+            <div className="hidden sm:grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] text-xs font-semibold text-muted-foreground uppercase tracking-wide px-4 py-2 bg-muted/30 border-b">
+              <span>Ingredient</span>
+              <span className="text-right">Last Ordered</span>
+              <span className="text-right">Last Qty</span>
+              <span className="text-right">Avg Qty</span>
+              <span className="text-right">Pack Size</span>
+              <span className="text-right">Qty to Order</span>
+            </div>
 
-                  return (
-                    <div
-                      key={item.item_key}
-                      className="flex items-center justify-between px-4 py-2.5 transition-colors"
-                      style={hasVal ? { backgroundColor: BRAND_LIGHT + "60" } : {}}
-                    >
-                      <div className="flex items-center gap-2 flex-1 min-w-0 mr-3">
-                        {hasVal
-                          ? <Check className="w-3.5 h-3.5 shrink-0" style={{ color: BRAND }} />
-                          : <div className="w-3.5 h-3.5 shrink-0" />
-                        }
-                        <div className="min-w-0">
-                          <span
-                            className="text-sm block truncate"
-                            style={hasVal ? { color: BRAND, fontWeight: 500 } : { color: "#374151" }}
-                          >
-                            {item.item_name}
-                          </span>
-                          {receivingMode && (item.qty || 0) > 0 && (
-                            <span className="text-xs text-gray-400">
-                              ordered: {item.qty} {ing?.unit || ""}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <QtyInput
-                        value={val}
-                        onChange={v => handleChange(item, v)}
-                        unit={ing?.unit}
-                        disabled={disabled}
-                      />
+            {ings.map(ing => {
+              const si = getSI(ing.id, suppId);
+              const par = getParLevel(ing.id);
+              const hist = historyMap[ing.id];
+              const qty = qtys[ing.id] || "";
+              const hasQty = parseFloat(qty) > 0;
+              const packDisplay = si?.unit_size_qty
+                ? `${si.unit_size_qty}${si.unit_size_unit || ing.unit}`
+                : (si?.pack_size ? `${si.pack_size}${ing.unit}` : "—");
+              const priceDisplay = si?.pack_cost ? `$${si.pack_cost.toFixed(2)}` : "";
+
+              return (
+                <div key={ing.id}
+                  className="px-4 py-3 border-b last:border-b-0 flex flex-col sm:grid sm:grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] sm:items-center gap-2 transition-colors"
+                  style={hasQty ? { background: `${color}08` } : {}}>
+
+                  {/* Ingredient name */}
+                  <div>
+                    <p className="text-sm font-semibold">{ing.name}</p>
+                    {si?.supplier_ingredient_name && si.supplier_ingredient_name !== ing.name && (
+                      <p className="text-xs text-muted-foreground">Supplier: {si.supplier_ingredient_name}</p>
+                    )}
+                    {si?.supplier_sku && <p className="text-xs text-muted-foreground">SKU: {si.supplier_sku}</p>}
+                    {par && <p className="text-xs text-amber-700">Par: {par.par_level} {par.unit}</p>}
+                    {priceDisplay && <p className="text-xs text-muted-foreground">{priceDisplay}/pack</p>}
+                    {/* Mobile: show all cols inline */}
+                    <div className="sm:hidden flex flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-muted-foreground">
+                      <span>Last: {hist?.last_ordered ? fmtDate(hist.last_ordered) : "—"} {hist?.last_qty != null ? `(${hist.last_qty})` : ""}</span>
+                      <span>Avg: {hist?.avg_qty ?? "—"}</span>
+                      <span>Pack: {packDisplay}</span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  </div>
+
+                  {/* Desktop cols */}
+                  <span className="hidden sm:block text-xs text-right">{hist?.last_ordered ? fmtDate(hist.last_ordered) : "—"}</span>
+                  <span className="hidden sm:block text-xs text-right">{hist?.last_qty ?? "—"}</span>
+                  <span className="hidden sm:block text-xs text-right">{hist?.avg_qty ?? "—"}</span>
+                  <span className="hidden sm:block text-xs text-right">{packDisplay}</span>
+
+                  {/* Qty input */}
+                  <div className="flex items-center justify-end gap-1.5">
+                    <button onClick={() => setQtys(p => ({ ...p, [ing.id]: String(Math.max(0, (parseFloat(p[ing.id] || "0") - 1))) }))}
+                      className="w-8 h-8 rounded-lg border flex items-center justify-center text-muted-foreground hover:bg-muted/50 text-lg leading-none"
+                      style={hasQty ? { borderColor: color, color } : {}}>−</button>
+                    <input type="number" min="0" value={qty} placeholder="0"
+                      onChange={e => setQtys(p => ({ ...p, [ing.id]: e.target.value }))}
+                      className="w-14 h-8 text-center text-sm font-bold rounded-lg border outline-none"
+                      style={hasQty ? { borderColor: color, color } : { borderColor: "#E5E7EB" }} />
+                    <button onClick={() => setQtys(p => ({ ...p, [ing.id]: String((parseFloat(p[ing.id] || "0") + 1)) }))}
+                      className="w-8 h-8 rounded-lg border flex items-center justify-center text-sm"
+                      style={hasQty ? { background: color, borderColor: color, color: "white" } : { borderColor: "#E5E7EB", color: "#374151" }}>+</button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })}
+
+      <Button className="w-full h-12 font-semibold gap-2" style={{ background: BRAND }}
+        disabled={totalItems === 0 || saving}
+        onClick={saveItems}>
+        {saving ? "Saving…" : `Place Order (${totalItems} item${totalItems !== 1 ? "s" : ""}) →`}
+      </Button>
     </div>
   );
 }
 
-// ─── Print View ───────────────────────────────────────────────────────────────
-
-function PrintView({ draft, items, ingredients }: { draft: DraftOrder; items: SupplierItem[]; ingredients: Ingredient[] }) {
-  const ingMap: Record<number, Ingredient> = {};
-  ingredients.forEach(i => { ingMap[i.id] = i; });
-
-  const date = new Date().toLocaleDateString("en-AU", {
-    weekday: "long", day: "2-digit", month: "long", year: "numeric",
+// ─── Receive Order View ────────────────────────────────────────────────────────
+function ReceiveOrderView({ order, onBack, onReceived }: {
+  order: StockOrder; onBack: () => void; onReceived: () => void;
+}) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data: items = [], isLoading } = useQuery<OrderItem[]>({
+    queryKey: ["/api/orders", order.id, "items"],
+    queryFn: () => apiRequest("GET", `/api/orders/${order.id}/items`).then(r => r.json()),
   });
 
-  const filledItems = items.filter(i => (i.qty || 0) > 0);
+  const [received, setReceived] = useState<Record<number, { qty: string; full: boolean }>>({});
 
-  // Group by supplier
-  const grouped: Record<string, typeof filledItems> = {};
-  filledItems.forEach(it => {
-    const match = it.item_key.match(/^ingredient::(\d+)$/);
-    const ing = match ? ingMap[Number(match[1])] : undefined;
-    const group = ing?.bestSupplierName || it.section_key || "Other";
-    if (!grouped[group]) grouped[group] = [];
-    grouped[group].push(it);
+  const patchItem = useMutation({
+    mutationFn: ({ itemId, qty }: { itemId: number; qty: number }) =>
+      apiRequest("PATCH", `/api/orders/${order.id}/items/${itemId}`, { qty_received: qty }),
   });
+
+  const markReceived = async () => {
+    for (const item of items) {
+      const r = received[item.id];
+      const qty = r?.full ? item.qty_ordered : parseFloat(r?.qty || "0");
+      if (!isNaN(qty)) await patchItem.mutateAsync({ itemId: item.id, qty });
+    }
+    const allFull = items.every(item => {
+      const r = received[item.id];
+      return r?.full;
+    });
+    await apiRequest("PATCH", `/api/orders/${order.id}`, {
+      status: allFull ? "received" : "partial",
+      received_at: new Date().toISOString(),
+    });
+    qc.invalidateQueries({ queryKey: ["/api/orders"] });
+    toast({ description: allFull ? "Order marked as received" : "Order marked as partially received" });
+    onReceived();
+  };
+
+  const toggle = (itemId: number) =>
+    setReceived(prev => ({
+      ...prev,
+      [itemId]: { qty: String(items.find(i => i.id === itemId)?.qty_ordered || 0), full: !prev[itemId]?.full },
+    }));
+
+  const setQty = (itemId: number, qty: string) =>
+    setReceived(prev => ({ ...prev, [itemId]: { qty, full: false } }));
+
+  const checkedCount = items.filter(i => received[i.id]?.full).length;
 
   return (
     <div className="space-y-5">
-      <div className="border-b pb-3">
-        <h2 className="text-lg font-bold" style={{ color: BRAND }}>{draft.name}</h2>
-        <p className="text-sm text-gray-500">{date}</p>
-        <StatusBadge status={draft.status} />
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
+        <div className="flex-1">
+          <h2 className="text-base font-bold">{order.name}</h2>
+          <p className="text-xs text-muted-foreground">Mark items as received</p>
+        </div>
+        <StatusBadge status={order.status} />
       </div>
 
-      {Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([group, groupItems]) => (
-        <div key={group} className="border rounded-lg overflow-hidden" style={{ borderColor: BRAND }}>
-          <div className="px-4 py-2 text-white font-semibold" style={{ backgroundColor: BRAND }}>
-            {group}
-          </div>
-          <table className="w-full text-sm">
-            <tbody className="divide-y divide-gray-100">
-              {groupItems.map((it, i) => {
-                const match = it.item_key.match(/^ingredient::(\d+)$/);
-                const ing = match ? ingMap[Number(match[1])] : undefined;
-                return (
-                  <tr key={it.id} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                    <td className="px-4 py-2 text-gray-800 font-medium">{it.item_name}</td>
-                    <td className="px-4 py-2 text-right font-bold" style={{ color: BRAND }}>
-                      {it.qty} {ing?.unit || ""}
-                    </td>
-                    <td className="px-4 py-2 w-16 text-right">
-                      {/* received qty box for printing */}
-                      <span className="inline-block border border-gray-300 rounded w-12 h-6" />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {isLoading ? (
+        <div className="text-center py-8 text-muted-foreground text-sm">Loading…</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(item => {
+            const r = received[item.id];
+            const isPartial = r && !r.full;
+            return (
+              <div key={item.id}
+                className="rounded-xl border p-4 flex items-center gap-3 transition-all"
+                style={r?.full ? { borderColor: "#5AB693", background: "#F0FDF4" } : { borderColor: "#E5E7EB" }}>
+                <Checkbox checked={!!r?.full} onCheckedChange={() => toggle(item.id)}
+                  className="w-5 h-5 flex-shrink-0" style={{ accentColor: "#5AB693" }} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold">{item.ingredient_name || `Ingredient #${item.ingredient_id}`}</p>
+                  {item.supplier_ingredient_name && item.supplier_ingredient_name !== item.ingredient_name && (
+                    <p className="text-xs text-muted-foreground">Supplier name: {item.supplier_ingredient_name}</p>
+                  )}
+                  {item.supplier_sku && <p className="text-xs text-muted-foreground">SKU: {item.supplier_sku}</p>}
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Ordered: <strong>{item.qty_ordered} {item.unit_size_unit || ""}</strong>
+                    {item.pack_cost && ` · $${item.pack_cost.toFixed(2)}/pack`}
+                  </p>
+                </div>
+                {!r?.full && (
+                  <div className="flex-shrink-0">
+                    <p className="text-xs text-muted-foreground mb-1 text-center">Received</p>
+                    <input type="number" min="0" value={r?.qty || ""} placeholder={String(item.qty_ordered)}
+                      onChange={e => setQty(item.id, e.target.value)}
+                      className="w-20 h-8 text-center text-sm font-semibold rounded-lg border border-amber-300 bg-amber-50 outline-none focus:ring-2 focus:ring-amber-400" />
+                  </div>
+                )}
+                {r?.full && (
+                  <span className="text-green-600 flex-shrink-0"><CheckCircle2 size={20} /></span>
+                )}
+              </div>
+            );
+          })}
         </div>
-      ))}
-
-      {filledItems.length === 0 && (
-        <p className="text-center text-gray-400 py-8">No items with quantities to print.</p>
       )}
 
-      <div className="border-t pt-4 text-xs text-gray-400 flex justify-between">
-        <span>The Deli by Greenhorns — Stock Order</span>
-        <span>Printed {date}</span>
+      <Button className="w-full h-12 font-semibold gap-2" style={{ background: BRAND }}
+        onClick={markReceived} disabled={items.length === 0}>
+        <Truck size={16} />
+        {checkedCount === items.length && items.length > 0 ? "Confirm All Received" : "Confirm Receipt"}
+      </Button>
+    </div>
+  );
+}
+
+// ─── Order List Row ────────────────────────────────────────────────────────────
+function OrderRow({ order, suppliers, onClick, onDelete }: {
+  order: StockOrder; suppliers: Supplier[];
+  onClick: () => void; onDelete: () => void;
+}) {
+  const typeKeys: string[] = (() => { try { return JSON.parse(order.type_keys || "[]"); } catch { return []; } })();
+  const colors = order.order_type === "supplier"
+    ? typeKeys.map(k => supplierColor(Number(k)))
+    : [BRAND];
+  const primaryColor = colors[0] || BRAND;
+
+  return (
+    <div className="rounded-xl border border-border bg-white hover:shadow-sm transition-shadow overflow-hidden">
+      <div className="h-1 w-full" style={{ background: primaryColor }} />
+      <button className="w-full text-left px-4 pt-3 pb-4" onClick={onClick}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold truncate">{order.name}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{fmtDateTime(order.created_at)}</p>
+            {order.placed_at && (
+              <p className="text-xs text-muted-foreground">Placed: {fmtDateTime(order.placed_at)}</p>
+            )}
+          </div>
+          <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+            <StatusBadge status={order.status} />
+          </div>
+        </div>
+        <div className="flex gap-1.5 mt-2">
+          {colors.slice(0, 5).map((c, i) => (
+            <div key={i} className="h-1.5 rounded-full flex-1" style={{ background: c }} />
+          ))}
+        </div>
+      </button>
+      <div className="px-4 pb-3 flex items-center justify-between">
+        <div className="flex gap-1.5 flex-wrap">
+          {typeKeys.slice(0, 3).map(k => {
+            const label = order.order_type === "supplier"
+              ? (suppliers.find(s => String(s.id) === k)?.name || k)
+              : k;
+            return (
+              <span key={k} className="text-xs px-2 py-0.5 rounded-full font-medium"
+                style={{ background: `${primaryColor}15`, color: primaryColor }}>{label}</span>
+            );
+          })}
+          {typeKeys.length > 3 && <span className="text-xs text-muted-foreground">+{typeKeys.length - 3}</span>}
+        </div>
+        <button onClick={e => { e.stopPropagation(); onDelete(); }}
+          className="p-1.5 rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-500 transition-colors">
+          <Trash2 size={14} />
+        </button>
       </div>
     </div>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
-
+// ─── Main StockOrder Page ──────────────────────────────────────────────────────
 export default function StockOrder() {
+  const { toast } = useToast();
   const qc = useQueryClient();
+  const [tab, setTab] = useState<"active" | "completed">("active");
+  const [showNewOrder, setShowNewOrder] = useState(false);
+  const [activeOrder, setActiveOrder] = useState<StockOrder | null>(null);
+  const [activeView, setActiveView] = useState<"table" | "receive" | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<StockOrder | null>(null);
 
-  const [view, setView] = useState<"list" | "order">("list");
-  const [activeDraftId, setActiveDraftId] = useState<number | null>(null);
-  const [listTab, setListTab] = useState<"active" | "history">("active");
-  const [newOrderDialog, setNewOrderDialog] = useState(false);
-  const [newOrderName, setNewOrderName] = useState("");
-  const [printDialog, setPrintDialog] = useState(false);
-  const [selectDialog, setSelectDialog] = useState(false);
-  const [receivingMode, setReceivingMode] = useState(false);
-
-  // ── Data ───────────────────────────────────────────────────────────────────
-
-  const { data: ingredients = [] } = useQuery<Ingredient[]>({
-    queryKey: ["/api/ingredients"],
+  const { data: orders = [], isLoading: ordersLoading } = useQuery<StockOrder[]>({
+    queryKey: ["/api/orders"],
+    queryFn: () => apiRequest("GET", "/api/orders").then(r => r.json()),
+    refetchInterval: 30000,
   });
 
   const { data: suppliers = [] } = useQuery<Supplier[]>({
     queryKey: ["/api/suppliers"],
+    queryFn: () => apiRequest("GET", "/api/suppliers").then(r => r.json()),
   });
 
-  const { data: drafts = [] } = useQuery<DraftOrder[]>({
-    queryKey: ["/api/stock-order/drafts"],
+  const { data: ingredients = [] } = useQuery<IngredientRaw[]>({
+    queryKey: ["/api/ingredients"],
+    queryFn: () => apiRequest("GET", "/api/ingredients").then(r => r.json()),
   });
 
-  const { data: supplierItems = [], isLoading: itemsLoading } = useQuery<SupplierItem[]>({
-    queryKey: ["/api/stock-order/drafts", activeDraftId, "supplier-items"],
-    queryFn: () =>
-      activeDraftId
-        ? apiRequest("GET", `/api/stock-order/drafts/${activeDraftId}/supplier-items`).then(r => r.json())
-        : Promise.resolve([]),
-    enabled: !!activeDraftId,
+  const { data: parLevels = [] } = useQuery<ParLevel[]>({
+    queryKey: ["/api/stock-order/par-levels"],
+    queryFn: () => apiRequest("GET", "/api/stock-order/par-levels").then(r => r.json()),
   });
 
-  // ── Derived ────────────────────────────────────────────────────────────────
-
-  const activeDraft = drafts.find(d => d.id === activeDraftId);
-  const isDraft = activeDraft?.status === "draft";
-  const isReadonly = activeDraft && !["draft"].includes(activeDraft.status) && !receivingMode;
-
-  const activeOrders = drafts.filter(d => ["draft", "submitted"].includes(d.status));
-  const historyOrders = drafts.filter(d => ["received", "partial", "cancelled"].includes(d.status));
-
-  const totalFilledItems = supplierItems.filter(i => (i.qty || 0) > 0).length;
-
-  // ── Mutations ──────────────────────────────────────────────────────────────
-
-  const createDraft = useMutation({
-    mutationFn: (name: string) =>
-      apiRequest("POST", "/api/stock-order/drafts", { name }).then(r => r.json()),
-    onSuccess: (data: DraftOrder) => {
-      qc.invalidateQueries({ queryKey: ["/api/stock-order/drafts"] });
-      setActiveDraftId(data.id);
-      setView("order");
-      setNewOrderDialog(false);
-      setNewOrderName("");
-      // Immediately open the ingredient picker
-      setTimeout(() => setSelectDialog(true), 300);
-    },
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/orders/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/orders"] }); setDeleteConfirm(null); },
+    onError: () => toast({ description: "Failed to delete order", variant: "destructive" }),
   });
 
-  const deleteDraft = useMutation({
-    mutationFn: (id: number) =>
-      apiRequest("DELETE", `/api/stock-order/drafts/${id}`).then(r => r.json()),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/stock-order/drafts"] }),
-  });
+  const activeOrders = orders.filter(o => !["received", "cancelled"].includes(o.status));
+  const completedOrders = orders.filter(o => ["received", "cancelled"].includes(o.status));
 
-  const updateStatus = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: string }) =>
-      apiRequest("PATCH", `/api/stock-order/drafts/${id}/status`, { status }).then(r => r.json()),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/stock-order/drafts"] }),
-  });
-
-  const saveItem = useMutation({
-    mutationFn: (payload: any) =>
-      apiRequest("PUT", `/api/stock-order/drafts/${activeDraftId}/supplier-items`, payload).then(r => r.json()),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/stock-order/drafts", activeDraftId, "supplier-items"] });
-    },
-  });
-
-  const handleSaveItem = useCallback((item: SupplierItem, qty: number | null, receivedQty?: number) => {
-    if (!activeDraftId) return;
-    const payload: any = {
-      supplierKey: item.supplier_key || "ingredient",
-      itemKey: item.item_key,
-      sectionKey: item.section_key,
-      itemName: item.item_name,
-    };
-    if (qty !== null) payload.qty = qty;
-    if (receivedQty !== undefined) payload.receivedQty = receivedQty;
-    saveItem.mutate(payload);
-  }, [activeDraftId, saveItem]);
-
-  // When ingredients are confirmed from the selector, upsert them all
-  const handleIngredientsConfirmed = useCallback((selected: Ingredient[]) => {
-    if (!activeDraftId) return;
-
-    // Add new ones (don't remove existing)
-    selected.forEach(ing => {
-      const key = `ingredient::${ing.id}`;
-      const existing = supplierItems.find(i => i.item_key === key);
-      if (!existing) {
-        saveItem.mutate({
-          supplierKey: ing.bestSupplierName || "other",
-          itemKey: key,
-          sectionKey: ing.bestSupplierName || "other",
-          itemName: ing.name,
-          qty: 0,
-        });
-      }
-    });
-
-    // Remove deselected ones (set qty to 0 to delete)
-    supplierItems.forEach(existing => {
-      const match = existing.item_key.match(/^ingredient::(\d+)$/);
-      if (!match) return;
-      const ingId = Number(match[1]);
-      const stillSelected = selected.some(s => s.id === ingId);
-      if (!stillSelected) {
-        saveItem.mutate({
-          supplierKey: existing.supplier_key,
-          itemKey: existing.item_key,
-          sectionKey: existing.section_key,
-          itemName: existing.item_name,
-          qty: 0,
-        });
-      }
-    });
-  }, [activeDraftId, supplierItems, saveItem]);
-
-  // ── Open order ─────────────────────────────────────────────────────────────
-
-  const openOrder = (draft: DraftOrder) => {
-    setActiveDraftId(draft.id);
-    setReceivingMode(draft.status === "submitted");
-    setView("order");
+  const openOrder = (order: StockOrder) => {
+    setActiveOrder(order);
+    setActiveView(["placed", "partial"].includes(order.status) ? "receive" : "table");
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER — ORDER LIST
-  // ─────────────────────────────────────────────────────────────────────────
-
-  if (view === "list") {
-    const displayDrafts = listTab === "active" ? activeOrders : historyOrders;
-
+  // ── Order detail view ──
+  if (activeOrder) {
     return (
-      <div className="p-4 max-w-2xl mx-auto">
-        <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2">
-            <ShoppingCart className="w-5 h-5" style={{ color: BRAND }} />
-            <h1 className="text-xl font-bold" style={{ color: BRAND }}>Stock Ordering</h1>
-          </div>
-          <Button
-            onClick={() => setNewOrderDialog(true)}
-            className="gap-1.5 text-white"
-            style={{ backgroundColor: BRAND }}
-          >
-            <Plus className="w-4 h-4" />
-            New Order
-          </Button>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 bg-gray-100 p-1 rounded-lg mb-4">
-          {(["active", "history"] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setListTab(tab)}
-              className="flex-1 py-1.5 text-sm font-medium rounded-md transition-all capitalize"
-              style={listTab === tab
-                ? { backgroundColor: "white", color: BRAND, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" }
-                : { color: "#6B7280" }
-              }
-            >
-              {tab}
-              {tab === "active" && activeOrders.length > 0 && (
-                <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                  {activeOrders.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-
-        {displayDrafts.length === 0 ? (
-          <div className="text-center py-16 bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
-            <ClipboardList className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-400 text-sm">
-              {listTab === "active" ? "No active orders. Create one to get started." : "No completed orders yet."}
-            </p>
-            {listTab === "active" && (
-              <Button
-                className="mt-4 gap-1.5 text-white"
-                style={{ backgroundColor: BRAND }}
-                onClick={() => setNewOrderDialog(true)}
-              >
-                <Plus className="w-4 h-4" /> New Order
-              </Button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {displayDrafts.map(draft => (
-              <div
-                key={draft.id}
-                className="bg-white rounded-xl border border-gray-200 overflow-hidden cursor-pointer hover:shadow-md transition-all"
-                style={{ borderLeft: `4px solid ${BRAND}` }}
-                onClick={() => openOrder(draft)}
-              >
-                <div className="px-4 py-3 flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="font-semibold text-gray-800 truncate">{draft.name}</span>
-                      <StatusBadge status={draft.status} />
-                    </div>
-                    <p className="text-xs text-gray-400">{formatDateTime(draft.updated_at)}</p>
-                  </div>
-                  <div className="flex items-center gap-2 ml-3">
-                    <ChevronRight className="w-4 h-4 text-gray-400" />
-                    <button
-                      onClick={e => {
-                        e.stopPropagation();
-                        if (confirm("Delete this order?")) deleteDraft.mutate(draft.id);
-                      }}
-                      className="w-7 h-7 flex items-center justify-center rounded-lg text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+      <div className="p-4 max-w-3xl mx-auto pb-24">
+        {activeView === "table" && (
+          <OrderTableView
+            order={activeOrder} suppliers={suppliers}
+            ingredients={ingredients} parLevels={parLevels}
+            onBack={() => { setActiveOrder(null); setActiveView(null); }}
+            onPlaced={() => setActiveView("receive")}
+          />
         )}
-
-        {/* New order dialog */}
-        <Dialog open={newOrderDialog} onOpenChange={setNewOrderDialog}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle style={{ color: BRAND }}>New Stock Order</DialogTitle>
-            </DialogHeader>
-            <form
-              onSubmit={e => {
-                e.preventDefault();
-                const name = newOrderName.trim() ||
-                  `Stock Order ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "short" })}`;
-                createDraft.mutate(name);
-              }}
-              className="space-y-4"
-            >
-              <div>
-                <label className="text-sm font-medium text-gray-700 block mb-1">Order name</label>
-                <Input
-                  value={newOrderName}
-                  onChange={e => setNewOrderName(e.target.value)}
-                  placeholder={`Stock Order ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "short" })}`}
-                  autoFocus
-                />
-              </div>
-              <Button
-                type="submit"
-                className="w-full text-white"
-                style={{ backgroundColor: BRAND }}
-                disabled={createDraft.isPending}
-              >
-                <Plus className="w-4 h-4 mr-1.5" />
-                Create & Select Ingredients
-              </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
+        {activeView === "receive" && (
+          <ReceiveOrderView
+            order={activeOrder}
+            onBack={() => { setActiveOrder(null); setActiveView(null); }}
+            onReceived={() => { setActiveOrder(null); setActiveView(null); }}
+          />
+        )}
       </div>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER — ORDER FORM
-  // ─────────────────────────────────────────────────────────────────────────
-
   return (
-    <div className="flex flex-col h-full max-w-3xl mx-auto">
-      {/* Top bar */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b bg-white sticky top-0 z-10">
-        <button
-          onClick={() => setView("list")}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4 text-gray-600" />
-        </button>
-        <div className="flex-1 min-w-0">
-          <h1 className="text-base font-bold text-gray-800 truncate">{activeDraft?.name}</h1>
-          <div className="flex items-center gap-2">
-            {activeDraft && <StatusBadge status={activeDraft.status} />}
-            {totalFilledItems > 0 && (
-              <span className="text-xs text-gray-400">{totalFilledItems} items</span>
-            )}
-            {receivingMode && (
-              <span className="text-xs font-medium text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full">
-                Recording Delivery
-              </span>
-            )}
-          </div>
+    <div className="p-4 max-w-2xl mx-auto pb-24">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-xl font-bold">Stock Orders</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">{activeOrders.length} in progress</p>
         </div>
-        <button
-          onClick={() => setPrintDialog(true)}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors text-gray-500"
-        >
-          <Printer className="w-4 h-4" />
-        </button>
+        <Button onClick={() => setShowNewOrder(true)} className="gap-2 font-semibold h-10"
+          style={{ background: BRAND }}>
+          <Plus size={16} /> Place New Order
+        </Button>
       </div>
 
-      {/* Order form */}
-      <div className="flex-1 overflow-y-auto bg-white">
-        {itemsLoading ? (
-          <div className="flex items-center justify-center py-16">
-            <div className="w-6 h-6 border-2 border-gray-200 border-t-gray-500 rounded-full animate-spin" />
-          </div>
-        ) : activeDraft ? (
-          <OrderForm
-            draft={activeDraft}
-            items={supplierItems}
-            ingredients={ingredients}
-            onSaveItem={handleSaveItem}
-            onAddIngredients={() => setSelectDialog(true)}
-            disabled={!!isReadonly}
-            receivingMode={receivingMode}
-          />
-        ) : null}
+      {/* Tabs */}
+      <div className="flex gap-1 bg-muted/40 rounded-xl p-1 mb-5">
+        {([["active", "In Progress", activeOrders.length], ["completed", "Completed", completedOrders.length]] as const).map(([val, label, count]) => (
+          <button key={val} onClick={() => setTab(val)}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all"
+            style={tab === val ? { background: "white", color: BRAND, boxShadow: "0 1px 3px rgba(0,0,0,0.1)" } : { color: "#6B7280" }}>
+            {label}
+            <span className="text-xs rounded-full px-1.5 py-0.5 font-semibold"
+              style={tab === val ? { background: BRAND_LIGHT, color: BRAND } : { background: "#E5E7EB", color: "#6B7280" }}>
+              {count}
+            </span>
+          </button>
+        ))}
       </div>
 
-      {/* Sticky footer */}
-      <div className="border-t bg-white px-4 py-3">
-        {receivingMode ? (
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setReceivingMode(false)}>
-              Cancel
-            </Button>
-            <Button
-              className="flex-1 text-white gap-1.5"
-              style={{ backgroundColor: "#5AB693" }}
-              onClick={() => {
-                if (activeDraftId) {
-                  updateStatus.mutate({ id: activeDraftId, status: "received" });
-                  setReceivingMode(false);
-                }
-              }}
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              Mark Received
-            </Button>
-          </div>
-        ) : isDraft ? (
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1 text-gray-600" onClick={() => setView("list")}>
-              Save Draft
-            </Button>
-            <Button
-              className="flex-1 text-white gap-1.5 transition-all"
-              style={{
-                backgroundColor: totalFilledItems > 0 ? BRAND : "#D1D5DB",
-                cursor: totalFilledItems > 0 ? "pointer" : "not-allowed",
-              }}
-              onClick={() => {
-                if (activeDraftId && totalFilledItems > 0) {
-                  updateStatus.mutate({ id: activeDraftId, status: "submitted" });
-                }
-              }}
-              disabled={totalFilledItems === 0 || updateStatus.isPending}
-            >
-              <Send className="w-4 h-4" />
-              Submit Order ({totalFilledItems} items)
-            </Button>
-          </div>
-        ) : activeDraft?.status === "submitted" ? (
-          <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => setView("list")}>
-              Back
-            </Button>
-            <Button
-              className="flex-1 text-white gap-1.5"
-              style={{ backgroundColor: "#5AB693" }}
-              onClick={() => setReceivingMode(true)}
-            >
-              <Truck className="w-4 h-4" />
-              Record Delivery
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" className="w-full" onClick={() => setView("list")}>
-            Back to Orders
-          </Button>
-        )}
-      </div>
+      {/* Order list */}
+      {ordersLoading ? (
+        <div className="text-center py-12 text-muted-foreground text-sm">Loading orders…</div>
+      ) : (
+        <div className="space-y-3">
+          {(tab === "active" ? activeOrders : completedOrders).length === 0 ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <ShoppingCart size={40} className="mx-auto mb-3 opacity-20" />
+              <p className="text-sm font-medium">
+                {tab === "active" ? "No orders in progress" : "No completed orders"}
+              </p>
+              {tab === "active" && (
+                <Button onClick={() => setShowNewOrder(true)} className="mt-4 gap-2" style={{ background: BRAND }}>
+                  <Plus size={15} /> Place First Order
+                </Button>
+              )}
+            </div>
+          ) : (
+            (tab === "active" ? activeOrders : completedOrders).map(order => (
+              <OrderRow key={order.id} order={order} suppliers={suppliers}
+                onClick={() => openOrder(order)}
+                onDelete={() => setDeleteConfirm(order)} />
+            ))
+          )}
+        </div>
+      )}
 
-      {/* Ingredient selection dialog */}
-      <OrderScopeDialog
-        open={selectDialog}
-        onClose={() => setSelectDialog(false)}
-        ingredients={ingredients}
-        suppliers={suppliers}
-        
-        onConfirm={handleIngredientsConfirmed}
-      />
+      {/* New order modal */}
+      {showNewOrder && (
+        <PlaceOrderModal
+          suppliers={suppliers} ingredients={ingredients}
+          onClose={() => setShowNewOrder(false)}
+          onCreate={(order) => { qc.invalidateQueries({ queryKey: ["/api/orders"] }); openOrder(order); }}
+        />
+      )}
 
-      {/* Print dialog */}
-      <Dialog open={printDialog} onOpenChange={setPrintDialog}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <div className="flex items-center justify-between">
-              <DialogTitle style={{ color: BRAND }}>Order Summary</DialogTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                style={{ borderColor: BRAND, color: BRAND }}
-                onClick={() => window.print()}
-              >
-                <Printer className="w-4 h-4" />
-                Print / PDF
+      {/* Delete confirm */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h3 className="text-base font-bold">Delete order?</h3>
+            <p className="text-sm text-muted-foreground">
+              "<strong>{deleteConfirm.name}</strong>" will be permanently deleted.
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+              <Button className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+                onClick={() => deleteMutation.mutate(deleteConfirm.id)}
+                disabled={deleteMutation.isPending}>
+                {deleteMutation.isPending ? "Deleting…" : "Delete"}
               </Button>
             </div>
-          </DialogHeader>
-          {activeDraft && (
-            <PrintView draft={activeDraft} items={supplierItems} ingredients={ingredients} />
-          )}
-        </DialogContent>
-      </Dialog>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

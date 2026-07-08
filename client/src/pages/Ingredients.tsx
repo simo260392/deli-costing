@@ -45,6 +45,7 @@ type Ingredient = {
 type SupplierPrice = {
   id: number; supplierId: number; ingredientId: number; costPerUnit: number;
   packSize?: number; packCost?: number; invoiceDate?: string; invoiceRef?: string; supplierName: string; brandName?: string;
+  supplier_sku?: string; supplier_ingredient_name?: string; unit_size_qty?: number; unit_size_unit?: string; is_preferred?: boolean; has_gst?: boolean;
 };
 
 const emptyIng = { name: "", category: "Bread", unit: "kg", bestCostPerUnit: "", avgWeightPerUnit: "", notes: "", dietariesJson: "[]", pealLabel: "", brandName: "", barcode: "", shelfLife: "", storageTemp: "", categoriesJson: "[]" };
@@ -69,7 +70,7 @@ export default function Ingredients() {
   const csvRef = useRef<HTMLInputElement>(null);
   const [priceOpen, setPriceOpen] = useState(false);
   const [priceIngredient, setPriceIngredient] = useState<Ingredient | null>(null);
-  const [priceForm, setPriceForm] = useState({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "" });
+  const [priceForm, setPriceForm] = useState({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "", supplier_sku: "", supplier_ingredient_name: "", unit_size_qty: "", unit_size_unit: "", is_preferred: false, has_gst: true });
 
   const { data: ingredients = [], isLoading } = useQuery<Ingredient[]>({
     queryKey: ["/api/ingredients"],
@@ -186,7 +187,7 @@ export default function Ingredients() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-ingredients", priceIngredient?.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] });
-      setPriceForm({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "" });
+      setPriceForm({ supplierId: "", costPerUnit: "", packSize: "", packCost: "", invoiceDate: "", invoiceRef: "", brandName: "", supplier_sku: "", supplier_ingredient_name: "", unit_size_qty: "", unit_size_unit: "", is_preferred: false, has_gst: true });
       toast({ title: "Price added" });
     },
   });
@@ -736,6 +737,8 @@ export default function Ingredients() {
                           </td>
                           <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-primary">${sp.costPerUnit.toFixed(4)}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{sp.packSize ?? "—"}</td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground">{sp.supplier_sku || "—"}</td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground">{sp.is_preferred ? "⭐ Preferred" : ""}{sp.has_gst === false ? " (No GST)" : ""}</td>
                           <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">{sp.packCost ? `$${sp.packCost.toFixed(2)}` : "—"}</td>
                           <td className="px-3 py-2.5 text-muted-foreground text-xs">{sp.invoiceDate ?? "—"}</td>
                           <td className="px-3 py-2.5">
@@ -793,6 +796,36 @@ export default function Ingredients() {
                   <Input value={priceForm.invoiceRef} onChange={(e) => setPriceForm({ ...priceForm, invoiceRef: e.target.value })} placeholder="INV-12345" />
                 </div>
               </div>
+              {/* Ordering details */}
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide pt-1">Ordering Details</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Supplier SKU / Product Code</Label>
+                  <Input value={priceForm.supplier_sku} onChange={e => setPriceForm({ ...priceForm, supplier_sku: e.target.value })} placeholder="e.g. BV-12345" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Supplier's Name for This Item</Label>
+                  <Input value={priceForm.supplier_ingredient_name} onChange={e => setPriceForm({ ...priceForm, supplier_ingredient_name: e.target.value })} placeholder="e.g. Chicken Breast IQF 2kg" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Unit Size Qty</Label>
+                  <Input type="number" value={priceForm.unit_size_qty} onChange={e => setPriceForm({ ...priceForm, unit_size_qty: e.target.value })} placeholder="e.g. 2" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Unit Size Unit</Label>
+                  <Input value={priceForm.unit_size_unit} onChange={e => setPriceForm({ ...priceForm, unit_size_unit: e.target.value })} placeholder="e.g. kg, each, L" />
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" checked={priceForm.is_preferred} onChange={e => setPriceForm({ ...priceForm, is_preferred: e.target.checked })} className="w-4 h-4 rounded" />
+                  Preferred supplier for this ingredient
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" checked={priceForm.has_gst} onChange={e => setPriceForm({ ...priceForm, has_gst: e.target.checked })} className="w-4 h-4 rounded" />
+                  GST applies
+                </label>
+              </div>
               <Button size="sm" disabled={!priceForm.supplierId || !priceForm.costPerUnit || addPrice.isPending}
                 onClick={() => addPrice.mutate({
                   supplierId: parseInt(priceForm.supplierId),
@@ -803,7 +836,13 @@ export default function Ingredients() {
                   invoiceDate: priceForm.invoiceDate || null,
                   invoiceRef: priceForm.invoiceRef || null,
                   brandName: priceForm.brandName || null,
-                })}
+                  supplier_sku: priceForm.supplier_sku || null,
+                  supplier_ingredient_name: priceForm.supplier_ingredient_name || null,
+                  unit_size_qty: priceForm.unit_size_qty ? parseFloat(priceForm.unit_size_qty) : null,
+                  unit_size_unit: priceForm.unit_size_unit || null,
+                  is_preferred: priceForm.is_preferred,
+                  has_gst: priceForm.has_gst,
+                } as any)}
                 data-testid="button-add-price">
                 <Plus size={14} className="mr-1" /> Add Price
               </Button>

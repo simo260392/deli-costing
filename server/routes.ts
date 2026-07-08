@@ -8032,6 +8032,130 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // STOCK ORDERS (new system) — stock_orders + stock_order_items tables
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/orders — list all orders, newest first
+  app.get('/api/orders', asyncRoute(async (_req: any, res: any) => {
+    const { data, error } = await supabase
+      .from('stock_orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // POST /api/orders — create a new order
+  app.post('/api/orders', asyncRoute(async (req: any, res: any) => {
+    const { name, order_type, type_keys, notes } = req.body;
+    const { data, error } = await supabase
+      .from('stock_orders')
+      .insert({ name, order_type, type_keys: JSON.stringify(type_keys || []), notes, status: 'draft' })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/orders/:id — update order status, notes, placed_at, received_at
+  app.patch('/api/orders/:id', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const allowed = ['status', 'notes', 'placed_at', 'received_at', 'name'];
+    const updates: any = { updated_at: new Date().toISOString() };
+    for (const k of allowed) if (req.body[k] !== undefined) updates[k] = req.body[k];
+    const { data, error } = await supabase.from('stock_orders').update(updates).eq('id', id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // DELETE /api/orders/:id
+  app.delete('/api/orders/:id', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    await supabase.from('stock_order_items').delete().eq('order_id', id);
+    const { error } = await supabase.from('stock_orders').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // GET /api/orders/:id/items — all items for one order with ingredient info
+  app.get('/api/orders/:id/items', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { data, error } = await supabase
+      .from('stock_order_items')
+      .select('*')
+      .eq('order_id', id)
+      .order('id');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // PUT /api/orders/:id/items — bulk upsert items for an order
+  app.put('/api/orders/:id/items', asyncRoute(async (req: any, res: any) => {
+    const orderId = Number(req.params.id);
+    const { items } = req.body; // array of item objects
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be array' });
+    // delete existing then re-insert
+    await supabase.from('stock_order_items').delete().eq('order_id', orderId);
+    if (items.length === 0) return res.json([]);
+    const rows = items.map((it: any) => ({ ...it, order_id: orderId }));
+    const { data, error } = await supabase.from('stock_order_items').insert(rows).select();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/orders/:id/items/:itemId — update received qty for one item
+  app.patch('/api/orders/:id/items/:itemId', asyncRoute(async (req: any, res: any) => {
+    const itemId = Number(req.params.itemId);
+    const { qty_received, notes } = req.body;
+    const updates: any = {};
+    if (qty_received !== undefined) { updates.qty_received = qty_received; updates.received_at = new Date().toISOString(); }
+    if (notes !== undefined) updates.notes = notes;
+    const { data, error } = await supabase.from('stock_order_items').update(updates).eq('id', itemId).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // GET /api/orders/ingredient-history/:ingredientId — last order date + avg qty for an ingredient
+  app.get('/api/orders/ingredient-history/:ingredientId', asyncRoute(async (req: any, res: any) => {
+    const ingredientId = Number(req.params.ingredientId);
+    const { data, error } = await supabase
+      .from('stock_order_items')
+      .select('qty_ordered, created_at, stock_orders(placed_at, status)')
+      .eq('ingredient_id', ingredientId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) return res.status(500).json({ error: error.message });
+    const placed = (data || []).filter((r: any) => r.stock_orders?.status !== 'draft');
+    const avgQty = placed.length ? placed.reduce((s: number, r: any) => s + Number(r.qty_ordered), 0) / placed.length : null;
+    const lastOrder = placed[0];
+    res.json({
+      last_ordered: lastOrder?.stock_orders?.placed_at || lastOrder?.created_at || null,
+      last_qty: lastOrder ? Number(lastOrder.qty_ordered) : null,
+      avg_qty: avgQty ? Math.round(avgQty * 10) / 10 : null,
+    });
+  }));
+
+  // GET /api/suppliers/:id/ordering-info — supplier with all ordering details
+  app.get('/api/suppliers/:id/ordering-info', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { data, error } = await supabase.from('suppliers').select('*').eq('id', id).single();
+    if (error) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  }));
+
+  // GET /api/supplier-ingredients/by-ingredient/:ingredientId — all suppliers for one ingredient with full detail
+  app.get('/api/supplier-ingredients/by-ingredient/:ingredientId', asyncRoute(async (req: any, res: any) => {
+    const ingredientId = Number(req.params.ingredientId);
+    const { data, error } = await supabase
+      .from('supplier_ingredients')
+      .select('*, suppliers(id, name, how_to_order, order_contact)')
+      .eq('ingredient_id', ingredientId)
+      .order('is_preferred', { ascending: false })
+      .order('cost_per_unit', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // COMPLIANCE HUB ROUTES
   // ═══════════════════════════════════════════════════════════════════════════
 
