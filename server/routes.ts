@@ -2966,7 +2966,7 @@ Return ONLY the JSON object, no explanation.`;
       });
 
       fs.unlink(req.file.path, () => {});
-      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched });
+      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched, _debug: { rawTextLen: rawText.length, rawTextSnippet: rawText.slice(0, 200), lineItemsBeforeEnrich: lineItems.length } });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
