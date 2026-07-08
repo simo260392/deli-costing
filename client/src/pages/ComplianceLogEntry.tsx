@@ -1455,7 +1455,7 @@ function ThawingFields({ log, onRefresh }: { log: ComplianceLog; onRefresh: () =
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Thaw location (fridge)</label>
-            <Input value={thawLocation} onChange={e => setThawLocation(e.target.value)} className="h-11" placeholder="Fridge name or number" />
+            <FridgeSmartSearch value={thawLocation} onChange={setThawLocation} />
           </div>
         </div>
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-4 py-3 text-xs text-blue-800 space-y-1">
@@ -2440,6 +2440,59 @@ const LOG_TYPE_LABELS: Record<string, string> = {
   wastage: "Wastage Sheet",
   review: "Weekly Review",
 };
+
+
+// ─── Fridge Smartsearch ────────────────────────────────────────────────────────
+function FridgeSmartSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const { data: sensors = [] } = useQuery<{ id: number; name: string; location: string }[]>({
+    queryKey: ["/api/sensorpush/sensors"],
+    queryFn: () => apiRequest("GET", "/api/sensorpush/sensors").then(r => r.json()),
+    staleTime: 300000,
+  });
+
+  const filtered = sensors.filter(s =>
+    s.name.toLowerCase().includes(query.toLowerCase())
+  );
+
+  const select = (name: string) => {
+    setQuery(name);
+    onChange(name);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={e => { setQuery(e.target.value); onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Search fridge name…"
+        className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#256984]"
+      />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 mt-1 w-full bg-white border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {filtered.map(s => (
+            <button
+              key={s.id}
+              type="button"
+              className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors flex items-center justify-between"
+              onMouseDown={() => select(s.name)}
+            >
+              <span className="font-medium">{s.name}</span>
+              <span className="text-xs text-muted-foreground capitalize">{s.location?.replace('_', ' ')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ComplianceLogEntry() {
   const { logType, logId } = useParams() as { logType: string; logId: string };
