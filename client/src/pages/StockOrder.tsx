@@ -223,20 +223,42 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
   const qc = useQueryClient();
   const typeKeys: string[] = (() => { try { return JSON.parse(order.type_keys || "[]"); } catch { return []; } })();
 
+  // Fetch all supplier-ingredient links — used for filtering AND for pricing/SKU display
+  const { data: allSupplierIngs = [], isLoading: siLoading } = useQuery<SupplierIngredient[]>({
+    queryKey: ["/api/supplier-ingredients"],
+    queryFn: () => apiRequest("GET", "/api/supplier-ingredients").then(r => r.json()),
+    staleTime: 60000,
+  });
+
+  // Build a set of ingredient IDs linked to each selected supplier
+  const supplierIngredientIds = new Set(
+    allSupplierIngs
+      .filter(si => typeKeys.includes(String(si.supplier_id)))
+      .map(si => si.ingredient_id)
+  );
+
   // Filter ingredients by order scope
+  // For supplier orders: any ingredient that has a supplier_ingredient record for the selected supplier(s)
+  // For category orders: filter by ingredient category
   const scopedIngredients = ingredients.filter(ing => {
     if (order.order_type === "supplier") {
-      return typeKeys.some(k => String(ing.best_supplier_id) === k);
+      return supplierIngredientIds.has(ing.id);
     }
     return typeKeys.includes(ing.category || "General");
   });
 
-  // Group by supplier or category
+  // Group by supplier (the preferred/best supplier for that ingredient from the selected ones) or category
   const groups: Record<string, IngredientRaw[]> = {};
   for (const ing of scopedIngredients) {
-    const key = order.order_type === "supplier"
-      ? String(ing.best_supplier_id || "unknown")
-      : (ing.category || "General");
+    let key: string;
+    if (order.order_type === "supplier") {
+      // Find which of the selected suppliers has a link to this ingredient (prefer is_preferred, else first match)
+      const linkedSIs = allSupplierIngs.filter(si => si.ingredient_id === ing.id && typeKeys.includes(String(si.supplier_id)));
+      const preferred = linkedSIs.find(si => si.is_preferred) || linkedSIs[0];
+      key = preferred ? String(preferred.supplier_id) : typeKeys[0];
+    } else {
+      key = ing.category || "General";
+    }
     groups[key] = groups[key] || [];
     groups[key].push(ing);
   }
@@ -247,13 +269,7 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
   const [showTemplates, setShowTemplates] = useState(false);
   const [confirmedSent, setConfirmedSent] = useState(false);
 
-  // Fetch supplier ingredients for pricing/sku
-  const { data: allSupplierIngs = [] } = useQuery<SupplierIngredient[]>({
-    queryKey: ["/api/supplier-ingredients"],
-    queryFn: () => apiRequest("GET", "/api/supplier-ingredients").then(r => r.json()),
-    staleTime: 60000,
-  });
-
+  // Show loading while supplier links are loading (so scopedIngredients is accurate)
   // Fetch ingredient history in batch
   const { data: historyMap = {} } = useQuery<Record<number, IngredientHistory>>({
     queryKey: ["/api/orders/history-batch", scopedIngredients.map(i => i.id).join(",")],
@@ -271,13 +287,46 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
     staleTime: 60000,
   });
 
-  const getSI = (ingId: number, suppId?: number) =>
-    allSupplierIngs.find(si => si.ingredient_id === ingId && (!suppId || si.supplier_id === suppId));
+  const getSI = (ingId: number, suppId?: number) => {
+    // Try exact supplier match first
+    if (suppId) {
+      const exact = allSupplierIngs.find(si => si.ingredient_id === ingId && si.supplier_id === suppId);
+      if (exact) return exact;
+    }
+    // Fall back to preferred, then any
+    const all = allSupplierIngs.filter(si => si.ingredient_id === ingId);
+    return all.find(si => si.is_preferred) || all[0];
+  };
 
   const getParLevel = (ingId: number) =>
     parLevels.find(p => p.ingredient_id === ingId);
 
   const totalItems = Object.values(qtys).filter(v => parseFloat(v) > 0).length;
+
+  if (siLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <div className="w-6 h-6 border-2 border-[#256984] border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-muted-foreground">Loading supplier items…</p>
+      </div>
+    );
+  }
+
+  if (scopedIngredients.length === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
+          <h2 className="text-base font-bold">{order.name}</h2>
+        </div>
+        <div className="text-center py-16 text-muted-foreground border-2 border-dashed rounded-xl">
+          <Package size={36} className="mx-auto mb-3 opacity-20" />
+          <p className="text-sm font-medium">No ingredients linked to this supplier</p>
+          <p className="text-xs mt-1">Go to Ingredients → add pricing for this supplier to see items here</p>
+        </div>
+      </div>
+    );
+  }
 
   const saveItems = async () => {
     setSaving(true);
