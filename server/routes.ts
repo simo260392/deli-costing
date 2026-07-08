@@ -2742,14 +2742,16 @@ Return ONLY the JSON object, no explanation.`;
       const isImg = /image\//i.test(req.file.mimetype || '');
 
       if (isPdf) {
-        try { rawText = execSync(`pdftotext -layout "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch {}
+        let pdftotextErr = '';
+        try { rawText = execSync(`pdftotext -layout "${req.file.path}" -`, { timeout: 15000 }).toString('utf8'); } catch(e: any) { pdftotextErr = e.message || String(e); }
         // Fallback: pdf-parse v2
+        let pdfParseErr = '';
         if (!rawText.trim()) {
           try {
             const { PDFParse } = await import('pdf-parse/lib/pdf-parse.js' as any) as any;
             const p = new PDFParse({ url: `file://${req.file.path}` });
             rawText = await p.getText();
-          } catch {}
+          } catch(e: any) { pdfParseErr = e.message || String(e); }
         }
       } else if (isImg) {
         try {
@@ -2966,7 +2968,7 @@ Return ONLY the JSON object, no explanation.`;
       });
 
       fs.unlink(req.file.path, () => {});
-      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched, _debug: { rawTextLen: rawText.length, rawTextSnippet: rawText.slice(0, 200), lineItemsBeforeEnrich: lineItems.length } });
+      res.json({ ...invoice, parsedSupplierName, lineItemsParsed: enriched, _debug: { rawTextLen: rawText.length, rawTextSnippet: rawText.slice(0, 200), lineItemsBeforeEnrich: lineItems.length, pdftotextErr, pdfParseErr } });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
