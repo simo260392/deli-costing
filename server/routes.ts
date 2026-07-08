@@ -2748,9 +2748,11 @@ Return ONLY the JSON object, no explanation.`;
         // Fallback: pdf-parse v2
         if (!rawText.trim()) {
           try {
-            const { PDFParse } = await import('pdf-parse/lib/pdf-parse.js' as any) as any;
-            const p = new PDFParse({ url: `file://${req.file.path}` });
-            rawText = await p.getText();
+            // pdf-parse v1 compatible: require the buffer directly
+            const pdfBuf = fs.readFileSync(req.file.path);
+            const pdfParseLib = require('pdf-parse');
+            const pdfData = await pdfParseLib(pdfBuf);
+            rawText = pdfData.text || '';
           } catch(e: any) { pdfParseErr = e.message || String(e); }
         }
       } else if (isImg) {
