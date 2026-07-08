@@ -8367,6 +8367,16 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   app.delete('/api/compliance/logs/:id', async (req: any, res: any) => {
     try {
       const { id } = req.params;
+      // Find any raw batches linked to this delivery log and delete them (+ their cooked children)
+      const { data: linkedBatches } = await supabase.from('product_batches').select('batch_id').eq('delivery_log_id', Number(id));
+      for (const b of (linkedBatches || [])) {
+        // Delete cooked child batches first
+        await supabase.from('product_batches').delete().eq('parent_batch_id', b.batch_id);
+        // Delete the raw batch
+        await supabase.from('product_batches').delete().eq('batch_id', b.batch_id);
+      }
+      // Also delete batches linked via compliance_supplier_lines -> ingredient_id match on same log
+      // (batches created before delivery_log_id was stored — safety net using log id in notes)
       await supabase.from('compliance_log_stages').delete().eq('log_id', id);
       await supabase.from('compliance_supplier_lines').delete().eq('log_id', id);
       await supabase.from('compliance_wastage_lines').delete().eq('log_id', id);
@@ -8998,6 +9008,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             : null,
           created_by: created_by || log.created_by_name || 'System',
           status: 'active',
+          delivery_log_id: Number(id),
         }).select().single();
 
         if (!batchErr && batch) {
@@ -10059,6 +10070,17 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const { data, error } = await supabase.from('product_batches').update(updates).eq('batch_id', batchId).select().single();
     if (error) return res.status(500).json({ error: error.message });
     return res.json(data);
+  }));
+
+  // DELETE /api/batches/:batchId — permanently delete a batch and its children
+  app.delete('/api/batches/:batchId', asyncRoute(async (req: any, res: any) => {
+    const { batchId } = req.params;
+    // Delete child batches (cooked) linked to this raw batch first
+    await supabase.from('product_batches').delete().eq('parent_batch_id', batchId);
+    // Delete the batch itself
+    const { error } = await supabase.from('product_batches').delete().eq('batch_id', batchId);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true });
   }));
 
   // Catches any error thrown (or passed to next()) from any route handler.
