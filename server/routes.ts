@@ -9982,7 +9982,84 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     if (req.query.ingredient_id) query = query.eq('ingredient_id', Number(req.query.ingredient_id));
     const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
-    return res.json(data || []);
+
+    // For raw (parent) batches: compute kg weight breakdown across states.
+    // A single batch can have portions simultaneously frozen, thawing, fresh (thaw-complete), and cooked.
+    //
+    //  cooked_kg     = sum of total_weight_kg from child (cooked) batches
+    //  thawing_kg    = sum of thaw_weight_kg from thawing logs where thaw_completed_at IS NULL
+    //  fresh_kg      = sum of thaw_weight_kg from thawing logs where thaw_completed_at IS NOT NULL
+    //                  PLUS total_weight_kg if arrival_state = 'fresh' and no thawing logs exist
+    //  frozen_kg     = total_weight_kg - cooked_kg - thawing_kg - fresh_kg  (only if arrived frozen)
+    //  is_archived   = true when frozen_kg <= 0 and total accounted >= total_weight_kg
+    const batches = data || [];
+    const rawBatchIds = batches.filter((b: any) => b.batch_type === 'parent').map((b: any) => b.batch_id);
+
+    if (rawBatchIds.length > 0) {
+      // Fetch all thawing compliance logs for these batches in one query
+      const { data: allThawLogs } = await supabase
+        .from('compliance_logs')
+        .select('batch_id, thaw_weight_kg, thaw_completed_at')
+        .eq('log_type', 'thawing')
+        .in('batch_id', rawBatchIds);
+
+      // Fetch all cooked child batches for these raw batches
+      const { data: allCookedBatches } = await supabase
+        .from('product_batches')
+        .select('parent_batch_id, total_weight_kg')
+        .eq('batch_type', 'child')
+        .in('parent_batch_id', rawBatchIds);
+
+      // Build lookup maps
+      const thawLogsByBatch: Record<string, any[]> = {};
+      for (const log of (allThawLogs || [])) {
+        if (!log.batch_id) continue;
+        if (!thawLogsByBatch[log.batch_id]) thawLogsByBatch[log.batch_id] = [];
+        thawLogsByBatch[log.batch_id].push(log);
+      }
+      const cookedByBatch: Record<string, number> = {};
+      for (const cb of (allCookedBatches || [])) {
+        if (!cb.parent_batch_id) continue;
+        cookedByBatch[cb.parent_batch_id] = (cookedByBatch[cb.parent_batch_id] || 0) + (Number(cb.total_weight_kg) || 0);
+      }
+
+      for (const b of batches) {
+        if (b.batch_type !== 'parent') continue;
+        const total = Number(b.total_weight_kg) || 0;
+        const thawLogs = thawLogsByBatch[b.batch_id] || [];
+        const cookedKg = Math.round((cookedByBatch[b.batch_id] || 0) * 100) / 100;
+
+        let thawingKg = 0;
+        let freshFromThawKg = 0;
+        for (const log of thawLogs) {
+          const w = Number(log.thaw_weight_kg) || 0;
+          if (log.thaw_completed_at) {
+            freshFromThawKg += w;
+          } else {
+            thawingKg += w;
+          }
+        }
+        thawingKg = Math.round(thawingKg * 100) / 100;
+        freshFromThawKg = Math.round(freshFromThawKg * 100) / 100;
+
+        let frozenKg = 0;
+        let freshKg = 0;
+        if (b.arrival_state === 'frozen') {
+          frozenKg = Math.max(0, Math.round((total - cookedKg - thawingKg - freshFromThawKg) * 100) / 100);
+          freshKg = freshFromThawKg;
+        } else {
+          // Arrived fresh — everything not yet cooked stays fresh
+          frozenKg = 0;
+          freshKg = Math.max(0, Math.round((total - cookedKg) * 100) / 100);
+        }
+
+        b.weight_breakdown = { total, frozen_kg: frozenKg, thawing_kg: thawingKg, fresh_kg: freshKg, cooked_kg: cookedKg };
+
+        // is_fully_cooked: total accounted for, nothing left frozen/thawing/fresh
+        b.is_fully_cooked = total > 0 && frozenKg <= 0 && thawingKg <= 0 && freshKg <= 0;
+      }
+    }
+    return res.json(batches);
   }));
 
   // GET /api/batches/next-id — generate next available batch ID (must be before /:batchId)
@@ -10056,6 +10133,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       created_by: body.created_by,
       use_by_date: body.use_by_date || null,
       status: 'active',
+      arrival_state: body.arrival_state || 'fresh',
     }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     return res.json(data);

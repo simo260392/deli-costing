@@ -5,15 +5,25 @@ import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { Package, Plus, QrCode, Printer, RefreshCw, Trash2, AlertTriangle } from "lucide-react";
+import {
+  Package, Plus, QrCode, Printer, RefreshCw, Trash2, AlertTriangle,
+  Snowflake, Flame, Droplets, ChevronDown, ChevronRight, Archive
+} from "lucide-react";
 import { BatchTraceabilityTab } from "./BatchTraceability";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import QRCode from "qrcode";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+interface WeightBreakdown {
+  total: number;
+  frozen_kg: number;
+  thawing_kg: number;
+  fresh_kg: number;
+  cooked_kg: number;
+}
+
 interface Batch {
   id: number;
   batch_id: string;
@@ -34,6 +44,9 @@ interface Batch {
   status: "active" | "consumed" | "disposed";
   ingredient_id: number | null;
   delivery_log_id: number | null;
+  arrival_state: "fresh" | "frozen";
+  weight_breakdown?: WeightBreakdown;
+  is_fully_cooked?: boolean;
 }
 
 interface Ingredient {
@@ -42,7 +55,65 @@ interface Ingredient {
   category: string;
 }
 
-// ─── Label component (print-friendly) ────────────────────────────────────────
+// ─── Weight Breakdown Bar ─────────────────────────────────────────────────────
+function WeightBar({ wb, arrivalState }: { wb: WeightBreakdown; arrivalState: "fresh" | "frozen" }) {
+  const total = wb.total || 1;
+  const pct = (kg: number) => Math.max(0, Math.min(100, (kg / total) * 100));
+
+  const segments = [
+    { key: "frozen",  kg: wb.frozen_kg,  color: "bg-sky-400",    label: "Frozen" },
+    { key: "thawing", kg: wb.thawing_kg, color: "bg-amber-400",  label: "Thawing" },
+    { key: "fresh",   kg: wb.fresh_kg,   color: "bg-green-400",  label: "Fresh" },
+    { key: "cooked",  kg: wb.cooked_kg,  color: "bg-[#256984]",  label: "Cooked" },
+  ].filter(s => s.kg > 0 || (s.key === "fresh" && arrivalState === "fresh" && wb.frozen_kg === 0 && wb.thawing_kg === 0));
+
+  return (
+    <div className="space-y-1.5 w-full">
+      {/* Stacked bar */}
+      <div className="flex h-4 rounded-full overflow-hidden bg-gray-100 w-full">
+        {segments.map(s => (
+          <div
+            key={s.key}
+            className={cn("transition-all", s.color)}
+            style={{ width: `${pct(s.kg)}%` }}
+          />
+        ))}
+      </div>
+      {/* Legend */}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+        {[
+          { key: "frozen",  kg: wb.frozen_kg,  color: "bg-sky-400",   icon: "❄️", label: "Frozen" },
+          { key: "thawing", kg: wb.thawing_kg, color: "bg-amber-400", icon: "💧", label: "Thawing" },
+          { key: "fresh",   kg: wb.fresh_kg,   color: "bg-green-400", icon: "✅", label: "Fresh" },
+          { key: "cooked",  kg: wb.cooked_kg,  color: "bg-[#256984]", icon: "🍳", label: "Cooked" },
+        ].filter(s => s.kg > 0 || (s.key === "fresh" && arrivalState === "fresh")).map(s => (
+          <span key={s.key} className="flex items-center gap-1 text-xs text-muted-foreground">
+            <span className={cn("w-2 h-2 rounded-full inline-block", s.color)} />
+            {s.label}: <span className="font-semibold text-foreground">{s.kg.toFixed(1)}kg</span>
+          </span>
+        ))}
+        <span className="flex items-center gap-1 text-xs text-muted-foreground ml-auto">
+          Total: <span className="font-semibold text-foreground">{wb.total.toFixed(1)}kg</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Arrival State Badge ──────────────────────────────────────────────────────
+function ArrivalBadge({ state }: { state: "fresh" | "frozen" }) {
+  return state === "frozen" ? (
+    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">
+      <Snowflake size={10} /> Arrived Frozen
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+      <Flame size={10} /> Arrived Fresh
+    </span>
+  );
+}
+
+// ─── Label component ──────────────────────────────────────────────────────────
 function BatchLabel({ batch, qrUrl }: { batch: Partial<Batch>; qrUrl: string }) {
   const indivWeight = batch.weight_per_box_kg
     ? `${Number(batch.weight_per_box_kg).toFixed(2)}kg`
@@ -57,50 +128,20 @@ function BatchLabel({ batch, qrUrl }: { batch: Partial<Batch>; qrUrl: string }) 
       id="batch-label-print"
       className="bg-white text-black"
       style={{
-        width: 189,
-        height: 189,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "6px 6px 5px",
-        boxSizing: "border-box",
-        border: "1px solid #000",
-        borderRadius: 2,
-        overflow: "hidden",
+        width: 189, height: 189,
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "space-between",
+        padding: "6px 6px 5px", boxSizing: "border-box",
+        border: "1px solid #000", borderRadius: 2, overflow: "hidden",
       }}
     >
-      <div style={{
-        fontSize: 7,
-        fontWeight: 700,
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        fontFamily: "'Courier New', monospace",
-        textAlign: "center",
-        lineHeight: 1.2,
-        width: "100%",
-        borderBottom: "0.5px solid #000",
-        paddingBottom: 3,
-      }}>
+      <div style={{ fontSize: 7, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: "'Courier New', monospace", textAlign: "center", lineHeight: 1.2, width: "100%", borderBottom: "0.5px solid #000", paddingBottom: 3 }}>
         The Deli · by Greenhorns
       </div>
-      {qrUrl && (
-        <img
-          src={qrUrl}
-          alt="QR"
-          style={{ width: 108, height: 108, display: "block", imageRendering: "pixelated" }}
-        />
-      )}
-      <div style={{
-        width: "100%",
-        textAlign: "center",
-        fontFamily: "'Courier New', monospace",
-        borderTop: "0.5px solid #000",
-        paddingTop: 3,
-      }}>
+      {qrUrl && <img src={qrUrl} alt="QR" style={{ width: 108, height: 108, display: "block", imageRendering: "pixelated" }} />}
+      <div style={{ width: "100%", textAlign: "center", fontFamily: "'Courier New', monospace", borderTop: "0.5px solid #000", paddingTop: 3 }}>
         <div style={{ fontSize: 9, fontWeight: 700, lineHeight: 1.3 }}>
-          {batch.product_name}
-          {indivWeight ? ` · ${indivWeight}` : ""}
+          {batch.product_name}{indivWeight ? ` · ${indivWeight}` : ""}
         </div>
         <div style={{ fontSize: 7.5, fontWeight: 600, letterSpacing: "0.03em", marginTop: 1, lineHeight: 1.2 }}>
           {batch.batch_id}
@@ -110,14 +151,10 @@ function BatchLabel({ batch, qrUrl }: { batch: Partial<Batch>; qrUrl: string }) 
   );
 }
 
-// ─── QR modal ─────────────────────────────────────────────────────────────────
+// ─── QR Modal ─────────────────────────────────────────────────────────────────
 function QRModal({ batch, onClose }: { batch: Batch; onClose: () => void }) {
   const [qrUrl, setQrUrl] = useState("");
-
-  useEffect(() => {
-    QRCode.toDataURL(batch.batch_id, { width: 300, margin: 2 }).then(setQrUrl);
-  }, [batch.batch_id]);
-
+  useEffect(() => { QRCode.toDataURL(batch.batch_id, { width: 300, margin: 2 }).then(setQrUrl); }, [batch.batch_id]);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4">
@@ -144,14 +181,7 @@ function QRModal({ batch, onClose }: { batch: Batch; onClose: () => void }) {
       <style>{`
         @media print {
           body > * { display: none !important; }
-          #batch-label-print {
-            display: block !important;
-            position: fixed;
-            top: 0; left: 0;
-            width: 50mm; height: 50mm;
-            border: none;
-            page-break-after: avoid;
-          }
+          #batch-label-print { display: block !important; position: fixed; top: 0; left: 0; width: 50mm; height: 50mm; border: none; page-break-after: avoid; }
         }
       `}</style>
     </div>
@@ -159,17 +189,7 @@ function QRModal({ batch, onClose }: { batch: Batch; onClose: () => void }) {
 }
 
 // ─── Delete Confirm Modal ──────────────────────────────────────────────────────
-function DeleteConfirmModal({
-  batch,
-  onConfirm,
-  onCancel,
-  isPending,
-}: {
-  batch: Batch;
-  onConfirm: () => void;
-  onCancel: () => void;
-  isPending: boolean;
-}) {
+function DeleteConfirmModal({ batch, onConfirm, onCancel, isPending }: { batch: Batch; onConfirm: () => void; onCancel: () => void; isPending: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4">
@@ -185,32 +205,133 @@ function DeleteConfirmModal({
         <div className="bg-muted/40 rounded-xl p-3 mb-4 space-y-1">
           <p className="font-mono text-sm font-bold text-[#256984]">{batch.batch_id}</p>
           <p className="text-sm">{batch.product_name}</p>
-          {batch.total_weight_kg && (
-            <p className="text-xs text-muted-foreground">{batch.total_weight_kg} kg · {batch.num_boxes ?? "—"} boxes</p>
-          )}
+          {batch.total_weight_kg && <p className="text-xs text-muted-foreground">{batch.total_weight_kg} kg · {batch.num_boxes ?? "—"} boxes</p>}
         </div>
         <p className="text-sm text-muted-foreground mb-5">
-          This will permanently delete this Raw Batch ID and all associated Cooked Batch IDs linked to it.
+          This will permanently delete this Raw Batch ID and all associated Cooked Batch IDs.
         </p>
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={onCancel}
-            className="flex-1"
-            disabled={isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={onConfirm}
-            disabled={isPending}
-            className="flex-1 bg-red-600 hover:bg-red-700 text-white"
-          >
+          <Button variant="outline" onClick={onCancel} className="flex-1" disabled={isPending}>Cancel</Button>
+          <Button onClick={onConfirm} disabled={isPending} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
             {isPending ? "Deleting…" : "Delete Batch"}
           </Button>
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Raw Batch Row (expandable) ───────────────────────────────────────────────
+function RawBatchRow({ batch, onQr, onDelete }: { batch: Batch; onQr: (b: Batch) => void; onDelete: (b: Batch) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const wb = batch.weight_breakdown;
+
+  // Dominant state label for the collapsed row
+  const dominantState = (): { label: string; cls: string } => {
+    if (!wb) return { label: "—", cls: "bg-gray-100 text-gray-500" };
+    if (wb.total === 0) return { label: "—", cls: "bg-gray-100 text-gray-500" };
+    const parts = [
+      { key: "frozen",  kg: wb.frozen_kg,  label: "Frozen",  cls: "bg-sky-100 text-sky-700" },
+      { key: "thawing", kg: wb.thawing_kg, label: "Thawing", cls: "bg-amber-100 text-amber-700" },
+      { key: "fresh",   kg: wb.fresh_kg,   label: "Fresh",   cls: "bg-green-100 text-green-700" },
+      { key: "cooked",  kg: wb.cooked_kg,  label: "Cooked",  cls: "bg-blue-100 text-blue-700" },
+    ].filter(p => p.kg > 0);
+    if (parts.length === 0) return { label: batch.arrival_state === "fresh" ? "Fresh" : "Frozen", cls: batch.arrival_state === "fresh" ? "bg-green-100 text-green-700" : "bg-sky-100 text-sky-700" };
+    if (parts.length === 1) return { label: parts[0].label, cls: parts[0].cls };
+    return { label: "Mixed", cls: "bg-purple-100 text-purple-700" };
+  };
+
+  const ds = dominantState();
+
+  return (
+    <>
+      <tr
+        className={cn("hover:bg-muted/20 transition-colors cursor-pointer", expanded && "bg-muted/10")}
+        onClick={() => setExpanded(e => !e)}
+      >
+        <td className="px-3 py-3 w-6">
+          {expanded ? <ChevronDown size={14} className="text-muted-foreground" /> : <ChevronRight size={14} className="text-muted-foreground" />}
+        </td>
+        <td className="px-3 py-3 font-mono text-xs font-bold text-[#256984]">{batch.batch_id}</td>
+        <td className="px-3 py-3 font-medium text-sm">{batch.product_name}</td>
+        <td className="px-3 py-3 text-xs text-muted-foreground">{format(new Date(batch.created_at), "dd/MM/yy")}</td>
+        <td className="px-3 py-3 text-right text-sm text-muted-foreground">{batch.total_weight_kg ?? "—"}</td>
+        <td className="px-3 py-3">
+          <ArrivalBadge state={batch.arrival_state || "fresh"} />
+        </td>
+        <td className="px-3 py-3">
+          <span className={cn("text-xs font-semibold px-2 py-0.5 rounded-full", ds.cls)}>{ds.label}</span>
+        </td>
+        <td className="px-3 py-3 text-center" onClick={e => e.stopPropagation()}>
+          <Button variant="ghost" size="sm" onClick={() => onQr(batch)} className="h-7 w-7 p-0">
+            <QrCode size={15} className="text-[#256984]" />
+          </Button>
+        </td>
+        <td className="px-3 py-3 text-center" onClick={e => e.stopPropagation()}>
+          <Button variant="ghost" size="sm" onClick={() => onDelete(batch)} className="h-7 w-7 p-0 hover:bg-red-50">
+            <Trash2 size={14} className="text-red-500" />
+          </Button>
+        </td>
+      </tr>
+      {expanded && wb && (
+        <tr className="bg-muted/5">
+          <td colSpan={9} className="px-6 pb-4 pt-2">
+            <div className="max-w-lg space-y-3">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Weight Breakdown</p>
+              <WeightBar wb={wb} arrivalState={batch.arrival_state || "fresh"} />
+
+              {/* Detail grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1">
+                {batch.arrival_state === "frozen" && (
+                  <div className="rounded-xl border p-3 space-y-0.5 bg-sky-50/60">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-sky-700">
+                      <Snowflake size={12} /> Frozen
+                    </div>
+                    <p className="text-lg font-bold text-sky-700">{wb.frozen_kg.toFixed(1)}<span className="text-xs font-normal ml-0.5">kg</span></p>
+                    <p className="text-[10px] text-muted-foreground">Still in freezer</p>
+                  </div>
+                )}
+                {wb.thawing_kg > 0 && (
+                  <div className="rounded-xl border p-3 space-y-0.5 bg-amber-50/60">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+                      <Droplets size={12} /> Thawing
+                    </div>
+                    <p className="text-lg font-bold text-amber-700">{wb.thawing_kg.toFixed(1)}<span className="text-xs font-normal ml-0.5">kg</span></p>
+                    <p className="text-[10px] text-muted-foreground">In thawing log</p>
+                  </div>
+                )}
+                <div className="rounded-xl border p-3 space-y-0.5 bg-green-50/60">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-green-700">
+                    <Flame size={12} /> Fresh
+                  </div>
+                  <p className="text-lg font-bold text-green-700">{wb.fresh_kg.toFixed(1)}<span className="text-xs font-normal ml-0.5">kg</span></p>
+                  <p className="text-[10px] text-muted-foreground">
+                    {batch.arrival_state === "fresh" ? "Arrived fresh" : "Thaw complete"}
+                  </p>
+                </div>
+                <div className="rounded-xl border p-3 space-y-0.5 bg-[#256984]/5">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-[#256984]">
+                    <Package size={12} /> Cooked
+                  </div>
+                  <p className="text-lg font-bold text-[#256984]">{wb.cooked_kg.toFixed(1)}<span className="text-xs font-normal ml-0.5">kg</span></p>
+                  <p className="text-[10px] text-muted-foreground">From cooked batches</p>
+                </div>
+              </div>
+
+              {batch.is_fully_cooked && (
+                <div className="flex items-center gap-2 p-3 rounded-xl bg-green-50 border border-green-200">
+                  <span className="text-green-700 text-sm font-semibold">All weight accounted for — this batch is fully cooked.</span>
+                </div>
+              )}
+
+              {batch.notes && (
+                <p className="text-xs text-muted-foreground italic">{batch.notes}</p>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -231,76 +352,43 @@ function CreateRawBatchForm({ onSuccess }: { onSuccess: () => void }) {
   const [loadingId, setLoadingId] = useState(false);
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);
   const [autocompleteQuery, setAutocompleteQuery] = useState("");
+  const [arrivalState, setArrivalState] = useState<"fresh" | "frozen">("frozen");
 
-  const { data: ingredients = [] } = useQuery<Ingredient[]>({
-    queryKey: ["/api/ingredients"],
-    staleTime: 60000,
-  });
+  const { data: ingredients = [] } = useQuery<Ingredient[]>({ queryKey: ["/api/ingredients"], staleTime: 60000 });
+  const meatIngredients = (ingredients as Ingredient[]).filter(i => i.category?.toLowerCase() === "meat");
+  const filteredIngredients = meatIngredients.filter(i => i.name.toLowerCase().includes(autocompleteQuery.toLowerCase()));
 
-  const meatIngredients = (ingredients as Ingredient[]).filter(
-    (i) => i.category?.toLowerCase() === "meat"
-  );
-  const filteredIngredients = meatIngredients.filter((i) =>
-    i.name.toLowerCase().includes(autocompleteQuery.toLowerCase())
-  );
+  const weightPerBox = totalWeight && numBoxes && Number(numBoxes) > 0
+    ? (Number(totalWeight) / Number(numBoxes)).toFixed(2) : "";
 
-  const weightPerBox =
-    totalWeight && numBoxes && Number(numBoxes) > 0
-      ? (Number(totalWeight) / Number(numBoxes)).toFixed(2)
-      : "";
+  const generateBatchId = useCallback(async (code: string, date: string) => {
+    if (!code || !date) return;
+    setLoadingId(true);
+    try {
+      const res = await apiRequest("GET", `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=raw&date=${date.replace(/-/g, "")}`);
+      const data = await res.json();
+      setBatchId(data.batch_id);
+    } catch { toast({ description: "Could not generate batch ID", variant: "destructive" }); }
+    finally { setLoadingId(false); }
+  }, [toast]);
 
-  const generateBatchId = useCallback(
-    async (code: string, date: string) => {
-      if (!code || !date) return;
-      const dateClean = date.replace(/-/g, "");
-      setLoadingId(true);
-      try {
-        const res = await apiRequest("GET", `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=raw&date=${dateClean}`);
-        const data = await res.json();
-        setBatchId(data.batch_id);
-      } catch {
-        toast({ description: "Could not generate batch ID", variant: "destructive" });
-      } finally {
-        setLoadingId(false);
-      }
-    },
-    [toast]
-  );
-
-  useEffect(() => {
-    if (productCode && deliveryDate) generateBatchId(productCode, deliveryDate);
-  }, [productCode, deliveryDate, generateBatchId]);
+  useEffect(() => { if (productCode && deliveryDate) generateBatchId(productCode, deliveryDate); }, [productCode, deliveryDate, generateBatchId]);
 
   const handleProductNameChange = (val: string) => {
     setProductName(val);
     setAutocompleteQuery(val);
-    const code = val.replace(/\s+/g, "").slice(0, 4).toUpperCase();
-    setProductCode(code);
-  };
-
-  const handleSelectIngredient = (ing: Ingredient) => {
-    setProductName(ing.name);
-    setAutocompleteQuery(ing.name);
-    const code = ing.name.replace(/\s+/g, "").slice(0, 4).toUpperCase();
-    setProductCode(code);
-    setAutocompleteOpen(false);
+    setProductCode(val.replace(/\s+/g, "").slice(0, 4).toUpperCase());
   };
 
   const mutation = useMutation({
     mutationFn: async () => {
       if (!batchId || !productName || !createdBy) throw new Error("Fill in all required fields");
       return apiRequest("POST", "/api/batches", {
-        batch_id: batchId,
-        batch_type: "parent",
-        product_name: productName,
-        product_code: productCode,
-        stage: "raw",
-        total_weight_kg: totalWeight ? Number(totalWeight) : null,
+        batch_id: batchId, batch_type: "parent", product_name: productName, product_code: productCode,
+        stage: "raw", total_weight_kg: totalWeight ? Number(totalWeight) : null,
         num_boxes: numBoxes ? Number(numBoxes) : null,
         weight_per_box_kg: weightPerBox ? Number(weightPerBox) : null,
-        created_by: createdBy,
-        notes,
-        use_by_date: null,
+        created_by: createdBy, notes, use_by_date: null, arrival_state: arrivalState,
       });
     },
     onSuccess: () => {
@@ -308,28 +396,53 @@ function CreateRawBatchForm({ onSuccess }: { onSuccess: () => void }) {
       queryClient.invalidateQueries({ queryKey: ["/api/batches"] });
       onSuccess();
     },
-    onError: (e: any) => {
-      toast({ description: e.message || "Failed to create batch", variant: "destructive" });
-    },
+    onError: (e: any) => toast({ description: e.message || "Failed to create batch", variant: "destructive" }),
   });
 
   return (
     <div className="space-y-4 max-w-lg">
       <p className="text-sm text-muted-foreground">Create a Raw Batch ID when a meat ingredient delivery arrives.</p>
 
+      {/* Arrival state toggle */}
+      <div className="space-y-1">
+        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Arrived as *</label>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setArrivalState("fresh")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border-2 text-sm font-semibold transition-all",
+              arrivalState === "fresh"
+                ? "border-green-500 bg-green-50 text-green-700"
+                : "border-border bg-white text-muted-foreground hover:border-green-300"
+            )}
+          >
+            <Flame size={16} /> Fresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setArrivalState("frozen")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border-2 text-sm font-semibold transition-all",
+              arrivalState === "frozen"
+                ? "border-sky-500 bg-sky-50 text-sky-700"
+                : "border-border bg-white text-muted-foreground hover:border-sky-300"
+            )}
+          >
+            <Snowflake size={16} /> Frozen
+          </button>
+        </div>
+      </div>
+
+      {/* Product name */}
       <div className="space-y-1 relative">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Product Name *</label>
-        <Input
-          value={productName}
-          onChange={(e) => { handleProductNameChange(e.target.value); setAutocompleteOpen(true); }}
-          onFocus={() => setAutocompleteOpen(true)}
-          placeholder="e.g. Chicken Breast"
-          className="h-10"
-        />
+        <Input value={productName} onChange={e => { handleProductNameChange(e.target.value); setAutocompleteOpen(true); }} onFocus={() => setAutocompleteOpen(true)} placeholder="e.g. Chicken Breast" className="h-10" />
         {autocompleteOpen && filteredIngredients.length > 0 && (
           <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
-            {filteredIngredients.slice(0, 8).map((ing) => (
-              <button key={ing.id} className="w-full text-left px-3 py-2 text-sm hover:bg-[#256984]/10 transition-colors" onMouseDown={() => handleSelectIngredient(ing)}>
+            {filteredIngredients.slice(0, 8).map(ing => (
+              <button key={ing.id} className="w-full text-left px-3 py-2 text-sm hover:bg-[#256984]/10 transition-colors"
+                onMouseDown={() => { setProductName(ing.name); setAutocompleteQuery(ing.name); setProductCode(ing.name.replace(/\s+/g, "").slice(0, 4).toUpperCase()); setAutocompleteOpen(false); }}>
                 {ing.name}
               </button>
             ))}
@@ -339,17 +452,17 @@ function CreateRawBatchForm({ onSuccess }: { onSuccess: () => void }) {
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Product Code *</label>
-        <Input value={productCode} onChange={(e) => setProductCode(e.target.value.toUpperCase())} placeholder="e.g. CHKN" maxLength={8} className="h-10 font-mono" />
+        <Input value={productCode} onChange={e => setProductCode(e.target.value.toUpperCase())} placeholder="e.g. CHKN" maxLength={8} className="h-10 font-mono" />
       </div>
 
       <div className="grid grid-cols-3 gap-3">
         <div className="space-y-1">
           <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Total Weight (kg)</label>
-          <Input type="number" value={totalWeight} onChange={(e) => setTotalWeight(e.target.value)} placeholder="e.g. 25" className="h-10" />
+          <Input type="number" value={totalWeight} onChange={e => setTotalWeight(e.target.value)} placeholder="e.g. 100" className="h-10" />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Num Boxes</label>
-          <Input type="number" value={numBoxes} onChange={(e) => setNumBoxes(e.target.value)} placeholder="e.g. 5" className="h-10" />
+          <Input type="number" value={numBoxes} onChange={e => setNumBoxes(e.target.value)} placeholder="e.g. 5" className="h-10" />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Kg / Box</label>
@@ -359,17 +472,17 @@ function CreateRawBatchForm({ onSuccess }: { onSuccess: () => void }) {
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Delivery Date *</label>
-        <Input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} className="h-10" />
+        <Input type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className="h-10" />
       </div>
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Created By *</label>
-        <Input value={createdBy} onChange={(e) => setCreatedBy(e.target.value)} placeholder="Staff name" className="h-10" />
+        <Input value={createdBy} onChange={e => setCreatedBy(e.target.value)} placeholder="Staff name" className="h-10" />
       </div>
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notes</label>
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Supplier, invoice number, etc." className="h-20 resize-none" />
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Supplier, invoice number, etc." className="h-20 resize-none" />
       </div>
 
       <div className="space-y-1">
@@ -412,29 +525,21 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
     staleTime: 30000,
   });
 
-  const filteredParents = (rawBatches as Batch[]).filter(
-    (b) =>
-      b.batch_id.toLowerCase().includes(parentSearch.toLowerCase()) ||
-      b.product_name.toLowerCase().includes(parentSearch.toLowerCase())
+  const filteredParents = (rawBatches as Batch[]).filter(b =>
+    b.batch_id.toLowerCase().includes(parentSearch.toLowerCase()) ||
+    b.product_name.toLowerCase().includes(parentSearch.toLowerCase())
   );
 
-  const generateCookedId = useCallback(
-    async (code: string, date: string) => {
-      if (!code || !date) return;
-      const dateClean = date.replace(/-/g, "");
-      setLoadingId(true);
-      try {
-        const res = await apiRequest("GET", `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=cooked&date=${dateClean}`);
-        const data = await res.json();
-        setBatchId(data.batch_id);
-      } catch {
-        toast({ description: "Could not generate batch ID", variant: "destructive" });
-      } finally {
-        setLoadingId(false);
-      }
-    },
-    [toast]
-  );
+  const generateCookedId = useCallback(async (code: string, date: string) => {
+    if (!code || !date) return;
+    setLoadingId(true);
+    try {
+      const res = await apiRequest("GET", `/api/batches/next-id?product_code=${encodeURIComponent(code)}&stage=cooked&date=${date.replace(/-/g, "")}`);
+      const data = await res.json();
+      setBatchId(data.batch_id);
+    } catch { toast({ description: "Could not generate batch ID", variant: "destructive" }); }
+    finally { setLoadingId(false); }
+  }, [toast]);
 
   useEffect(() => {
     if (selectedParent && cookDate) {
@@ -447,15 +552,9 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
     mutationFn: async () => {
       if (!batchId || !productName || !createdBy || !selectedParent) throw new Error("Fill in all required fields");
       return apiRequest("POST", "/api/batches", {
-        batch_id: batchId,
-        batch_type: "child",
-        parent_batch_id: selectedParent.batch_id,
-        product_name: productName,
-        product_code: selectedParent.product_code,
-        stage: "cooked",
-        total_weight_kg: cookWeight ? Number(cookWeight) : null,
-        created_by: createdBy,
-        notes,
+        batch_id: batchId, batch_type: "child", parent_batch_id: selectedParent.batch_id,
+        product_name: productName, product_code: selectedParent.product_code, stage: "cooked",
+        total_weight_kg: cookWeight ? Number(cookWeight) : null, created_by: createdBy, notes,
       });
     },
     onSuccess: () => {
@@ -463,9 +562,7 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
       queryClient.invalidateQueries({ queryKey: ["/api/batches"] });
       onSuccess();
     },
-    onError: (e: any) => {
-      toast({ description: e.message || "Failed to create batch", variant: "destructive" });
-    },
+    onError: (e: any) => toast({ description: e.message || "Failed to create batch", variant: "destructive" }),
   });
 
   return (
@@ -476,19 +573,16 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Select Raw Batch ID *</label>
         <Input
           value={selectedParent ? `${selectedParent.batch_id} — ${selectedParent.product_name}` : parentSearch}
-          onChange={(e) => { setParentSearch(e.target.value); setSelectedParent(null); setParentDropOpen(true); }}
+          onChange={e => { setParentSearch(e.target.value); setSelectedParent(null); setParentDropOpen(true); }}
           onFocus={() => setParentDropOpen(true)}
           placeholder="Search raw batches…"
           className="h-10"
         />
         {parentDropOpen && filteredParents.length > 0 && (
           <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
-            {filteredParents.map((b) => (
-              <button
-                key={b.id}
-                className="w-full text-left px-3 py-2 text-sm hover:bg-[#256984]/10 transition-colors"
-                onMouseDown={() => { setSelectedParent(b); setParentDropOpen(false); }}
-              >
+            {filteredParents.map(b => (
+              <button key={b.id} className="w-full text-left px-3 py-2 text-sm hover:bg-[#256984]/10 transition-colors"
+                onMouseDown={() => { setSelectedParent(b); setParentDropOpen(false); }}>
                 <span className="font-mono text-xs font-bold text-[#256984]">{b.batch_id}</span>
                 <span className="ml-2 text-muted-foreground">{b.product_name}</span>
                 {b.total_weight_kg && <span className="ml-2 text-xs text-muted-foreground">({b.total_weight_kg}kg)</span>}
@@ -500,27 +594,27 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Product Name *</label>
-        <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="Auto-filled from raw batch" className="h-10" />
+        <Input value={productName} onChange={e => setProductName(e.target.value)} placeholder="Auto-filled from raw batch" className="h-10" />
       </div>
 
       <div className="space-y-1">
-        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cook Quantity (kg)</label>
-        <Input type="number" value={cookWeight} onChange={(e) => setCookWeight(e.target.value)} placeholder="e.g. 50" className="h-10" />
+        <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cooked Weight (kg)</label>
+        <Input type="number" value={cookWeight} onChange={e => setCookWeight(e.target.value)} placeholder="e.g. 20" className="h-10" />
       </div>
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cook Date *</label>
-        <Input type="date" value={cookDate} onChange={(e) => setCookDate(e.target.value)} className="h-10" />
+        <Input type="date" value={cookDate} onChange={e => setCookDate(e.target.value)} className="h-10" />
       </div>
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Created By *</label>
-        <Input value={createdBy} onChange={(e) => setCreatedBy(e.target.value)} placeholder="Staff name" className="h-10" />
+        <Input value={createdBy} onChange={e => setCreatedBy(e.target.value)} placeholder="Staff name" className="h-10" />
       </div>
 
       <div className="space-y-1">
         <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notes</label>
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Cook method, temp etc." className="h-20 resize-none" />
+        <Textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Cook method, temp etc." className="h-20 resize-none" />
       </div>
 
       <div className="space-y-1">
@@ -540,77 +634,45 @@ function CreateCookedBatchForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-// ─── Batch Table ──────────────────────────────────────────────────────────────
-function BatchTable({
-  batches,
-  isLoading,
-  batchLabel,
-  onEmpty,
-  onQr,
-  onDelete,
-}: {
-  batches: Batch[];
-  isLoading: boolean;
-  batchLabel: string;
-  onEmpty: () => void;
-  onQr: (b: Batch) => void;
-  onDelete: (b: Batch) => void;
+// ─── Cooked Batch Table (simple, no breakdown) ────────────────────────────────
+function CookedBatchTable({ batches, isLoading, onEmpty, onQr, onDelete }: {
+  batches: Batch[]; isLoading: boolean; onEmpty: () => void;
+  onQr: (b: Batch) => void; onDelete: (b: Batch) => void;
 }) {
-  const statusBadge = (status: string) => {
-    const map: Record<string, string> = {
-      active: "bg-green-100 text-green-700",
-      consumed: "bg-gray-100 text-gray-500",
-      disposed: "bg-red-100 text-red-600",
-    };
-    return <span className={cn("text-xs font-semibold px-2 py-0.5 rounded-full", map[status] || "bg-gray-100 text-gray-500")}>{status}</span>;
-  };
-
-  const stageBadge = (stage: string) => {
-    const map: Record<string, string> = {
-      raw: "bg-orange-100 text-orange-700",
-      cooked: "bg-blue-100 text-blue-700",
-      frozen: "bg-sky-100 text-sky-700",
-    };
-    return <span className={cn("text-xs font-semibold px-2 py-0.5 rounded-full", map[stage] || "bg-gray-100 text-gray-500")}>{stage}</span>;
-  };
-
-  if (isLoading) return <div className="text-center py-12 text-muted-foreground text-sm">Loading batches…</div>;
+  if (isLoading) return <div className="text-center py-12 text-muted-foreground text-sm">Loading…</div>;
   if (batches.length === 0) return (
     <div className="text-center py-12 space-y-3">
       <Package size={36} className="mx-auto text-muted-foreground/40" />
-      <p className="text-muted-foreground text-sm">No {batchLabel}s yet.</p>
-      <Button variant="outline" onClick={onEmpty} className="gap-2">
-        <Plus size={14} /> Create first batch
-      </Button>
+      <p className="text-muted-foreground text-sm">No Cooked Batch IDs yet.</p>
+      <Button variant="outline" onClick={onEmpty} className="gap-2"><Plus size={14} /> Create first cooked batch</Button>
     </div>
   );
-
   return (
     <div className="overflow-x-auto rounded-xl border">
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-muted/40 border-b text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            <th className="px-4 py-3 text-left">{batchLabel}</th>
+            <th className="px-4 py-3 text-left">Cooked Batch ID</th>
             <th className="px-4 py-3 text-left">Product</th>
+            <th className="px-4 py-3 text-left">Raw Batch</th>
             <th className="px-4 py-3 text-left">Date</th>
             <th className="px-4 py-3 text-right">Weight (kg)</th>
-            <th className="px-4 py-3 text-right">Boxes</th>
-            <th className="px-4 py-3 text-left">Stage</th>
             <th className="px-4 py-3 text-left">Status</th>
             <th className="px-4 py-3 text-center">QR</th>
             <th className="px-4 py-3 text-center">Del</th>
           </tr>
         </thead>
         <tbody className="divide-y">
-          {batches.map((b) => (
+          {batches.map(b => (
             <tr key={b.id} className="hover:bg-muted/20 transition-colors">
               <td className="px-4 py-3 font-mono text-xs font-bold text-[#256984]">{b.batch_id}</td>
               <td className="px-4 py-3 font-medium">{b.product_name}</td>
+              <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{b.parent_batch_id ?? "—"}</td>
               <td className="px-4 py-3 text-muted-foreground">{format(new Date(b.created_at), "dd/MM/yy")}</td>
               <td className="px-4 py-3 text-right text-muted-foreground">{b.total_weight_kg ?? "—"}</td>
-              <td className="px-4 py-3 text-right text-muted-foreground">{b.num_boxes ?? "—"}</td>
-              <td className="px-4 py-3">{stageBadge(b.stage)}</td>
-              <td className="px-4 py-3">{statusBadge(b.status)}</td>
+              <td className="px-4 py-3">
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Cooked</span>
+              </td>
               <td className="px-4 py-3 text-center">
                 <Button variant="ghost" size="sm" onClick={() => onQr(b)} className="h-7 w-7 p-0">
                   <QrCode size={15} className="text-[#256984]" />
@@ -631,7 +693,7 @@ function BatchTable({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function BatchManager() {
-  const [tab, setTab] = useState<"raw" | "cooked" | "create-raw" | "create-cooked" | "traceability">("raw");
+  const [tab, setTab] = useState<"raw" | "cooked" | "archive" | "create-raw" | "create-cooked" | "traceability">("raw");
   const [qrBatch, setQrBatch] = useState<Batch | null>(null);
   const [deleteBatch, setDeleteBatch] = useState<Batch | null>(null);
   const [printBatches, setPrintBatches] = useState<Batch[]>([]);
@@ -639,7 +701,6 @@ export default function BatchManager() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Handle ?print=BATCH1,BATCH2 from supplier delivery submit
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const printParam = params.get("print");
@@ -658,7 +719,7 @@ export default function BatchManager() {
     }
   }, []);
 
-  const { data: rawBatches = [], isLoading: rawLoading, refetch: refetchRaw } = useQuery<Batch[]>({
+  const { data: allRawBatches = [], isLoading: rawLoading, refetch: refetchRaw } = useQuery<Batch[]>({
     queryKey: ["/api/batches", { type: "parent" }],
     queryFn: () => apiRequest("GET", "/api/batches?type=parent").then(r => r.json()),
     staleTime: 30000,
@@ -670,6 +731,10 @@ export default function BatchManager() {
     staleTime: 30000,
   });
 
+  // Split raw batches: active (not fully cooked) vs archived (fully cooked)
+  const activeBatches = (allRawBatches as Batch[]).filter(b => !b.is_fully_cooked);
+  const archivedBatches = (allRawBatches as Batch[]).filter(b => b.is_fully_cooked);
+
   const deleteMutation = useMutation({
     mutationFn: async (batchId: string) => {
       const res = await apiRequest("DELETE", `/api/batches/${encodeURIComponent(batchId)}`);
@@ -680,9 +745,7 @@ export default function BatchManager() {
       queryClient.invalidateQueries({ queryKey: ["/api/batches"] });
       setDeleteBatch(null);
     },
-    onError: () => {
-      toast({ description: "Failed to delete batch", variant: "destructive" });
-    },
+    onError: () => toast({ description: "Failed to delete batch", variant: "destructive" }),
   });
 
   const handleCreateSuccess = () => {
@@ -692,11 +755,12 @@ export default function BatchManager() {
   };
 
   const tabs = [
-    { key: "raw", label: "Raw Batch IDs" },
-    { key: "cooked", label: "Cooked Batch IDs" },
-    { key: "create-raw", label: "Create Raw" },
+    { key: "raw",           label: `Raw Batch IDs${activeBatches.length ? ` (${activeBatches.length})` : ""}` },
+    { key: "cooked",        label: "Cooked Batch IDs" },
+    { key: "archive",       label: `Archive${archivedBatches.length ? ` (${archivedBatches.length})` : ""}` },
+    { key: "create-raw",    label: "Create Raw" },
     { key: "create-cooked", label: "Create Cooked" },
-    { key: "traceability", label: "Traceability" },
+    { key: "traceability",  label: "Traceability" },
   ];
 
   return (
@@ -730,9 +794,7 @@ export default function BatchManager() {
             onClick={() => setTab(key as typeof tab)}
             className={cn(
               "px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
-              tab === key
-                ? "border-[#256984] text-[#256984]"
-                : "border-transparent text-muted-foreground hover:text-foreground"
+              tab === key ? "border-[#256984] text-[#256984]" : "border-transparent text-muted-foreground hover:text-foreground"
             )}
           >
             {label}
@@ -740,27 +802,92 @@ export default function BatchManager() {
         ))}
       </div>
 
-      {/* Tab content */}
+      {/* Raw Batch IDs — active */}
       {tab === "raw" && (
-        <BatchTable
-          batches={rawBatches as Batch[]}
-          isLoading={rawLoading}
-          batchLabel="Raw Batch ID"
-          onEmpty={() => setTab("create-raw")}
+        <div className="space-y-3">
+          {rawLoading ? (
+            <div className="text-center py-12 text-muted-foreground text-sm">Loading batches…</div>
+          ) : activeBatches.length === 0 ? (
+            <div className="text-center py-12 space-y-3">
+              <Package size={36} className="mx-auto text-muted-foreground/40" />
+              <p className="text-muted-foreground text-sm">No active raw batches.</p>
+              <Button variant="outline" onClick={() => setTab("create-raw")} className="gap-2"><Plus size={14} /> Create first batch</Button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 border-b text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    <th className="w-8 px-3 py-3" />
+                    <th className="px-3 py-3 text-left">Raw Batch ID</th>
+                    <th className="px-3 py-3 text-left">Product</th>
+                    <th className="px-3 py-3 text-left">Date</th>
+                    <th className="px-3 py-3 text-right">Total (kg)</th>
+                    <th className="px-3 py-3 text-left">Arrived</th>
+                    <th className="px-3 py-3 text-left">State</th>
+                    <th className="px-3 py-3 text-center">QR</th>
+                    <th className="px-3 py-3 text-center">Del</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {activeBatches.map(b => (
+                    <RawBatchRow key={b.id} batch={b} onQr={setQrBatch} onDelete={setDeleteBatch} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Cooked Batch IDs */}
+      {tab === "cooked" && (
+        <CookedBatchTable
+          batches={cookedBatches as Batch[]}
+          isLoading={cookedLoading}
+          onEmpty={() => setTab("create-cooked")}
           onQr={setQrBatch}
           onDelete={setDeleteBatch}
         />
       )}
 
-      {tab === "cooked" && (
-        <BatchTable
-          batches={cookedBatches as Batch[]}
-          isLoading={cookedLoading}
-          batchLabel="Cooked Batch ID"
-          onEmpty={() => setTab("create-cooked")}
-          onQr={setQrBatch}
-          onDelete={setDeleteBatch}
-        />
+      {/* Archive — fully cooked raw batches */}
+      {tab === "archive" && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 p-3 rounded-xl bg-muted/40 border">
+            <Archive size={16} className="text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Raw batches move here automatically once all weight is accounted for as cooked.</p>
+          </div>
+          {archivedBatches.length === 0 ? (
+            <div className="text-center py-12">
+              <Archive size={36} className="mx-auto text-muted-foreground/40 mb-3" />
+              <p className="text-muted-foreground text-sm">No archived batches yet.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 border-b text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    <th className="w-8 px-3 py-3" />
+                    <th className="px-3 py-3 text-left">Raw Batch ID</th>
+                    <th className="px-3 py-3 text-left">Product</th>
+                    <th className="px-3 py-3 text-left">Date</th>
+                    <th className="px-3 py-3 text-right">Total (kg)</th>
+                    <th className="px-3 py-3 text-left">Arrived</th>
+                    <th className="px-3 py-3 text-left">State</th>
+                    <th className="px-3 py-3 text-center">QR</th>
+                    <th className="px-3 py-3 text-center">Del</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {archivedBatches.map(b => (
+                    <RawBatchRow key={b.id} batch={b} onQr={setQrBatch} onDelete={setDeleteBatch} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {tab === "create-raw" && <CreateRawBatchForm onSuccess={handleCreateSuccess} />}
@@ -774,7 +901,7 @@ export default function BatchManager() {
       {/* QR Modal */}
       {qrBatch && <QRModal batch={qrBatch} onClose={() => setQrBatch(null)} />}
 
-      {/* Delete Confirm Modal */}
+      {/* Delete Confirm */}
       {deleteBatch && (
         <DeleteConfirmModal
           batch={deleteBatch}
@@ -784,15 +911,13 @@ export default function BatchManager() {
         />
       )}
 
-      {/* Auto-print modal — triggered from supplier delivery submit */}
+      {/* Auto-print modal */}
       {printBatches.length > 0 && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="bg-[#256984] px-6 py-4">
               <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Batch Traceability</p>
-              <h2 className="text-lg font-bold text-white mt-0.5">
-                {printBatches.length} Raw Batch Label{printBatches.length > 1 ? "s" : ""} Ready
-              </h2>
+              <h2 className="text-lg font-bold text-white mt-0.5">{printBatches.length} Raw Batch Label{printBatches.length > 1 ? "s" : ""} Ready</h2>
               <p className="text-xs text-white/70 mt-1">Print and attach to each box</p>
             </div>
             <div className="px-6 py-4 space-y-3 max-h-64 overflow-y-auto">
@@ -808,17 +933,11 @@ export default function BatchManager() {
               ))}
             </div>
             <div className="px-6 pb-6 pt-2 space-y-2">
-              <Button
-                className="w-full h-11 gap-2 font-semibold"
-                style={{ backgroundColor: "#256984" }}
-                onClick={() => { setQrBatch(printBatches[0]); setPrintBatches(prev => prev.slice(1)); }}
-              >
-                <Printer size={16} />
-                Print Labels ({printBatches.length})
+              <Button className="w-full h-11 gap-2 font-semibold" style={{ backgroundColor: "#256984" }}
+                onClick={() => { setQrBatch(printBatches[0]); setPrintBatches(prev => prev.slice(1)); }}>
+                <Printer size={16} /> Print Labels ({printBatches.length})
               </Button>
-              <Button variant="outline" className="w-full h-11" onClick={() => setPrintBatches([])}>
-                Skip — Print Later
-              </Button>
+              <Button variant="outline" className="w-full h-11" onClick={() => setPrintBatches([])}>Skip — Print Later</Button>
             </div>
           </div>
         </div>
