@@ -16,6 +16,7 @@ type Supplier = {
   id: number; name: string; contactName?: string; email?: string; phone?: string; notes?: string;
   how_to_order?: string; order_contact?: string; order_cutoff?: string;
   min_order_amount?: number; delivery_days?: string;
+  // how_to_order and delivery_days stored as JSON arrays in DB
 };
 
 type CheapestItem = {
@@ -27,7 +28,10 @@ type CheapestItem = {
   packSize: number | null;
 };
 
-const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: "email", order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: "" };
+const ORDER_METHODS = ["Email","Online","Phone","Text","Ordermentum","App"];
+const WEEK_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: [] as string[], order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: [] as string[] };
 
 export default function Suppliers() {
   const { toast } = useToast();
@@ -60,7 +64,7 @@ export default function Suppliers() {
 
   const upsert = useMutation({
     mutationFn: (data: typeof form) => {
-      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify((data.delivery_days || '').split(',').map((d: string) => d.trim()).filter(Boolean)) };
+      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify(Array.isArray(data.delivery_days) ? data.delivery_days : []), how_to_order: JSON.stringify(Array.isArray(data.how_to_order) ? data.how_to_order : []) };
       return editing
         ? apiRequest("PUT", `/api/suppliers/${editing.id}`, payload).then((r) => r.json())
         : apiRequest("POST", "/api/suppliers", payload).then((r) => r.json());
@@ -84,7 +88,13 @@ export default function Suppliers() {
   });
 
   const openNew = () => { setEditing(null); setForm(empty); setOpen(true); };
-  const openEdit = (s: Supplier) => { setEditing(s); setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: (() => { try { const d = JSON.parse(s.delivery_days || '[]'); return d.join(', '); } catch { return ''; } })() } as any); setOpen(true); };
+  const openEdit = (s: Supplier) => {
+  const parsedDelivery = (() => { try { const d = JSON.parse(s.delivery_days || '[]'); return Array.isArray(d) ? d : []; } catch { return []; } })();
+  const parsedMethods = (() => { try { const m = JSON.parse(s.how_to_order || '[]'); return Array.isArray(m) ? m : (s.how_to_order ? [s.how_to_order] : []); } catch { return s.how_to_order ? [s.how_to_order] : []; } })();
+  setEditing(s);
+  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods } as any);
+  setOpen(true);
+};
 
   const toggleExpanded = (id: number) => {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -151,7 +161,7 @@ export default function Suppliers() {
                     {s.notes && <p className="text-muted-foreground text-xs mt-2">{s.notes}</p>}
                     {(s.how_to_order || s.order_contact || s.order_cutoff || s.min_order_amount) && (
                       <div className="mt-2 pt-2 border-t border-dashed flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-                        {s.how_to_order && <span>Order via: <strong className="capitalize">{s.how_to_order}</strong></span>}
+                        {s.how_to_order && (() => { try { const m = JSON.parse(s.how_to_order); return m.length ? <span>Order via: <strong>{m.join(", ")}</strong></span> : null; } catch { return s.how_to_order ? <span>Order via: <strong>{s.how_to_order}</strong></span> : null; } })()}
                         {s.order_contact && <span>{s.order_contact}</span>}
                         {s.order_cutoff && <span className="text-amber-700">Cut-off: {s.order_cutoff}</span>}
                         {s.min_order_amount && <span>Min: ${s.min_order_amount}</span>}
@@ -234,13 +244,30 @@ export default function Suppliers() {
               <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Order terms, minimums, etc." rows={2} />
             </div>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-1">Ordering Details</p>
-            <div className="space-y-1">
+
+            {/* How to order — multi-select checkboxes */}
+            <div className="space-y-2">
               <label className="text-xs text-muted-foreground">How to order</label>
-              <select value={form.how_to_order || "email"} onChange={e => setForm({ ...form, how_to_order: e.target.value })}
-                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#256984]">
-                {["email","online","phone","text"].map(v => <option key={v} value={v} className="capitalize">{v.charAt(0).toUpperCase()+v.slice(1)}</option>)}
-              </select>
+              <div className="grid grid-cols-3 gap-x-3 gap-y-2">
+                {ORDER_METHODS.map(method => {
+                  const methods = Array.isArray(form.how_to_order) ? form.how_to_order : [];
+                  const checked = methods.map((m: string) => m.toLowerCase()).includes(method.toLowerCase());
+                  return (
+                    <label key={method} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input type="checkbox" checked={checked}
+                        onChange={e => {
+                          const cur = Array.isArray(form.how_to_order) ? form.how_to_order : [];
+                          const next = e.target.checked ? [...cur, method] : cur.filter((m: string) => m.toLowerCase() !== method.toLowerCase());
+                          setForm({ ...form, how_to_order: next } as any);
+                        }}
+                        className="w-4 h-4 rounded accent-[#256984]" />
+                      {method}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
+
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">Order contact (email / phone / URL)</label>
               <Input value={form.order_contact || ""} onChange={e => setForm({ ...form, order_contact: e.target.value })} placeholder="orders@supplier.com or 08 9000 0000" />
@@ -255,11 +282,28 @@ export default function Suppliers() {
                 <Input type="number" value={form.min_order_amount || ""} onChange={e => setForm({ ...form, min_order_amount: e.target.value as any })} placeholder="0" />
               </div>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Delivery days (comma separated)</label>
-              <Input value={form.delivery_days || ""} onChange={e => setForm({ ...form, delivery_days: e.target.value })} placeholder="Mon, Wed, Fri" />
-            </div>
-            <div className="hidden">
+
+            {/* Delivery days — day-of-week checkboxes */}
+            <div className="space-y-2">
+              <label className="text-xs text-muted-foreground">Delivery days</label>
+              <div className="grid grid-cols-4 gap-x-2 gap-y-2">
+                {WEEK_DAYS.map(day => {
+                  const days = Array.isArray(form.delivery_days) ? form.delivery_days : [];
+                  const checked = days.some((d: string) => d.toLowerCase() === day.toLowerCase());
+                  return (
+                    <label key={day} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input type="checkbox" checked={checked}
+                        onChange={e => {
+                          const cur = Array.isArray(form.delivery_days) ? form.delivery_days : [];
+                          const next = e.target.checked ? [...cur, day] : cur.filter((d: string) => d.toLowerCase() !== day.toLowerCase());
+                          setForm({ ...form, delivery_days: next } as any);
+                        }}
+                        className="w-4 h-4 rounded accent-[#256984]" />
+                      {day.slice(0, 3)}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
           <DialogFooter>
