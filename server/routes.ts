@@ -777,8 +777,23 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   app.post("/api/suppliers", async (req, res) => {
     try {
-      const s = await storage.createSupplier(req.body);
-      res.json(s);
+      const b = req.body;
+      const insert: any = {
+        name: b.name,
+        contact_name: b.contactName || b.contact_name || null,
+        email: b.email || null,
+        phone: b.phone || null,
+        notes: b.notes || null,
+        how_to_order: b.how_to_order || null,
+        order_contact: b.order_contact || null,
+        order_cutoff: b.order_cutoff || null,
+        min_order_amount: b.min_order_amount !== '' && b.min_order_amount != null ? Number(b.min_order_amount) : null,
+        delivery_days: b.delivery_days || null,
+        parent_supplier_id: b.parent_supplier_id || null,
+      };
+      const { data, error } = await supabase.from('suppliers').insert(insert).select().single();
+      if (error) { console.error('[suppliers POST error]', error); return res.status(500).json({ error: error.message }); }
+      res.json(data);
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -786,9 +801,25 @@ export function registerRoutes(httpServer: Server, app: Express) {
 
   app.put("/api/suppliers/:id", async (req, res) => {
     try {
-    const s = await storage.updateSupplier(Number(req.params.id), req.body);
-    if (!s) return res.status(404).json({ error: "Not found" });
-    res.json(s);
+      const id = Number(req.params.id);
+      const b = req.body;
+      // Explicitly map all known supplier fields to avoid passing unknown columns
+      const updates: any = {};
+      if (b.name !== undefined) updates.name = b.name;
+      if (b.contactName !== undefined) updates.contact_name = b.contactName;
+      if (b.contact_name !== undefined) updates.contact_name = b.contact_name;
+      if (b.email !== undefined) updates.email = b.email;
+      if (b.phone !== undefined) updates.phone = b.phone;
+      if (b.notes !== undefined) updates.notes = b.notes;
+      if (b.how_to_order !== undefined) updates.how_to_order = b.how_to_order;
+      if (b.order_contact !== undefined) updates.order_contact = b.order_contact;
+      if (b.order_cutoff !== undefined) updates.order_cutoff = b.order_cutoff;
+      if (b.min_order_amount !== undefined) updates.min_order_amount = b.min_order_amount !== '' ? Number(b.min_order_amount) : null;
+      if (b.delivery_days !== undefined) updates.delivery_days = b.delivery_days;
+      if (b.parent_supplier_id !== undefined) updates.parent_supplier_id = b.parent_supplier_id || null;
+      const { data, error } = await supabase.from('suppliers').update(updates).eq('id', id).select().single();
+      if (error) { console.error('[suppliers PUT error]', error); return res.status(500).json({ error: error.message }); }
+      res.json(data);
     } catch (e: any) {
       console.error("[route error]", e);
       if (!res.headersSent) res.status(500).json({ error: e.message || "Internal server error" });
@@ -8042,7 +8073,11 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .select('*')
       .order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    res.json(data || []);
+    const parsed = (data || []).map((o: any) => ({
+      ...o,
+      cbd_items: o.cbd_items ? (() => { try { return JSON.parse(o.cbd_items); } catch { return []; } })() : [],
+    }));
+    res.json(parsed);
   }));
 
   // POST /api/orders — create a new order

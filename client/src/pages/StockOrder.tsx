@@ -675,7 +675,9 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
 function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const items: CbdOrderItem[] = order.cbd_items || [];
+  const items: CbdOrderItem[] = Array.isArray(order.cbd_items)
+    ? order.cbd_items
+    : (() => { try { return JSON.parse(order.cbd_items as any || '[]'); } catch { return []; } })();
 
   return (
     <div className="space-y-5">
