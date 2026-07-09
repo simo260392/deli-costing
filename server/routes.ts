@@ -8243,7 +8243,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       .from('stock_orders')
       .select('*')
       .eq('order_type', 'cbd_internal')
-      .not('status', 'in', '("received","cancelled")')
+      .not('status', 'in', '(received,cancelled,complete)')
       .order('placed_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     const orders = data || [];
