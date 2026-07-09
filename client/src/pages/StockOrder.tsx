@@ -170,6 +170,7 @@ function CbdOrderForm({ onClose, onCreate }: {
         base_unit: it.base_unit,
         qty_ordered: parseFloat(qtys[it.id]),
         item_type: it.item_type,
+        category: it.category || "General",
       }));
       const res = await apiRequest("POST", "/api/orders/cbd", { items, notes: notes || null });
       if (!res.ok) throw new Error("Failed to create CBD order");
@@ -183,12 +184,14 @@ function CbdOrderForm({ onClose, onCreate }: {
     onError: (e: any) => toast({ description: e.message, variant: "destructive" }),
   });
 
-  // Group by item_type
+  // Group by category
   const grouped = configItems.reduce((acc, it) => {
-    if (!acc[it.item_type]) acc[it.item_type] = [];
-    acc[it.item_type].push(it);
+    const cat = it.category || "General";
+    if (!acc[cat]) acc[cat] = [];
+    acc[cat].push(it);
     return acc;
   }, {} as Record<string, CbdConfigItem[]>);
+  const sortedCategories = Object.keys(grouped).sort();
 
   if (isLoading) {
     return (
