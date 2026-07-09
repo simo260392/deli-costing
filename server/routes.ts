@@ -8218,16 +8218,20 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // POST /api/orders/cbd — create a CBD internal order
   app.post('/api/orders/cbd', asyncRoute(async (req: any, res: any) => {
-    const { items, notes } = req.body; // items: [{config_item_id, item_name, base_unit, qty_ordered}]
+    const { items, notes, order_date } = req.body; // items: [{config_item_id, item_name, base_unit, qty_ordered}]
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items are required' });
     }
-    const today = new Date();
-    const datePart = today.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'Australia/Perth' });
+    const targetDate = order_date || (() => {
+      const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString().slice(0, 10);
+    })();
+    const datePart = new Date(targetDate + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: '2-digit' });
     const name = `CBD Additional Stock Order — ${datePart}`;
     const { data: order, error: orderErr } = await supabase
       .from('stock_orders')
-      .insert({ name, order_type: 'cbd_internal', type_keys: '[]', status: 'placed', placed_at: new Date().toISOString(), notes: notes || null, cbd_items: JSON.stringify(items) })
+      .insert({ name, order_type: 'cbd_internal', type_keys: '[]', status: 'placed', placed_at: new Date().toISOString(), notes: notes || null, cbd_items: JSON.stringify(items), order_date: targetDate })
       .select()
       .single();
     if (orderErr) return res.status(500).json({ error: orderErr.message });
@@ -8238,13 +8242,19 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // GET /api/orders/cbd/active — active CBD internal orders (for Production page)
-  app.get('/api/orders/cbd/active', asyncRoute(async (_req: any, res: any) => {
-    const { data, error } = await supabase
+  // Optional ?date=YYYY-MM-DD to filter by order_date
+  app.get('/api/orders/cbd/active', asyncRoute(async (req: any, res: any) => {
+    const dateFilter = req.query.date as string | undefined;
+    let query = supabase
       .from('stock_orders')
       .select('*')
       .eq('order_type', 'cbd_internal')
       .not('status', 'in', '(received,cancelled,complete)')
       .order('placed_at', { ascending: false });
+    if (dateFilter) {
+      query = query.eq('order_date', dateFilter);
+    }
+    const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
     const orders = data || [];
     // Fetch ticks for each order

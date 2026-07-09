@@ -1456,10 +1456,10 @@ export default function Prep() {
   // CBD internal orders
   interface CbdOrderItem { config_item_id: number; item_name: string; base_unit: string; qty_ordered: number; item_type: string; category?: string; }
   interface CbdTick { id: number; order_id: number; config_item_id: number; ticked: boolean; ticked_by?: string | null; ticked_at?: string | null; }
-  interface CbdOrder { id: number; name: string; order_type: string; status: string; placed_at?: string; notes?: string; cbd_items: CbdOrderItem[]; ticks: CbdTick[]; }
+  interface CbdOrder { id: number; name: string; order_type: string; status: string; placed_at?: string; order_date?: string; notes?: string; cbd_items: CbdOrderItem[]; ticks: CbdTick[]; }
   const { data: cbdOrders = [], refetch: refetchCbdOrders } = useQuery<CbdOrder[]>({
-    queryKey: ["/api/orders/cbd/active"],
-    queryFn: () => apiRequest("GET", "/api/orders/cbd/active").then(r => r.json()),
+    queryKey: ["/api/orders/cbd/active", dateFrom],
+    queryFn: () => apiRequest("GET", `/api/orders/cbd/active?date=${dateFrom}`).then(r => r.json()),
     refetchInterval: 30000,
     enabled: tab === "orders",
   });
@@ -2446,7 +2446,7 @@ export default function Prep() {
                             <p className="text-sm font-bold" style={{ color: "#1B6B45" }}>{order.name}</p>
                             <p className="text-xs" style={{ color: "#5AB693" }}>
                               {tickedCount}/{order.cbd_items.length} items packed
-                              {order.placed_at && ` · Ordered ${new Date(order.placed_at).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
+                              {order.order_date && ` · For ${new Date(order.order_date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}`}
                             </p>
                           </div>
                         </div>

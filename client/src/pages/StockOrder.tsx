@@ -45,6 +45,7 @@ interface StockOrder {
   id: number; name: string; order_type: "supplier" | "category" | "cbd_internal";
   type_keys?: string; status: string; notes?: string;
   placed_at?: string; received_at?: string; created_at: string; updated_at?: string;
+  order_date?: string;
   cbd_items?: CbdOrderItem[];
 }
 interface OrderItem {
@@ -154,6 +155,13 @@ function CbdOrderForm({ onClose, onCreate }: {
   const qc = useQueryClient();
   const [qtys, setQtys] = useState<Record<number, string>>({});
   const [notes, setNotes] = useState("");
+  // Default to tomorrow in AWST
+  const defaultOrderDate = (() => {
+    const d = new Date(Date.now() + 8 * 60 * 60 * 1000); // UTC+8
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  const [orderDate, setOrderDate] = useState(defaultOrderDate);
 
   const { data: configItems = [], isLoading } = useQuery<CbdConfigItem[]>({
     queryKey: ["/api/cbd-config"],
@@ -172,7 +180,7 @@ function CbdOrderForm({ onClose, onCreate }: {
         item_type: it.item_type,
         category: it.category || "General",
       }));
-      const res = await apiRequest("POST", "/api/orders/cbd", { items, notes: notes || null });
+      const res = await apiRequest("POST", "/api/orders/cbd", { items, notes: notes || null, order_date: orderDate });
       if (!res.ok) throw new Error("Failed to create CBD order");
       return res.json();
     },
@@ -258,6 +266,16 @@ function CbdOrderForm({ onClose, onCreate }: {
           </div>
         );
       })}
+
+      <div>
+        <p className="text-xs text-muted-foreground mb-1">Order Date <span className="text-muted-foreground/60">(date production kitchen should pack this)</span></p>
+        <input
+          type="date"
+          value={orderDate}
+          onChange={e => setOrderDate(e.target.value)}
+          className="w-full h-9 rounded-lg border border-border px-3 text-sm outline-none focus:ring-2 focus:ring-[#5AB693]"
+        />
+      </div>
 
       <div>
         <p className="text-xs text-muted-foreground mb-1">Notes (optional)</p>
@@ -685,7 +703,10 @@ function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () =
         <button onClick={onBack} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
         <div className="flex-1 min-w-0">
           <h2 className="text-base font-bold truncate">{order.name}</h2>
-          <p className="text-xs text-muted-foreground">{items.length} items · Placed {fmtDateTime(order.placed_at)}</p>
+          <p className="text-xs text-muted-foreground">
+            {items.length} items · Placed {fmtDateTime(order.placed_at)}
+            {order.order_date && ` · For ${new Date(order.order_date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}`}
+          </p>
         </div>
         <StatusBadge status={order.status} />
       </div>
