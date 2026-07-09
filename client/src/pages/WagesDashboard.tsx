@@ -355,6 +355,40 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
     queryFn: () => apiRequest("GET", "/api/settings").then(r => r.json()),
   });
 
+  // Lightspeed connection status
+  const { data: lsStatus } = useQuery<{ connected: boolean; company_id?: string }>({
+    queryKey: ['/api/lightspeed/status'],
+    refetchOnWindowFocus: true,
+  });
+
+  // Lightspeed weekly shop sales — fetch each day of the week and sum
+  const { data: lsWeeklySales, isLoading: lsSalesLoading } = useQuery<{ total_ex_gst: number } | null>({
+    queryKey: ['/api/lightspeed/weekly-sales', period.from, period.to],
+    enabled: !!lsStatus?.connected,
+    queryFn: async () => {
+      // Generate all dates Mon–Sun for the week
+      const dates: string[] = [];
+      const cursor = new Date(period.from + 'T12:00:00');
+      const end = new Date(period.to + 'T12:00:00');
+      while (cursor <= end) {
+        dates.push(cursor.toISOString().slice(0, 10));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      // Fetch sales for each day in parallel
+      const results = await Promise.all(
+        dates.map(d =>
+          apiRequest('GET', `/api/lightspeed/sales?date=${d}`)
+            .then(r => r.ok ? r.json() : { total_ex_gst: 0 })
+            .catch(() => ({ total_ex_gst: 0 }))
+        )
+      );
+      const total_ex_gst = results.reduce((sum: number, r: any) => sum + (r.total_ex_gst || 0), 0);
+      return { total_ex_gst: Math.round(total_ex_gst * 100) / 100 };
+    },
+    staleTime: 30 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
   // Fetch Xero delivery fee via our backend proxy endpoint
   // We call our own backend which has stored the Pipedream Xero token
   const fetchXeroDelivery = useCallback(async () => {
@@ -399,14 +433,19 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
   const cateringGross = data?.flex?.cateringGross ?? null;
   const cateringExGstInclWholesale = data?.flex?.cateringExGstInclWholesale ?? null;
 
-  // Pro-rated shop turnover: $3,000 × weekdays elapsed in selected week (Mon–Fri)
-  // Replaces Lightspeed until that API is connected.
+  // Shop turnover: use live Lightspeed data when connected, otherwise pro-rate $3k/day estimate
   const elapsedWeekdays = getElapsedWeekdays(period.from, period.to);
-  const shopTurnoverEstimate = elapsedWeekdays * SHOP_DAILY_ESTIMATE; // e.g. Tue = $6,000
+  const shopTurnoverEstimate = elapsedWeekdays * SHOP_DAILY_ESTIMATE;
+  const lsConnected = !!lsStatus?.connected;
+  const shopSales = lsConnected
+    ? (lsWeeklySales?.total_ex_gst ?? null)   // null while loading
+    : shopTurnoverEstimate;                    // fallback estimate
 
-  // Combined sales denominator for Production KPI: live Flex + pro-rated shop
-  const combinedSales = cateringExGstInclWholesale != null
-    ? cateringExGstInclWholesale + shopTurnoverEstimate
+  // Combined sales denominator for Production KPI: live Flex + shop (real or estimated)
+  const combinedSales = cateringExGstInclWholesale != null && shopSales != null
+    ? cateringExGstInclWholesale + shopSales
+    : cateringExGstInclWholesale != null
+    ? cateringExGstInclWholesale
     : null;
 
   // Total wages summary
@@ -504,14 +543,18 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
           title="CBD Store"
           icon={Store}
           wages={cbdArea?.wages ?? null}
-          sales={shopTurnoverEstimate > 0 ? shopTurnoverEstimate : null}
-          salesLabel="Shop Turnover (est.)"
+          sales={shopSales}
+          salesLabel={lsConnected ? 'Shop Turnover (Lightspeed)' : 'Shop Turnover (est.)'}
           target={25}
           hours={cbdArea?.hours}
           shifts={cbdArea?.shifts}
           pendingWages={cbdArea?.pendingWages}
-          salesNote={`$3k/day × ${elapsedWeekdays} day${elapsedWeekdays !== 1 ? 's' : ''} — Lightspeed pending`}
-          isLoading={isLoading}
+          salesNote={
+            lsConnected
+              ? (lsSalesLoading ? 'Loading Lightspeed data…' : `Lightspeed ex GST · ${period.from} to ${period.to}`)
+              : `$3k/day × ${elapsedWeekdays} day${elapsedWeekdays !== 1 ? 's' : ''} — connect Lightspeed in Settings`
+          }
+          isLoading={isLoading || (lsConnected && lsSalesLoading)}
         />
 
         {/* Production Kitchen */}
@@ -525,7 +568,11 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
           hours={productionArea?.hours}
           shifts={productionArea?.shifts}
           pendingWages={productionArea?.pendingWages}
-          salesNote={`Flex ex GST + est. shop ($${shopTurnoverEstimate.toLocaleString()})`}
+          salesNote={
+            lsConnected && shopSales != null
+              ? `Flex ex GST + shop $${Math.round(shopSales).toLocaleString()} (Lightspeed)`
+              : `Flex ex GST + est. shop ($${shopTurnoverEstimate.toLocaleString()})`
+          }
           isLoading={isLoading}
         />
 
@@ -590,26 +637,31 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
         </CardContent>
       </Card>
 
-      {/* Lightspeed connect block */}
-      <Card className="border-dashed border-muted">
+      {/* Lightspeed status block */}
+      <Card className={lsConnected ? 'border-green-200 bg-green-50/30' : 'border-dashed border-muted'}>
         <CardContent className="py-4 px-4">
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
-              <div className="rounded-full bg-muted p-2">
-                <PlugZap size={15} className="text-muted-foreground" />
+              <div className={`rounded-full p-2 ${lsConnected ? 'bg-green-100' : 'bg-muted'}`}>
+                <PlugZap size={15} className={lsConnected ? 'text-green-600' : 'text-muted-foreground'} />
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">
                   Lightspeed O-Series — CBD Store Turnover
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Awaiting API credentials. Once connected, CBD Store wages % will calculate automatically.
+                  {lsConnected
+                    ? (lsSalesLoading
+                        ? 'Fetching this week’s sales…'
+                        : `This week ex GST: $${Math.round(lsWeeklySales?.total_ex_gst ?? 0).toLocaleString()}`)
+                    : 'Connect Lightspeed in Settings to replace the estimated shop turnover with live POS data.'}
                 </p>
               </div>
             </div>
-            <Badge variant="outline" className="text-xs text-muted-foreground">
-              Pending credentials
-            </Badge>
+            {lsConnected
+              ? <Badge className="text-xs bg-green-100 text-green-700 border-green-200">Connected</Badge>
+              : <Badge variant="outline" className="text-xs text-muted-foreground">Not connected</Badge>
+            }
           </div>
         </CardContent>
       </Card>

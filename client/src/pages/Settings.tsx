@@ -14,10 +14,71 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Save, Percent, Clock, DollarSign, TrendingUp, AlertTriangle, FolderOpen,
-  Lock, Users, ShieldCheck, Plus, Pencil, Trash2, UserX, CheckCircle, XCircle
+  Lock, Users, ShieldCheck, Plus, Pencil, Trash2, UserX, CheckCircle, XCircle,
+  Plug, Wifi, WifiOff
 } from "lucide-react";
 
 const MASTER_PASSWORD = "Burnfletch123!";
+
+function LightspeedConnectionCard() {
+  const { data: lsStatus, isLoading } = useQuery<{ connected: boolean; company_id?: string; updated_at?: string }>({
+    queryKey: ['/api/lightspeed/status'],
+    refetchOnWindowFocus: true,
+  });
+
+  const handleConnect = () => {
+    // Navigate to backend OAuth redirect (bypasses hash router)
+    window.location.href = '/api/lightspeed/auth';
+  };
+
+  const handleDisconnect = async () => {
+    await apiRequest('DELETE', '/api/lightspeed/disconnect');
+    queryClient.invalidateQueries({ queryKey: ['/api/lightspeed/status'] });
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Plug size={16} className="text-primary" /> Lightspeed (Kounta) — CBD Store Sales
+        </CardTitle>
+        <CardDescription>Connect your Lightspeed POS to pull CBD shop sales into the wages dashboard.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="h-8 w-32 bg-muted animate-pulse rounded" />
+        ) : lsStatus?.connected ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Wifi size={16} className="text-green-600" />
+              <div>
+                <p className="text-sm font-medium text-green-700">Connected</p>
+                {lsStatus.company_id && <p className="text-xs text-muted-foreground">Company ID: {lsStatus.company_id}</p>}
+              </div>
+            </div>
+            <button
+              onClick={handleConnect}
+              className="text-xs text-muted-foreground underline hover:text-foreground"
+              data-testid="button-ls-reconnect"
+            >
+              Re-authorise
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <WifiOff size={16} className="text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">Not connected</p>
+            </div>
+            <Button size="sm" onClick={handleConnect} data-testid="button-ls-connect">
+              Connect Lightspeed
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -844,6 +905,9 @@ export default function Settings() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Lightspeed (Kounta) */}
+              <LightspeedConnectionCard />
 
               <Button onClick={() => save.mutate()} disabled={save.isPending} className="w-full" data-testid="button-save-settings-bottom">
                 <Save size={15} className="mr-2" />

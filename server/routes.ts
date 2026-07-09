@@ -10316,6 +10316,132 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
   }));
 
+  // ── LIGHTSPEED (KOUNTA) INTEGRATION ────────────────────────────────────────
+  const LS_CLIENT_ID     = 'm84SAi9TOkmCErV9';
+  const LS_CLIENT_SECRET = 'OaK9HOL2YpAW1Or2GxVzS7qS9DfY0RcS00UaXnNU';
+  const LS_REDIRECT_URI  = 'https://the-deli.app/api/lightspeed/callback';
+  const LS_TOKEN_URL     = 'https://api.kounta.com/v1/token';
+  const LS_API_BASE      = 'https://api.kounta.com/v1';
+
+  // Helper: get a valid access token (refresh if needed)
+  async function getLightspeedToken(): Promise<string | null> {
+    const { data: row } = await supabase.from('lightspeed_tokens').select('*').order('id', { ascending: false }).limit(1).single();
+    if (!row) return null;
+    // Check if expired (with 5-min buffer)
+    if (row.expires_at && new Date(row.expires_at) < new Date(Date.now() + 5 * 60 * 1000)) {
+      // Attempt refresh
+      if (!row.refresh_token) return null;
+      const r = await fetch(LS_TOKEN_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: row.refresh_token,
+          client_id: LS_CLIENT_ID,
+          client_secret: LS_CLIENT_SECRET,
+        }).toString(),
+      });
+      const d = await r.json();
+      if (!d.access_token) return null;
+      const expiresAt = new Date(Date.now() + (d.expires_in || 86400) * 1000).toISOString();
+      await supabase.from('lightspeed_tokens').update({
+        access_token: d.access_token,
+        refresh_token: d.refresh_token || row.refresh_token,
+        expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      }).eq('id', row.id);
+      return d.access_token;
+    }
+    return row.access_token;
+  }
+
+  // GET /api/lightspeed/status — check if connected + company info
+  app.get('/api/lightspeed/status', asyncRoute(async (req: any, res: any) => {
+    const { data: row } = await supabase.from('lightspeed_tokens').select('id, company_id, expires_at, updated_at').order('id', { ascending: false }).limit(1).single();
+    if (!row) return res.json({ connected: false });
+    res.json({ connected: true, company_id: row.company_id, expires_at: row.expires_at, updated_at: row.updated_at });
+  }));
+
+  // GET /api/lightspeed/auth — redirect user to Kounta OAuth
+  app.get('/api/lightspeed/auth', (req: any, res: any) => {
+    const url = `https://my.kounta.com/authorize?response_type=code&client_id=${LS_CLIENT_ID}&redirect_uri=${encodeURIComponent(LS_REDIRECT_URI)}&scope=read`;
+    res.redirect(url);
+  });
+
+  // GET /api/lightspeed/callback — OAuth2 code exchange
+  app.get('/api/lightspeed/callback', asyncRoute(async (req: any, res: any) => {
+    const { code } = req.query;
+    if (!code) return res.status(400).send('Missing code');
+    const r = await fetch(LS_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: String(code),
+        client_id: LS_CLIENT_ID,
+        client_secret: LS_CLIENT_SECRET,
+        redirect_uri: LS_REDIRECT_URI,
+      }).toString(),
+    });
+    const d = await r.json();
+    if (!d.access_token) return res.status(500).send(`Token exchange failed: ${JSON.stringify(d)}`);
+    const expiresAt = new Date(Date.now() + (d.expires_in || 86400) * 1000).toISOString();
+    // Fetch company ID
+    let companyId: string | null = null;
+    try {
+      const cr = await fetch(`${LS_API_BASE}/companies/me.json`, { headers: { Authorization: `Bearer ${d.access_token}`, Accept: 'application/json' } });
+      const cd = await cr.json();
+      companyId = String(cd.id || cd.company?.id || '');
+    } catch {}
+    // Upsert token row (delete old, insert new)
+    await supabase.from('lightspeed_tokens').delete().neq('id', 0);
+    await supabase.from('lightspeed_tokens').insert({
+      access_token: d.access_token,
+      refresh_token: d.refresh_token || null,
+      company_id: companyId,
+      expires_at: expiresAt,
+      updated_at: new Date().toISOString(),
+    });
+    // Redirect back to settings page
+    res.send(`<html><body><script>window.location.href='/#/settings?ls_connected=1';</script><p>Lightspeed connected! Redirecting...</p></body></html>`);
+  }));
+
+  // GET /api/lightspeed/sales?date=YYYY-MM-DD — fetch total sales for that day
+  app.get('/api/lightspeed/sales', asyncRoute(async (req: any, res: any) => {
+    const token = await getLightspeedToken();
+    if (!token) return res.status(401).json({ error: 'Lightspeed not connected' });
+    const { data: row } = await supabase.from('lightspeed_tokens').select('company_id').order('id', { ascending: false }).limit(1).single();
+    const companyId = row?.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Company ID not found — reconnect Lightspeed' });
+
+    const date = String(req.query.date || new Date().toISOString().slice(0, 10));
+    // AWST is UTC+8 — build UTC window for the Perth day
+    const dayStart = `${date}T00:00:00+08:00`;
+    const dayEnd   = `${date}T23:59:59+08:00`;
+
+    // Fetch all complete orders for the day, paginating
+    let allOrders: any[] = [];
+    let url: string | null = `${LS_API_BASE}/companies/${companyId}/orders/complete.json?created_gte=${encodeURIComponent(dayStart)}&created_lte=${encodeURIComponent(dayEnd)}`;
+    while (url) {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+      const orders = await r.json();
+      if (!Array.isArray(orders)) break;
+      allOrders = allOrders.concat(orders);
+      url = r.headers.get('X-Next-Page');
+    }
+
+    // Sum total_price (tax inclusive) across all orders
+    const totalInclGST = allOrders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
+    const totalExGST   = allOrders.reduce((sum, o) => sum + (parseFloat(o.total_price_ex_tax ?? o.total_price) || 0), 0);
+
+    res.json({
+      date,
+      order_count: allOrders.length,
+      total_incl_gst: Math.round(totalInclGST * 100) / 100,
+      total_ex_gst: Math.round(totalExGST * 100) / 100,
+    });
+  }));
+
   // ── Global Express error handler ──────────────────────────────────────────
   // ── BATCH TRACEABILITY ROUTES ───────────────────────────────────────────────
 
