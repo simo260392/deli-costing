@@ -269,11 +269,11 @@ function CbdOrderForm({ onClose, onCreate }: {
 
       <div>
         <p className="text-xs text-muted-foreground mb-1">Order Date <span className="text-muted-foreground/60">(date production kitchen should pack this)</span></p>
-        <input
+        <Input
           type="date"
           value={orderDate}
           onChange={e => setOrderDate(e.target.value)}
-          className="w-full h-9 rounded-lg border border-border px-3 text-sm outline-none focus:ring-2 focus:ring-[#5AB693]"
+          className="h-9 text-sm"
         />
       </div>
 
@@ -693,10 +693,138 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
 function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () => void }) {
   const { toast } = useToast();
   const qc = useQueryClient();
-  const items: CbdOrderItem[] = Array.isArray(order.cbd_items)
-    ? order.cbd_items
-    : (() => { try { return JSON.parse(order.cbd_items as any || '[]'); } catch { return []; } })();
+  const [editing, setEditing] = useState(false);
 
+  const parseItems = (o: StockOrder): CbdOrderItem[] =>
+    Array.isArray(o.cbd_items)
+      ? o.cbd_items
+      : (() => { try { return JSON.parse((o.cbd_items as any) || '[]'); } catch { return []; } })();
+
+  const items: CbdOrderItem[] = parseItems(order);
+
+  // Edit state
+  const [editQtys, setEditQtys] = useState<Record<string, string>>({});
+  const [editNotes, setEditNotes] = useState(order.notes || '');
+  const [editDate, setEditDate] = useState(order.order_date || '');
+  const [saving, setSaving] = useState(false);
+
+  const startEdit = () => {
+    const qtys: Record<string, string> = {};
+    items.forEach(it => { qtys[String(it.config_item_id)] = String(it.qty_ordered ?? ''); });
+    setEditQtys(qtys);
+    setEditNotes(order.notes || '');
+    setEditDate(order.order_date || '');
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    setSaving(true);
+    const updatedItems: CbdOrderItem[] = items.map(it => ({
+      ...it,
+      qty_ordered: parseFloat(editQtys[String(it.config_item_id)] || '0') || 0,
+    })).filter(it => it.qty_ordered > 0);
+    try {
+      await apiRequest('PATCH', `/api/orders/cbd/${order.id}`, {
+        items: updatedItems,
+        notes: editNotes || null,
+        order_date: editDate || null,
+      });
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      toast({ description: 'Order updated successfully' });
+      setEditing(false);
+    } catch (e: any) {
+      toast({ description: e.message || 'Failed to save', variant: 'destructive' });
+    }
+    setSaving(false);
+  };
+
+  if (editing) {
+    const categories = Array.from(new Set(items.map(it => it.category || 'General'))).sort();
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setEditing(false)} className="p-2 rounded-lg hover:bg-muted/50"><ArrowLeft size={18} /></button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-bold truncate">Edit Order</h2>
+            <p className="text-xs text-muted-foreground">{order.name}</p>
+          </div>
+          <button
+            onClick={saveEdit}
+            disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold text-white"
+            style={{ background: CBD_COLOR }}
+            data-testid="button-save-edit"
+          >
+            {saving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={15} />}
+            Save
+          </button>
+        </div>
+
+        {/* Delivery date */}
+        <div className="rounded-xl border p-4 space-y-2">
+          <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Delivery Date</label>
+          <Input
+            type="date"
+            value={editDate}
+            onChange={e => setEditDate(e.target.value)}
+            data-testid="input-edit-date"
+          />
+        </div>
+
+        {/* Items grouped by category */}
+        <div className="rounded-xl border overflow-hidden" style={{ borderColor: CBD_COLOR }}>
+          <div className="px-4 py-2.5 flex items-center gap-2" style={{ background: CBD_LIGHT, borderBottom: `2px solid ${CBD_COLOR}` }}>
+            <Store size={14} style={{ color: CBD_COLOR }} />
+            <span className="text-sm font-bold" style={{ color: CBD_COLOR }}>Items</span>
+          </div>
+          <div>
+            {categories.map(cat => {
+              const catItems = items.filter(it => (it.category || 'General') === cat);
+              return (
+                <div key={cat}>
+                  <div className="px-4 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-t">
+                    <Tag size={11} style={{ color: CBD_COLOR }} />
+                    <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: CBD_COLOR }}>{cat}</span>
+                  </div>
+                  {catItems.map((it, i) => (
+                    <div key={i} className="px-4 py-3 flex items-center gap-3 border-b last:border-b-0">
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{it.item_name}</p>
+                        <p className="text-xs text-muted-foreground">{it.base_unit}</p>
+                      </div>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        value={editQtys[String(it.config_item_id)] ?? ''}
+                        onChange={e => setEditQtys(prev => ({ ...prev, [String(it.config_item_id)]: e.target.value }))}
+                        className="w-20 text-right"
+                        data-testid={`input-qty-${it.config_item_id}`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Notes */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notes</label>
+          <Textarea
+            value={editNotes}
+            onChange={e => setEditNotes(e.target.value)}
+            placeholder="Optional notes..."
+            rows={3}
+            data-testid="textarea-edit-notes"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // View mode
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
@@ -709,6 +837,16 @@ function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () =
           </p>
         </div>
         <StatusBadge status={order.status} />
+        {order.status !== 'received' && order.status !== 'cancelled' && (
+          <button
+            onClick={startEdit}
+            className="p-2 rounded-lg hover:bg-muted/50"
+            title="Edit order"
+            data-testid="button-edit-order"
+          >
+            <Pencil size={16} />
+          </button>
+        )}
       </div>
 
       <div className="rounded-xl border overflow-hidden" style={{ borderColor: CBD_COLOR }}>
@@ -717,8 +855,8 @@ function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () =
           <span className="text-sm font-bold" style={{ color: CBD_COLOR }}>CBD → Production Kitchen</span>
         </div>
         <div>
-          {Array.from(new Set(items.map(it => it.category || "General"))).sort().map(cat => {
-            const catItems = items.filter(it => (it.category || "General") === cat);
+          {Array.from(new Set(items.map(it => it.category || 'General'))).sort().map(cat => {
+            const catItems = items.filter(it => (it.category || 'General') === cat);
             return (
               <div key={cat}>
                 <div className="px-4 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-t">
@@ -1370,7 +1508,7 @@ export default function StockOrder() {
         )}
         {activeView === "cbd_detail" && (
           <CbdOrderDetailView
-            order={activeOrder}
+            order={orders.find(o => o.id === activeOrder.id) || activeOrder}
             onBack={() => { setActiveOrder(null); setActiveView(null); }}
           />
         )}

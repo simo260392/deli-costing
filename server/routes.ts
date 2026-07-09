@@ -8300,6 +8300,61 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json(data);
   }));
 
+  // PATCH /api/orders/cbd/:id — edit a CBD order (items, notes, order_date)
+  app.patch('/api/orders/cbd/:id', asyncRoute(async (req: any, res: any) => {
+    const orderId = Number(req.params.id);
+    const { items, notes, order_date } = req.body;
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be an array' });
+
+    // Regenerate name from order_date
+    const dateLabel = order_date
+      ? new Date(order_date + 'T00:00:00').toLocaleDateString('en-AU', { day: '2-digit', month: '2-digit', year: '2-digit' })
+      : new Date().toLocaleDateString('en-AU', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const name = `CBD Internal Order – ${dateLabel}`;
+
+    // Update stock_orders row
+    const { data: updatedOrder, error: updateErr } = await supabase
+      .from('stock_orders')
+      .update({
+        name,
+        notes: notes || null,
+        order_date: order_date || null,
+        cbd_items: JSON.stringify(items),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .select()
+      .single();
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    // Delete existing ticks for this order
+    const { error: deleteErr } = await supabase
+      .from('cbd_order_item_ticks')
+      .delete()
+      .eq('order_id', orderId);
+    if (deleteErr) return res.status(500).json({ error: deleteErr.message });
+
+    // Re-insert ticks for new items (all unticked)
+    if (items.length > 0) {
+      const tickRows = items.map((it: any) => ({
+        order_id: orderId,
+        config_item_id: it.config_item_id,
+        ticked: false,
+        ticked_by: null,
+        ticked_at: null,
+      }));
+      const { error: insertErr } = await supabase.from('cbd_order_item_ticks').insert(tickRows);
+      if (insertErr) return res.status(500).json({ error: insertErr.message });
+    }
+
+    // Parse cbd_items for response
+    let parsed = updatedOrder;
+    if (parsed && typeof parsed.cbd_items === 'string') {
+      try { parsed = { ...parsed, cbd_items: JSON.parse(parsed.cbd_items) }; } catch {}
+    }
+    res.json(parsed);
+  }));
+
   // GET /api/suppliers/:id/ordering-info — supplier with all ordering details
   app.get('/api/suppliers/:id/ordering-info', asyncRoute(async (req: any, res: any) => {
     const id = Number(req.params.id);
