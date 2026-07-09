@@ -9,13 +9,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Pencil, Trash2, Truck, Phone, Mail, User, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Pencil, Trash2, Truck, Phone, Mail, User, ChevronDown, ChevronUp, ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Supplier = {
   id: number; name: string; contactName?: string; email?: string; phone?: string; notes?: string;
   how_to_order?: string; order_contact?: string; order_cutoff?: string;
   min_order_amount?: number; delivery_days?: string;
+  parent_supplier_id?: number | null;
   // how_to_order and delivery_days stored as JSON arrays in DB
 };
 
@@ -31,7 +32,7 @@ type CheapestItem = {
 const ORDER_METHODS = ["Email","Online","Phone","Text","Ordermentum","App"];
 const WEEK_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 
-const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: [] as string[], order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: [] as string[] };
+const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: [] as string[], order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: [] as string[], parent_supplier_id: null as number | null };
 
 export default function Suppliers() {
   const { toast } = useToast();
@@ -64,7 +65,7 @@ export default function Suppliers() {
 
   const upsert = useMutation({
     mutationFn: (data: typeof form) => {
-      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify(Array.isArray(data.delivery_days) ? data.delivery_days : []), how_to_order: JSON.stringify(Array.isArray(data.how_to_order) ? data.how_to_order : []) };
+      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify(Array.isArray(data.delivery_days) ? data.delivery_days : []), how_to_order: JSON.stringify(Array.isArray(data.how_to_order) ? data.how_to_order : []), parent_supplier_id: data.parent_supplier_id || null };
       return editing
         ? apiRequest("PUT", `/api/suppliers/${editing.id}`, payload).then((r) => r.json())
         : apiRequest("POST", "/api/suppliers", payload).then((r) => r.json());
@@ -92,7 +93,7 @@ export default function Suppliers() {
   const parsedDelivery = (() => { try { const d = JSON.parse(s.delivery_days || '[]'); return Array.isArray(d) ? d : []; } catch { return []; } })();
   const parsedMethods = (() => { try { const m = JSON.parse(s.how_to_order || '[]'); return Array.isArray(m) ? m : (s.how_to_order ? [s.how_to_order] : []); } catch { return s.how_to_order ? [s.how_to_order] : []; } })();
   setEditing(s);
-  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods } as any);
+  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods, parent_supplier_id: s.parent_supplier_id ?? null } as any);
   setOpen(true);
 };
 
@@ -122,57 +123,73 @@ export default function Suppliers() {
           <Button onClick={openNew} className="mt-4" size="sm"><Plus size={14} className="mr-1" /> Add Supplier</Button>
         </Card>
       ) : (
-        <div className="grid md:grid-cols-2 gap-4">
-          {suppliers.map((s) => {
-            const isExpanded = expandedId === s.id;
-            return (
-              <div key={s.id} className="flex flex-col">
-                <Card
-                  className={cn("cursor-pointer transition-all", isExpanded ? "ring-2 ring-primary/30" : "hover:ring-1 hover:ring-primary/20")}
-                  data-testid={`card-supplier-${s.id}`}
-                  onClick={() => toggleExpanded(s.id)}
-                >
-                  <CardHeader className="pb-2">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                          <Truck size={14} className="text-primary" />
-                        </div>
-                        <div>
-                          <CardTitle className="text-base">{s.name}</CardTitle>
-                          <Badge variant="outline" className="text-xs mt-1">{ingCount(s.id)} ingredient price{ingCount(s.id) !== 1 ? "s" : ""}</Badge>
-                        </div>
-                      </div>
-                      <div className="flex gap-1 items-center">
-                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); openEdit(s); }} className="h-7 w-7" data-testid={`button-edit-supplier-${s.id}`}>
-                          <Pencil size={13} />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); del.mutate(s.id); }} className="h-7 w-7 text-destructive hover:text-destructive" data-testid={`button-delete-supplier-${s.id}`}>
-                          <Trash2 size={13} />
-                        </Button>
-                        {isExpanded ? <ChevronUp size={14} className="text-muted-foreground ml-1" /> : <ChevronDown size={14} className="text-muted-foreground ml-1" />}
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="text-sm space-y-1">
-                    {s.contactName && <p className="flex items-center gap-2 text-muted-foreground"><User size={12} />{s.contactName}</p>}
-                    {s.phone && <p className="flex items-center gap-2 text-muted-foreground"><Phone size={12} />{s.phone}</p>}
-                    {s.email && <p className="flex items-center gap-2 text-muted-foreground"><Mail size={12} />{s.email}</p>}
-                    {s.notes && <p className="text-muted-foreground text-xs mt-2">{s.notes}</p>}
-                    {(s.how_to_order || s.order_contact || s.order_cutoff || s.min_order_amount) && (
-                      <div className="mt-2 pt-2 border-t border-dashed flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-                        {s.how_to_order && (() => { try { const m = JSON.parse(s.how_to_order); return m.length ? <span>Order via: <strong>{m.join(", ")}</strong></span> : null; } catch { return s.how_to_order ? <span>Order via: <strong>{s.how_to_order}</strong></span> : null; } })()}
-                        {s.order_contact && <span>{s.order_contact}</span>}
-                        {s.order_cutoff && <span className="text-amber-700">Cut-off: {s.order_cutoff}</span>}
-                        {s.min_order_amount && <span>Min: ${s.min_order_amount}</span>}
-                        {s.delivery_days && (() => { try { const d = JSON.parse(s.delivery_days); return d.length > 0 ? <span>Delivers: {d.join(', ')}</span> : null; } catch { return null; } })()}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+        <div className="space-y-4">
+          {(() => {
+            // Separate parent suppliers (no parent) from child suppliers
+            const parentSuppliers = suppliers.filter(s => !s.parent_supplier_id);
+            const childSuppliers = suppliers.filter(s => s.parent_supplier_id);
+            const getChildren = (parentId: number) => childSuppliers.filter(s => s.parent_supplier_id === parentId);
 
-                {/* Cheapest items panel */}
-                {isExpanded && (
+            const renderCard = (s: Supplier, isChild = false) => {
+              const isExpanded = expandedId === s.id;
+              const children = getChildren(s.id);
+              return (
+                <div key={s.id} className={cn("flex flex-col", isChild && "ml-6 border-l-2 border-primary/20 pl-4")}>
+                  {isChild && (
+                    <div className="flex items-center gap-1 mb-1">
+                      <ChevronRight size={12} className="text-primary/50" />
+                      <span className="text-xs text-muted-foreground font-medium">Sub-supplier</span>
+                    </div>
+                  )}
+                  <Card
+                    className={cn("cursor-pointer transition-all", isExpanded ? "ring-2 ring-primary/30" : "hover:ring-1 hover:ring-primary/20", isChild && "shadow-none border-primary/20")}
+                    data-testid={`card-supplier-${s.id}`}
+                    onClick={() => toggleExpanded(s.id)}
+                  >
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", isChild ? "bg-amber-50" : "bg-primary/10")}>
+                            {isChild ? <ChevronRight size={14} className="text-amber-600" /> : children.length > 0 ? <GitBranch size={14} className="text-primary" /> : <Truck size={14} className="text-primary" />}
+                          </div>
+                          <div>
+                            <CardTitle className="text-base">{s.name}</CardTitle>
+                            <div className="flex items-center gap-2 mt-1">
+                              <Badge variant="outline" className="text-xs">{ingCount(s.id)} ingredient price{ingCount(s.id) !== 1 ? "s" : ""}</Badge>
+                              {children.length > 0 && <Badge variant="secondary" className="text-xs">{children.length} sub-supplier{children.length !== 1 ? "s" : ""}</Badge>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-1 items-center">
+                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); openEdit(s); }} className="h-7 w-7" data-testid={`button-edit-supplier-${s.id}`}>
+                            <Pencil size={13} />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); del.mutate(s.id); }} className="h-7 w-7 text-destructive hover:text-destructive" data-testid={`button-delete-supplier-${s.id}`}>
+                            <Trash2 size={13} />
+                          </Button>
+                          {isExpanded ? <ChevronUp size={14} className="text-muted-foreground ml-1" /> : <ChevronDown size={14} className="text-muted-foreground ml-1" />}
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="text-sm space-y-1">
+                      {s.contactName && <p className="flex items-center gap-2 text-muted-foreground"><User size={12} />{s.contactName}</p>}
+                      {s.phone && <p className="flex items-center gap-2 text-muted-foreground"><Phone size={12} />{s.phone}</p>}
+                      {s.email && <p className="flex items-center gap-2 text-muted-foreground"><Mail size={12} />{s.email}</p>}
+                      {s.notes && <p className="text-muted-foreground text-xs mt-2">{s.notes}</p>}
+                      {(s.how_to_order || s.order_contact || s.order_cutoff || s.min_order_amount) && (
+                        <div className="mt-2 pt-2 border-t border-dashed flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                          {s.how_to_order && (() => { try { const m = JSON.parse(s.how_to_order); return m.length ? <span>Order via: <strong>{m.join(", ")}</strong></span> : null; } catch { return s.how_to_order ? <span>Order via: <strong>{s.how_to_order}</strong></span> : null; } })()}
+                          {s.order_contact && <span>{s.order_contact}</span>}
+                          {s.order_cutoff && <span className="text-amber-700">Cut-off: {s.order_cutoff}</span>}
+                          {s.min_order_amount && <span>Min: ${s.min_order_amount}</span>}
+                          {s.delivery_days && (() => { try { const d = JSON.parse(s.delivery_days); return d.length > 0 ? <span>Delivers: {d.join(', ')}</span> : null; } catch { return null; } })()}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Cheapest items panel */}
+                  {isExpanded && (
                   <div className="border border-t-0 border-primary/20 rounded-b-lg bg-primary/5 px-4 py-3">
                     <p className="text-xs font-semibold text-primary mb-2 uppercase tracking-wider">
                       Cheapest items from {s.name}
@@ -209,9 +226,17 @@ export default function Suppliers() {
                     )}
                   </div>
                 )}
+                </div>
+              );
+            };
+
+            return parentSuppliers.map(parent => (
+              <div key={parent.id} className="flex flex-col gap-2">
+                {renderCard(parent, false)}
+                {getChildren(parent.id).map(child => renderCard(child, true))}
               </div>
-            );
-          })}
+            ));
+          })()}
         </div>
       )}
 
@@ -242,6 +267,20 @@ export default function Suppliers() {
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Order terms, minimums, etc." rows={2} />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Parent Supplier (optional)</Label>
+              <select
+                value={form.parent_supplier_id ?? ""}
+                onChange={e => setForm({ ...form, parent_supplier_id: e.target.value ? Number(e.target.value) : null } as any)}
+                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#256984]"
+              >
+                <option value="">— None (top-level supplier) —</option>
+                {(suppliers ?? []).filter((s: Supplier) => !s.parent_supplier_id && s.id !== editing?.id).map((s: Supplier) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">Assign this supplier under a parent (e.g. "Markets")</p>
             </div>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-1">Ordering Details</p>
 

@@ -20,6 +20,7 @@ interface Supplier {
   id: number; name: string; contact_name?: string; email?: string; phone?: string;
   how_to_order?: string; order_contact?: string; order_cutoff?: string;
   min_order_amount?: number; delivery_days?: string; notes?: string;
+  parent_supplier_id?: number | null;
 }
 interface IngredientRaw {
   id: number; name: string; category?: string; unit?: string;
@@ -138,9 +139,17 @@ function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate }: {
     onError: (e: any) => toast({ description: e.message, variant: "destructive" }),
   });
 
+  // For supplier ordering: only show top-level (parent) suppliers + standalone suppliers
+  // Child suppliers are automatically included when parent is selected
+  const childSupplierIds = new Set(suppliers.filter(s => s.parent_supplier_id).map(s => s.parent_supplier_id));
+  const topLevelSuppliers = suppliers.filter(s => !s.parent_supplier_id);
+
   const options = orderType === "supplier"
-    ? suppliers.map(s => ({ key: String(s.id), label: s.name }))
-    : categories.map(c => ({ key: c, label: c }));
+    ? topLevelSuppliers.map(s => {
+        const children = suppliers.filter(c => c.parent_supplier_id === s.id);
+        return { key: String(s.id), label: s.name, childCount: children.length };
+      })
+    : categories.map(c => ({ key: c, label: c, childCount: 0 }));
 
   const toggle = (key: string) =>
     setSelectedKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
@@ -193,7 +202,13 @@ function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate }: {
                     style={selectedKeys.includes(opt.key) ? { background: BRAND, borderColor: BRAND } : { borderColor: "#D1D5DB" }}>
                     {selectedKeys.includes(opt.key) && <Check size={10} className="text-white" />}
                   </div>
-                  {opt.label}
+                  <span className="flex-1">{opt.label}</span>
+                  {(opt as any).childCount > 0 && (
+                    <span className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+                      style={{ background: selectedKeys.includes(opt.key) ? `${BRAND}30` : "#F3F4F6", color: selectedKeys.includes(opt.key) ? BRAND : "#6B7280" }}>
+                      {(opt as any).childCount} vendor{(opt as any).childCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -230,16 +245,26 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
     staleTime: 60000,
   });
 
-  // Build a set of ingredient IDs linked to each selected supplier
+  // Expand selected supplier keys to include child suppliers automatically
+  const { data: allSuppliers = [] } = useQuery<Supplier[]>({
+    queryKey: ["/api/suppliers"],
+    queryFn: () => apiRequest("GET", "/api/suppliers").then(r => r.json()),
+    staleTime: 300000,
+  });
+  const expandedSupplierIds = new Set<string>(typeKeys);
+  for (const key of typeKeys) {
+    const children = allSuppliers.filter(s => String(s.parent_supplier_id) === key);
+    children.forEach(c => expandedSupplierIds.add(String(c.id)));
+  }
+
+  // Build a set of ingredient IDs linked to each selected supplier (including children)
   const supplierIngredientIds = new Set(
     allSupplierIngs
-      .filter(si => typeKeys.includes(String(si.supplier_id)))
+      .filter(si => expandedSupplierIds.has(String(si.supplier_id)))
       .map(si => si.ingredient_id)
   );
 
   // Filter ingredients by order scope
-  // For supplier orders: any ingredient that has a supplier_ingredient record for the selected supplier(s)
-  // For category orders: filter by ingredient category
   const scopedIngredients = ingredients.filter(ing => {
     if (order.order_type === "supplier") {
       return supplierIngredientIds.has(ing.id);
@@ -247,15 +272,14 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
     return typeKeys.includes(ing.category || "General");
   });
 
-  // Group by supplier (the preferred/best supplier for that ingredient from the selected ones) or category
+  // Group by the actual supplier (child or standalone) — not the parent
   const groups: Record<string, IngredientRaw[]> = {};
   for (const ing of scopedIngredients) {
     let key: string;
     if (order.order_type === "supplier") {
-      // Find which of the selected suppliers has a link to this ingredient (prefer is_preferred, else first match)
-      const linkedSIs = allSupplierIngs.filter(si => si.ingredient_id === ing.id && typeKeys.includes(String(si.supplier_id)));
+      const linkedSIs = allSupplierIngs.filter(si => si.ingredient_id === ing.id && expandedSupplierIds.has(String(si.supplier_id)));
       const preferred = linkedSIs.find(si => si.is_preferred) || linkedSIs[0];
-      key = preferred ? String(preferred.supplier_id) : typeKeys[0];
+      key = preferred ? String(preferred.supplier_id) : [...expandedSupplierIds][0];
     } else {
       key = ing.category || "General";
     }
@@ -373,7 +397,7 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
       const qty = parseFloat(qtys[ing.id] || "0");
       if (qty <= 0) continue;
       const sid = String(ing.best_supplier_id || "0");
-      const sup = suppliers.find(s => String(s.id) === sid);
+      const sup = allSuppliers.find(s => String(s.id) === sid) || suppliers.find(s => String(s.id) === sid);
       if (!sup) continue;
       if (!supplierGroups[sid]) supplierGroups[sid] = { supplier: sup, items: [] };
       const si = getSI(ing.id);
@@ -496,7 +520,7 @@ function OrderTableView({ order, suppliers, ingredients, parLevels, onBack, onPl
 
       {Object.entries(groups).map(([key, ings]) => {
         const groupLabel = order.order_type === "supplier"
-          ? (suppliers.find(s => String(s.id) === key)?.name || "Unknown Supplier")
+          ? (allSuppliers.find(s => String(s.id) === key)?.name || suppliers.find(s => String(s.id) === key)?.name || "Unknown Supplier")
           : key;
         const suppId = order.order_type === "supplier" ? Number(key) : undefined;
         const color = suppId ? supplierColor(suppId) : BRAND;
