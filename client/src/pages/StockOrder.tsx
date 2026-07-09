@@ -271,11 +271,13 @@ function CbdOrderForm({ onClose, onCreate }: {
 }
 
 // ─── Place New Order Modal ──────────────────────────────────────────────────────
-function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate }: {
+function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate, onOpenCbdConfig, initialMode }: {
   suppliers: Supplier[]; ingredients: IngredientRaw[];
   onClose: () => void; onCreate: (order: StockOrder) => void;
+  onOpenCbdConfig: () => void;
+  initialMode?: "standard" | "cbd" | null;
 }) {
-  const [orderMode, setOrderMode] = useState<"standard" | "cbd" | null>(null);
+  const [orderMode, setOrderMode] = useState<"standard" | "cbd" | null>(initialMode ?? null);
   const [step, setStep] = useState<"type" | "select">("type");
   const [orderType, setOrderType] = useState<"supplier" | "category">("supplier");
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -362,10 +364,16 @@ function PlaceOrderModal({ suppliers, ingredients, onClose, onCreate }: {
             <button onClick={() => setOrderMode(null)} className="text-white/70 hover:text-white">
               <ArrowLeft size={18} />
             </button>
-            <div>
+            <div className="flex-1">
               <p className="text-xs font-semibold uppercase tracking-widest text-white/70">Internal Order</p>
               <h2 className="text-base font-bold text-white">CBD Additional Stock Order</h2>
             </div>
+            <button
+              onClick={() => { onClose(); onOpenCbdConfig(); }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-semibold transition-colors"
+              title="Configure CBD order items">
+              <Settings size={13} /> Configure
+            </button>
           </div>
           <div className="overflow-y-auto flex-1">
             <CbdOrderForm onClose={onClose} onCreate={onCreate} />
@@ -1241,6 +1249,7 @@ export default function StockOrder() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<"active" | "completed">("active");
   const [showNewOrder, setShowNewOrder] = useState(false);
+  const [showCbdOrder, setShowCbdOrder] = useState(false);
   const [showCbdConfig, setShowCbdConfig] = useState(false);
   const [activeOrder, setActiveOrder] = useState<StockOrder | null>(null);
   const [activeView, setActiveView] = useState<"table" | "receive" | "cbd_detail" | null>(null);
@@ -1332,17 +1341,10 @@ export default function StockOrder() {
           <h1 className="text-xl font-bold">Stock Orders</h1>
           <p className="text-xs text-muted-foreground mt-0.5">{activeOrders.length} in progress</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowCbdConfig(true)} className="gap-1.5 h-10"
-            title="Manage CBD Order Items">
-            <Settings size={14} style={{ color: CBD_COLOR }} />
-            <span className="hidden sm:inline text-xs" style={{ color: CBD_COLOR }}>CBD Items</span>
-          </Button>
-          <Button onClick={() => setShowNewOrder(true)} className="gap-2 font-semibold h-10"
-            style={{ background: BRAND }}>
-            <Plus size={16} /> Place New Order
-          </Button>
-        </div>
+        <Button onClick={() => setShowNewOrder(true)} className="gap-2 font-semibold h-10"
+          style={{ background: BRAND }}>
+          <Plus size={16} /> Place New Order
+        </Button>
       </div>
 
       {/* Tabs */}
@@ -1393,6 +1395,18 @@ export default function StockOrder() {
           suppliers={suppliers} ingredients={ingredients}
           onClose={() => setShowNewOrder(false)}
           onCreate={(order) => { qc.invalidateQueries({ queryKey: ["/api/orders"] }); openOrder(order); }}
+          onOpenCbdConfig={() => { setShowNewOrder(false); setShowCbdConfig(true); }}
+        />
+      )}
+
+      {/* CBD order direct modal */}
+      {showCbdOrder && (
+        <PlaceOrderModal
+          suppliers={suppliers} ingredients={ingredients}
+          onClose={() => setShowCbdOrder(false)}
+          onCreate={(order) => { qc.invalidateQueries({ queryKey: ["/api/orders"] }); openOrder(order); }}
+          onOpenCbdConfig={() => { setShowCbdOrder(false); setShowCbdConfig(true); }}
+          initialMode="cbd"
         />
       )}
 
