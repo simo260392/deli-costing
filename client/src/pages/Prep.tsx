@@ -1453,6 +1453,29 @@ export default function Prep() {
   });
   const missingItems = missingItemsData?.items ?? [];
 
+  // CBD internal orders
+  interface CbdOrderItem { config_item_id: number; item_name: string; base_unit: string; qty_ordered: number; item_type: string; }
+  interface CbdTick { id: number; order_id: number; config_item_id: number; ticked: boolean; ticked_by?: string | null; ticked_at?: string | null; }
+  interface CbdOrder { id: number; name: string; order_type: string; status: string; placed_at?: string; notes?: string; cbd_items: CbdOrderItem[]; ticks: CbdTick[]; }
+  const { data: cbdOrders = [], refetch: refetchCbdOrders } = useQuery<CbdOrder[]>({
+    queryKey: ["/api/orders/cbd/active"],
+    queryFn: () => apiRequest("GET", "/api/orders/cbd/active").then(r => r.json()),
+    refetchInterval: 30000,
+    enabled: tab === "orders",
+  });
+
+  const tickCbdItem = async (orderId: number, configItemId: number, ticked: boolean) => {
+    await apiRequest("PATCH", `/api/orders/cbd/${orderId}/tick`, { config_item_id: configItemId, ticked });
+    qc.invalidateQueries({ queryKey: ["/api/orders/cbd/active"] });
+  };
+
+  const completeCbdOrder = async (orderId: number) => {
+    await apiRequest("PATCH", `/api/orders/cbd/${orderId}/complete`, {});
+    qc.invalidateQueries({ queryKey: ["/api/orders/cbd/active"] });
+    qc.invalidateQueries({ queryKey: ["/api/orders"] });
+    toast({ title: "CBD order packed", description: "Order marked as complete" });
+  };
+
   // Flex orders state
   const [flexOrders, setFlexOrders] = useState<FlexOrder[]>([]);
   const [fetchingOrders, setFetchingOrders] = useState(false);
@@ -2397,8 +2420,90 @@ export default function Prep() {
             </>
           )}
 
+          {/* CBD Internal Orders — always shown at bottom of orders tab */}
+          {cbdOrders.length > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="h-px flex-1" style={{ background: "#5AB693" }} />
+                <span className="text-xs font-bold uppercase tracking-widest px-2" style={{ color: "#5AB693" }}>CBD Additional Stock Orders</span>
+                <div className="h-px flex-1" style={{ background: "#5AB693" }} />
+              </div>
+              <div className="space-y-3">
+                {cbdOrders.map((order) => {
+                  const allTicked = order.cbd_items.length > 0 &&
+                    order.cbd_items.every(it => order.ticks.find(t => t.config_item_id === it.config_item_id)?.ticked);
+                  const tickedCount = order.ticks.filter(t => t.ticked).length;
+                  return (
+                    <div key={order.id}
+                      className="rounded-xl border overflow-hidden"
+                      style={{ borderColor: allTicked ? "#5AB693" : "#A7E0C8" }}>
+                      {/* Header */}
+                      <div className="px-4 py-3 flex items-center justify-between"
+                        style={{ background: allTicked ? "#EBF9F3" : "#F0FAF5", borderBottom: "1px solid #D1F5E5" }}>
+                        <div className="flex items-center gap-2">
+                          <Store size={15} style={{ color: "#5AB693" }} />
+                          <div>
+                            <p className="text-sm font-bold" style={{ color: "#1B6B45" }}>{order.name}</p>
+                            <p className="text-xs" style={{ color: "#5AB693" }}>
+                              {tickedCount}/{order.cbd_items.length} items packed
+                              {order.placed_at && ` · Ordered ${new Date(order.placed_at).toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit", hour12: false })}`}
+                            </p>
+                          </div>
+                        </div>
+                        {allTicked && (
+                          <button
+                            onClick={() => completeCbdOrder(order.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white"
+                            style={{ background: "#5AB693" }}>
+                            <CheckCircle2 size={13} /> Mark Complete
+                          </button>
+                        )}
+                      </div>
+                      {/* Item list */}
+                      <div className="divide-y divide-[#E8F8F1]">
+                        {order.cbd_items.map((item) => {
+                          const tick = order.ticks.find(t => t.config_item_id === item.config_item_id);
+                          const isTicked = !!tick?.ticked;
+                          return (
+                            <button
+                              key={item.config_item_id}
+                              onClick={() => tickCbdItem(order.id, item.config_item_id, !isTicked)}
+                              className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
+                              style={isTicked ? { background: "#F0FAF5" } : {}}>
+                              <div
+                                className="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all"
+                                style={isTicked
+                                  ? { background: "#5AB693", borderColor: "#5AB693" }
+                                  : { borderColor: "#9CA3AF" }}>
+                                {isTicked && <Check size={11} className="text-white" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium" style={isTicked ? { color: "#6B7280", textDecoration: "line-through" } : {}}>
+                                  {item.item_name}
+                                </p>
+                                <p className="text-xs text-muted-foreground capitalize">{item.item_type.replace("_", " ")}</p>
+                              </div>
+                              <div className="text-sm font-bold flex-shrink-0" style={{ color: isTicked ? "#9CA3AF" : "#1B6B45" }}>
+                                {item.qty_ordered} <span className="text-xs font-normal">{item.base_unit}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {order.notes && (
+                        <div className="px-4 py-2 border-t bg-amber-50 border-amber-100">
+                          <p className="text-xs text-amber-700"><span className="font-semibold">Note:</span> {order.notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Empty */}
-          {!fetchingOrders && flexOrders.length === 0 && (
+          {!fetchingOrders && flexOrders.length === 0 && cbdOrders.length === 0 && (
             <div className="text-center py-14 text-muted-foreground">
               <ShoppingCart className="mx-auto mb-3 opacity-30" size={44} />
               <p className="font-semibold text-foreground">No orders for {dateLabel}</p>

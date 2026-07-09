@@ -8134,6 +8134,126 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     });
   }));
 
+  // ─── CBD Internal Stock Order ─────────────────────────────────────────────────
+
+  // GET /api/cbd-config — list all configured CBD order items
+  app.get('/api/cbd-config', asyncRoute(async (_req: any, res: any) => {
+    const { data, error } = await supabase
+      .from('cbd_stock_order_config')
+      .select('*')
+      .order('sort_order', { ascending: true })
+      .order('item_name', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  }));
+
+  // POST /api/cbd-config — add a new item to the CBD order config
+  app.post('/api/cbd-config', asyncRoute(async (req: any, res: any) => {
+    const { item_type, item_id, item_name, base_unit, sort_order } = req.body;
+    if (!item_type || !item_id || !item_name) return res.status(400).json({ error: 'Missing required fields' });
+    const { data, error } = await supabase
+      .from('cbd_stock_order_config')
+      .insert({ item_type, item_id, item_name, base_unit: base_unit || 'each', sort_order: sort_order || 0 })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/cbd-config/:id — update a config item (base_unit, sort_order, item_name)
+  app.patch('/api/cbd-config/:id', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const updates: any = {};
+    if (req.body.item_name !== undefined) updates.item_name = req.body.item_name;
+    if (req.body.base_unit !== undefined) updates.base_unit = req.body.base_unit;
+    if (req.body.sort_order !== undefined) updates.sort_order = req.body.sort_order;
+    const { data, error } = await supabase.from('cbd_stock_order_config').update(updates).eq('id', id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // DELETE /api/cbd-config/:id
+  app.delete('/api/cbd-config/:id', asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { error } = await supabase.from('cbd_stock_order_config').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  }));
+
+  // POST /api/orders/cbd — create a CBD internal order
+  app.post('/api/orders/cbd', asyncRoute(async (req: any, res: any) => {
+    const { items, notes } = req.body; // items: [{config_item_id, item_name, base_unit, qty_ordered}]
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items are required' });
+    }
+    const today = new Date();
+    const datePart = today.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'Australia/Perth' });
+    const name = `CBD Additional Stock Order — ${datePart}`;
+    const { data: order, error: orderErr } = await supabase
+      .from('stock_orders')
+      .insert({ name, order_type: 'cbd_internal', type_keys: '[]', status: 'placed', placed_at: new Date().toISOString(), notes: notes || null, cbd_items: JSON.stringify(items) })
+      .select()
+      .single();
+    if (orderErr) return res.status(500).json({ error: orderErr.message });
+    // Create tick rows for each item
+    const ticks = items.map((it: any) => ({ order_id: order.id, config_item_id: it.config_item_id, ticked: false }));
+    await supabase.from('cbd_order_item_ticks').insert(ticks);
+    res.json(order);
+  }));
+
+  // GET /api/orders/cbd/active — active CBD internal orders (for Production page)
+  app.get('/api/orders/cbd/active', asyncRoute(async (_req: any, res: any) => {
+    const { data, error } = await supabase
+      .from('stock_orders')
+      .select('*')
+      .eq('order_type', 'cbd_internal')
+      .not('status', 'in', '("received","cancelled")')
+      .order('placed_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    const orders = data || [];
+    // Fetch ticks for each order
+    const orderIds = orders.map((o: any) => o.id);
+    const ticksResult = orderIds.length > 0
+      ? await supabase.from('cbd_order_item_ticks').select('*').in('order_id', orderIds)
+      : { data: [] };
+    const ticksMap: Record<number, any[]> = {};
+    for (const t of ticksResult.data || []) {
+      if (!ticksMap[t.order_id]) ticksMap[t.order_id] = [];
+      ticksMap[t.order_id].push(t);
+    }
+    res.json(orders.map((o: any) => ({
+      ...o,
+      cbd_items: (() => { try { return JSON.parse(o.cbd_items || '[]'); } catch { return []; } })(),
+      ticks: ticksMap[o.id] || [],
+    })));
+  }));
+
+  // PATCH /api/orders/cbd/:id/tick — tick or untick an item (Production side)
+  app.patch('/api/orders/cbd/:id/tick', asyncRoute(async (req: any, res: any) => {
+    const orderId = Number(req.params.id);
+    const { config_item_id, ticked, ticked_by } = req.body;
+    const { data, error } = await supabase
+      .from('cbd_order_item_ticks')
+      .upsert({ order_id: orderId, config_item_id, ticked, ticked_by: ticked_by || null, ticked_at: ticked ? new Date().toISOString() : null }, { onConflict: 'order_id,config_item_id' })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
+  // PATCH /api/orders/cbd/:id/complete — mark CBD order complete
+  app.patch('/api/orders/cbd/:id/complete', asyncRoute(async (req: any, res: any) => {
+    const orderId = Number(req.params.id);
+    const { data, error } = await supabase
+      .from('stock_orders')
+      .update({ status: 'received', received_at: new Date().toISOString(), completed_at: new Date().toISOString() })
+      .eq('id', orderId)
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  }));
+
   // GET /api/suppliers/:id/ordering-info — supplier with all ordering details
   app.get('/api/suppliers/:id/ordering-info', asyncRoute(async (req: any, res: any) => {
     const id = Number(req.params.id);
