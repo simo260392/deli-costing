@@ -62,10 +62,12 @@ interface IngredientHistory { last_ordered: string | null; last_qty: number | nu
 interface CbdConfigItem {
   id: number; item_type: "ingredient" | "sub_recipe" | "recipe";
   item_id: number; item_name: string; base_unit: string; sort_order: number;
+  category: string;
 }
 interface CbdOrderItem {
   config_item_id: number; item_name: string; base_unit: string; qty_ordered: number;
   item_type: "ingredient" | "sub_recipe" | "recipe";
+  category: string;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -209,16 +211,15 @@ function CbdOrderForm({ onClose, onCreate }: {
 
   return (
     <div className="p-5 space-y-4">
-      {(["ingredient", "sub_recipe", "recipe"] as const).map(type => {
-        const items = grouped[type] || [];
+      {sortedCategories.map(cat => {
+        const items = grouped[cat] || [];
         if (items.length === 0) return null;
-        const Icon = ITEM_TYPE_ICONS[type];
         return (
-          <div key={type}>
+          <div key={cat}>
             <div className="flex items-center gap-2 mb-2">
-              <Icon size={14} style={{ color: CBD_COLOR }} />
+              <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: CBD_COLOR }} />
               <span className="text-xs font-bold uppercase tracking-wide" style={{ color: CBD_COLOR }}>
-                {ITEM_TYPE_LABELS[type]}s
+                {cat}
               </span>
             </div>
             <div className="space-y-1.5">
@@ -477,16 +478,21 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
   const [addType, setAddType] = useState<"ingredient" | "sub_recipe" | "recipe">("ingredient");
   const [search, setSearch] = useState("");
   const [baseUnit, setBaseUnit] = useState("each");
+  const [addCategory, setAddCategory] = useState("General");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState("");
   const [editUnit, setEditUnit] = useState("");
+  const [editCategory, setEditCategory] = useState("");
 
   const { data: configItems = [], isLoading } = useQuery<CbdConfigItem[]>({
     queryKey: ["/api/cbd-config"],
     queryFn: () => apiRequest("GET", "/api/cbd-config").then(r => r.json()),
   });
 
-  // Candidates to add based on addType
+  // Group existing items by category
+  const sortedCategories = Array.from(new Set(configItems.map(c => c.category || "General"))).sort();
+
+  // Candidates to add — exclude already-added items of the same type+id
   const existingIds = new Set(configItems.filter(c => c.item_type === addType).map(c => c.item_id));
   const candidates = addType === "ingredient"
     ? ingredients.filter(i => !existingIds.has(i.id) && i.name.toLowerCase().includes(search.toLowerCase()))
@@ -499,6 +505,7 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
       const res = await apiRequest("POST", "/api/cbd-config", {
         item_type: addType, item_id: item.id, item_name: item.name,
         base_unit: baseUnit || item.unit || "each",
+        category: addCategory.trim() || "General",
       });
       if (!res.ok) throw new Error("Failed to add item");
       return res.json();
@@ -512,8 +519,8 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
   });
 
   const editMutation = useMutation({
-    mutationFn: async ({ id, name, unit }: { id: number; name: string; unit: string }) => {
-      const res = await apiRequest("PATCH", `/api/cbd-config/${id}`, { item_name: name, base_unit: unit });
+    mutationFn: async ({ id, name, unit, category }: { id: number; name: string; unit: string; category: string }) => {
+      const res = await apiRequest("PATCH", `/api/cbd-config/${id}`, { item_name: name, base_unit: unit, category: category.trim() || "General" });
       if (!res.ok) throw new Error("Failed to update");
       return res.json();
     },
@@ -544,7 +551,7 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
         </div>
 
         <div className="overflow-y-auto flex-1 p-5 space-y-5">
-          {/* Existing items */}
+          {/* Existing items — grouped by category */}
           <div>
             <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">Current Order List ({configItems.length} items)</p>
             {isLoading ? (
@@ -555,24 +562,28 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
               </div>
             ) : (
               <div className="space-y-1.5">
-                {(["ingredient", "sub_recipe", "recipe"] as const).map(type => {
-                  const typeItems = configItems.filter(c => c.item_type === type);
-                  if (typeItems.length === 0) return null;
-                  const Icon = ITEM_TYPE_ICONS[type];
+                {sortedCategories.map(cat => {
+                  const catItems = configItems.filter(c => (c.category || "General") === cat);
+                  if (catItems.length === 0) return null;
                   return (
-                    <div key={type}>
+                    <div key={cat}>
                       <div className="flex items-center gap-1.5 mb-1 mt-2">
-                        <Icon size={12} style={{ color: CBD_COLOR }} />
-                        <span className="text-xs font-semibold text-muted-foreground uppercase">{ITEM_TYPE_LABELS[type]}s</span>
+                        <Tag size={12} style={{ color: CBD_COLOR }} />
+                        <span className="text-xs font-semibold text-muted-foreground uppercase">{cat}</span>
                       </div>
-                      {typeItems.map(item => (
+                      {catItems.map(item => (
                         <div key={item.id}
                           className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-muted/20">
                           {editingId === item.id ? (
                             <>
-                              <Input value={editName} onChange={e => setEditName(e.target.value)} className="h-7 text-sm flex-1" />
-                              <Input value={editUnit} onChange={e => setEditUnit(e.target.value)} placeholder="unit" className="h-7 text-sm w-20" />
-                              <button onClick={() => editMutation.mutate({ id: item.id, name: editName, unit: editUnit })}
+                              <div className="flex-1 flex flex-col gap-1">
+                                <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Item name" className="h-7 text-sm" />
+                                <div className="flex gap-1">
+                                  <Input value={editUnit} onChange={e => setEditUnit(e.target.value)} placeholder="unit" className="h-7 text-sm w-20" />
+                                  <Input value={editCategory} onChange={e => setEditCategory(e.target.value)} placeholder="category" className="h-7 text-sm flex-1" />
+                                </div>
+                              </div>
+                              <button onClick={() => editMutation.mutate({ id: item.id, name: editName, unit: editUnit, category: editCategory })}
                                 className="text-green-600 hover:text-green-700"><Check size={14} /></button>
                               <button onClick={() => setEditingId(null)} className="text-muted-foreground hover:text-foreground"><X size={14} /></button>
                             </>
@@ -580,7 +591,7 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
                             <>
                               <span className="flex-1 text-sm">{item.item_name}</span>
                               <span className="text-xs text-muted-foreground px-1.5 py-0.5 rounded bg-muted">{item.base_unit}</span>
-                              <button onClick={() => { setEditingId(item.id); setEditName(item.item_name); setEditUnit(item.base_unit); }}
+                              <button onClick={() => { setEditingId(item.id); setEditName(item.item_name); setEditUnit(item.base_unit); setEditCategory(item.category || "General"); }}
                                 className="text-muted-foreground hover:text-foreground p-1"><Pencil size={12} /></button>
                               <button onClick={() => deleteMutation.mutate(item.id)}
                                 className="text-muted-foreground hover:text-red-500 p-1"><Trash2 size={12} /></button>
@@ -612,18 +623,20 @@ function CbdConfigManager({ onClose, ingredients, subRecipes, recipes }: {
               })}
             </div>
 
-            <div className="flex gap-2 mb-2">
-              <div className="relative flex-1">
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div className="relative">
                 <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <Input value={search} onChange={e => setSearch(e.target.value)}
                   placeholder={`Search ${ITEM_TYPE_LABELS[addType]}s…`}
                   className="pl-8 h-9 text-sm" />
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-muted-foreground whitespace-nowrap">Base unit:</span>
-                <Input value={baseUnit} onChange={e => setBaseUnit(e.target.value)}
-                  placeholder="each" className="w-20 h-9 text-sm" />
-              </div>
+              <Input value={addCategory} onChange={e => setAddCategory(e.target.value)}
+                placeholder="Category (e.g. Sauces)" className="h-9 text-sm" />
+            </div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <span className="text-xs text-muted-foreground whitespace-nowrap">Base unit:</span>
+              <Input value={baseUnit} onChange={e => setBaseUnit(e.target.value)}
+                placeholder="each" className="w-24 h-8 text-sm" />
             </div>
 
             <div className="space-y-1 max-h-48 overflow-y-auto">
@@ -677,19 +690,25 @@ function CbdOrderDetailView({ order, onBack }: { order: StockOrder; onBack: () =
           <Store size={14} style={{ color: CBD_COLOR }} />
           <span className="text-sm font-bold" style={{ color: CBD_COLOR }}>CBD → Production Kitchen</span>
         </div>
-        <div className="divide-y">
-          {items.map((it, i) => {
-            const Icon = ITEM_TYPE_ICONS[it.item_type] || Package;
+        <div>
+          {Array.from(new Set(items.map(it => it.category || "General"))).sort().map(cat => {
+            const catItems = items.filter(it => (it.category || "General") === cat);
             return (
-              <div key={i} className="px-4 py-3 flex items-center gap-3">
-                <Icon size={14} className="text-muted-foreground flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">{it.item_name}</p>
-                  <p className="text-xs text-muted-foreground capitalize">{ITEM_TYPE_LABELS[it.item_type]}</p>
+              <div key={cat}>
+                <div className="px-4 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-t">
+                  <Tag size={11} style={{ color: CBD_COLOR }} />
+                  <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: CBD_COLOR }}>{cat}</span>
                 </div>
-                <div className="text-sm font-bold" style={{ color: CBD_COLOR }}>
-                  {it.qty_ordered} <span className="text-xs font-normal text-muted-foreground">{it.base_unit}</span>
-                </div>
+                {catItems.map((it, i) => (
+                  <div key={i} className="px-4 py-3 flex items-center gap-3 border-b last:border-b-0">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">{it.item_name}</p>
+                    </div>
+                    <div className="text-sm font-bold" style={{ color: CBD_COLOR }}>
+                      {it.qty_ordered} <span className="text-xs font-normal text-muted-foreground">{it.base_unit}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             );
           })}

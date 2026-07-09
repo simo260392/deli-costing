@@ -8149,11 +8149,11 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // POST /api/cbd-config — add a new item to the CBD order config
   app.post('/api/cbd-config', asyncRoute(async (req: any, res: any) => {
-    const { item_type, item_id, item_name, base_unit, sort_order } = req.body;
+    const { item_type, item_id, item_name, base_unit, sort_order, category } = req.body;
     if (!item_type || !item_id || !item_name) return res.status(400).json({ error: 'Missing required fields' });
     const { data, error } = await supabase
       .from('cbd_stock_order_config')
-      .insert({ item_type, item_id, item_name, base_unit: base_unit || 'each', sort_order: sort_order || 0 })
+      .insert({ item_type, item_id, item_name, base_unit: base_unit || 'each', sort_order: sort_order || 0, category: category || 'General' })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
@@ -8167,6 +8167,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     if (req.body.item_name !== undefined) updates.item_name = req.body.item_name;
     if (req.body.base_unit !== undefined) updates.base_unit = req.body.base_unit;
     if (req.body.sort_order !== undefined) updates.sort_order = req.body.sort_order;
+    if (req.body.category !== undefined) updates.category = req.body.category;
     const { data, error } = await supabase.from('cbd_stock_order_config').update(updates).eq('id', id).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);

@@ -1454,7 +1454,7 @@ export default function Prep() {
   const missingItems = missingItemsData?.items ?? [];
 
   // CBD internal orders
-  interface CbdOrderItem { config_item_id: number; item_name: string; base_unit: string; qty_ordered: number; item_type: string; }
+  interface CbdOrderItem { config_item_id: number; item_name: string; base_unit: string; qty_ordered: number; item_type: string; category?: string; }
   interface CbdTick { id: number; order_id: number; config_item_id: number; ticked: boolean; ticked_by?: string | null; ticked_at?: string | null; }
   interface CbdOrder { id: number; name: string; order_type: string; status: string; placed_at?: string; notes?: string; cbd_items: CbdOrderItem[]; ticks: CbdTick[]; }
   const { data: cbdOrders = [], refetch: refetchCbdOrders } = useQuery<CbdOrder[]>({
@@ -2459,34 +2459,45 @@ export default function Prep() {
                           </button>
                         )}
                       </div>
-                      {/* Item list */}
-                      <div className="divide-y divide-[#E8F8F1]">
-                        {order.cbd_items.map((item) => {
-                          const tick = order.ticks.find(t => t.config_item_id === item.config_item_id);
-                          const isTicked = !!tick?.ticked;
+                      {/* Item list — grouped by category */}
+                      <div>
+                        {Array.from(new Set(order.cbd_items.map(it => it.category || "General"))).sort().map(cat => {
+                          const catItems = order.cbd_items.filter(it => (it.category || "General") === cat);
                           return (
-                            <button
-                              key={item.config_item_id}
-                              onClick={() => tickCbdItem(order.id, item.config_item_id, !isTicked)}
-                              className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
-                              style={isTicked ? { background: "#F0FAF5" } : {}}>
-                              <div
-                                className="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all"
-                                style={isTicked
-                                  ? { background: "#5AB693", borderColor: "#5AB693" }
-                                  : { borderColor: "#9CA3AF" }}>
-                                {isTicked && <Check size={11} className="text-white" />}
+                            <div key={cat}>
+                              <div className="px-4 py-1 flex items-center gap-1.5 bg-[#EBF9F3] border-y border-[#C6EDD9]">
+                                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#1B6B45" }}>{cat}</span>
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium" style={isTicked ? { color: "#6B7280", textDecoration: "line-through" } : {}}>
-                                  {item.item_name}
-                                </p>
-                                <p className="text-xs text-muted-foreground capitalize">{item.item_type.replace("_", " ")}</p>
+                              <div className="divide-y divide-[#E8F8F1]">
+                                {catItems.map((item) => {
+                                  const tick = order.ticks.find(t => t.config_item_id === item.config_item_id);
+                                  const isTicked = !!tick?.ticked;
+                                  return (
+                                    <button
+                                      key={item.config_item_id}
+                                      onClick={() => tickCbdItem(order.id, item.config_item_id, !isTicked)}
+                                      className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
+                                      style={isTicked ? { background: "#F0FAF5" } : {}}>
+                                      <div
+                                        className="w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all"
+                                        style={isTicked
+                                          ? { background: "#5AB693", borderColor: "#5AB693" }
+                                          : { borderColor: "#9CA3AF" }}>
+                                        {isTicked && <Check size={11} className="text-white" />}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium" style={isTicked ? { color: "#6B7280", textDecoration: "line-through" } : {}}>
+                                          {item.item_name}
+                                        </p>
+                                      </div>
+                                      <div className="text-sm font-bold flex-shrink-0" style={{ color: isTicked ? "#9CA3AF" : "#1B6B45" }}>
+                                        {item.qty_ordered} <span className="text-xs font-normal">{item.base_unit}</span>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
                               </div>
-                              <div className="text-sm font-bold flex-shrink-0" style={{ color: isTicked ? "#9CA3AF" : "#1B6B45" }}>
-                                {item.qty_ordered} <span className="text-xs font-normal">{item.base_unit}</span>
-                              </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
