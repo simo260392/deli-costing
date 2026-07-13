@@ -16,18 +16,35 @@ import { cn } from "@/lib/utils";
 const CATEGORIES = ["Baked Goods / Desserts", "Bread", "Cheese & Dairy", "Coffee", "Drinks", "Dry Goods", "Frozen Goods", "Fruit & Veg", "Kitchen & Cleaning Consumables", "Meat", "Other", "Packaging", "Sauces", "Spices"];
 const UNITS = ["kg", "g", "L", "ml", "each", "pack", "dozen", "bunch", "slice", "sheet"];
 
+// Allergens — matching the app screenshots (Contains X format)
 const ALLERGENS = [
-  { key: "Gluten",     label: "Gluten",      desc: "Wheat, Barley, Rye, Oats" },
-  { key: "Tree Nuts",  label: "Tree Nuts",   desc: "Almond, Cashew, Walnut, etc." },
-  { key: "Dairy",      label: "Dairy",       desc: "Milk, Cheese, Butter, Cream" },
-  { key: "Eggs",       label: "Eggs",        desc: "Eggs, Mayonnaise" },
-  { key: "Peanuts",    label: "Peanuts",     desc: "Peanut Butter, Satay" },
-  { key: "Sesame",     label: "Sesame",      desc: "Tahini, Sesame Oil" },
-  { key: "Soy",        label: "Soy",         desc: "Soy Sauce, Tofu, Miso" },
-  { key: "Fish",       label: "Fish",        desc: "Any fish species, Fish Sauce" },
-  { key: "Sulphites",  label: "Sulphites",   desc: "Wine, Vinegar, Dried Fruit" },
-  { key: "Crustacea",  label: "Crustacea",   desc: "Prawns, Crab, Lobster" },
-  { key: "Molluscs",   label: "Molluscs",    desc: "Squid, Mussels, Oysters" },
+  { key: "Contains Nuts",      label: "Contains Nuts",      abbr: "CN", color: "#8D6E63" },
+  { key: "Contains Dairy",     label: "Contains Dairy",     abbr: "CD", color: "#90CAF9" },
+  { key: "Contains Eggs",      label: "Contains Eggs",      abbr: "CE", color: "#FDD835" },
+  { key: "Contains Seafood",   label: "Contains Seafood",   abbr: "CS", color: "#42A5F5" },
+  { key: "Contains Gluten",    label: "Contains Gluten",    abbr: "CG", color: "#8D6E63" },
+  { key: "Contains Seeds",     label: "Contains Seeds",     abbr: "CX", color: "#FFD54F" },
+  { key: "Contains Soya",      label: "Contains Soya",      abbr: "CY", color: "#AED581" },
+  { key: "Contains Sulphites", label: "Contains Sulphites", abbr: "CU", color: "#78909C" },
+];
+
+// Dietary Requirements — matching the app screenshots
+const DIETARIES = [
+  { key: "Vegetarian",         label: "Vegetarian",         abbr: "V",  color: "#4CAF50" },
+  { key: "Vegan",              label: "Vegan",              abbr: "VG", color: "#2E7D32" },
+  { key: "Keto",               label: "Keto",               abbr: "KO", color: "#E53935" },
+  { key: "Pescatarian",        label: "Pescatarian",        abbr: "PS", color: "#26C6DA" },
+  { key: "Halal",              label: "Halal",              abbr: "H",  color: "#64B5F6" },
+  { key: "Kosher",             label: "Kosher",             abbr: "K",  color: "#FFB74D" },
+  { key: "Paleo",              label: "Paleo",              abbr: "P",  color: "#81C784" },
+  { key: "High Protein",       label: "High Protein",       abbr: "HP", color: "#1B5E20" },
+  { key: "Low Carb",           label: "Low Carb",           abbr: "LC", color: "#A5D6A7" },
+  { key: "Dairy Free",         label: "Dairy Free",         abbr: "DF", color: "#F48FB1" },
+  { key: "Egg Free",           label: "Egg Free",           abbr: "EF", color: "#FDD835" },
+  { key: "Gluten Free",        label: "Gluten Free",        abbr: "GF", color: "#616161" },
+  { key: "Lactose Free",       label: "Lactose Free",       abbr: "LF", color: "#283593" },
+  { key: "Nut Free",           label: "Nut Free",           abbr: "NF", color: "#BDBDBD" },
+  { key: "Refined Sugar Free", label: "Refined Sugar Free", abbr: "RF", color: "#CE93D8" },
 ];
 
 type Ingredient = {
@@ -35,6 +52,7 @@ type Ingredient = {
   bestCostPerUnit: number; bestSupplierId?: number; bestSupplierName?: string;
   avgWeightPerUnit?: number | null; notes?: string;
   dietariesJson?: string;
+  allergensJson?: string;
   pealLabel?: string;
   barcode?: string;
   shelfLife?: string;
@@ -48,7 +66,7 @@ type SupplierPrice = {
   supplier_sku?: string; supplier_ingredient_name?: string; unit_size_qty?: number; unit_size_unit?: string; is_preferred?: boolean; has_gst?: boolean;
 };
 
-const emptyIng = { name: "", category: "Bread", unit: "kg", bestCostPerUnit: "", avgWeightPerUnit: "", notes: "", dietariesJson: "[]", pealLabel: "", brandName: "", barcode: "", shelfLife: "", storageTemp: "", categoriesJson: "[]" };
+const emptyIng = { name: "", category: "Bread", unit: "kg", bestCostPerUnit: "", avgWeightPerUnit: "", notes: "", dietariesJson: "[]", allergensJson: "[]", pealLabel: "", brandName: "", barcode: "", shelfLife: "", storageTemp: "", categoriesJson: "[]" };
 
 export default function Ingredients() {
   const { toast } = useToast();
@@ -204,11 +222,20 @@ export default function Ingredients() {
   const getDietaries = (ing: Ingredient): string[] => {
     try { return JSON.parse(ing.dietariesJson || "[]"); } catch { return []; }
   };
+  const getAllergens = (ing: Ingredient): string[] => {
+    try { return JSON.parse(ing.allergensJson || "[]"); } catch { return []; }
+  };
   const formDietaries: string[] = (() => { try { return JSON.parse(form.dietariesJson || "[]"); } catch { return []; } })();
+  const formAllergens: string[] = (() => { try { return JSON.parse(form.allergensJson || "[]"); } catch { return []; } })();
   const toggleDietary = (key: string) => {
     const current = formDietaries;
     const next = current.includes(key) ? current.filter((k) => k !== key) : [...current, key];
     setForm({ ...form, dietariesJson: JSON.stringify(next) });
+  };
+  const toggleAllergen = (key: string) => {
+    const current = formAllergens;
+    const next = current.includes(key) ? current.filter((k) => k !== key) : [...current, key];
+    setForm({ ...form, allergensJson: JSON.stringify(next) });
   };
 
   const autoFillDietaries = async () => {
@@ -414,11 +441,22 @@ export default function Ingredients() {
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <div className="flex flex-col gap-1">
                         <span>{ing.bestSupplierName || "—"}</span>
-                        {getDietaries(ing).length > 0 && (
+                        {(getAllergens(ing).length > 0 || getDietaries(ing).length > 0) && (
                           <div className="flex flex-wrap gap-1">
-                            {getDietaries(ing).map((a) => (
-                              <span key={a} className="inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-pink-100 text-pink-700 font-medium border border-pink-200">{a}</span>
-                            ))}
+                            {getAllergens(ing).map((key) => {
+                              const a = ALLERGENS.find(x => x.key === key);
+                              if (!a) return <span key={key} className="inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{key}</span>;
+                              return (
+                                <span key={key} className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ backgroundColor: a.color, width: 20, height: 20, minWidth: 20 }} title={a.label}>{a.abbr}</span>
+                              );
+                            })}
+                            {getDietaries(ing).map((key) => {
+                              const d = DIETARIES.find(x => x.key === key);
+                              if (!d) return <span key={key} className="inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-pink-100 text-pink-700 font-medium">{key}</span>;
+                              return (
+                                <span key={key} className="inline-flex items-center justify-center rounded-full text-[10px] font-bold" style={{ backgroundColor: d.color, color: ['#FDD835','#FFD54F','#A5D6A7','#AED581','#BDBDBD','#CE93D8','#F48FB1'].includes(d.color) ? '#1a1a1a' : '#fff', width: 20, height: 20, minWidth: 20 }} title={d.label}>{d.abbr}</span>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -431,7 +469,7 @@ export default function Ingredients() {
                           Prices
                         </Button>
                         <Button variant="ghost" size="icon" className="h-7 w-7"
-                          onClick={() => { setEditing(ing); setForm({ ...ing, bestCostPerUnit: String(ing.bestCostPerUnit), avgWeightPerUnit: ing.avgWeightPerUnit != null ? String(ing.avgWeightPerUnit / 1000) : "", dietariesJson: ing.dietariesJson || "[]", pealLabel: ing.pealLabel || "", brandName: (ing as any).brandName || "", barcode: ing.barcode || "", shelfLife: ing.shelfLife || "", storageTemp: ing.storageTemp || "", categoriesJson: ing.categoriesJson || "[]" }); setOpen(true); }}
+                          onClick={() => { setEditing(ing); setForm({ ...ing, bestCostPerUnit: String(ing.bestCostPerUnit), avgWeightPerUnit: ing.avgWeightPerUnit != null ? String(ing.avgWeightPerUnit / 1000) : "", dietariesJson: ing.dietariesJson || "[]", allergensJson: ing.allergensJson || "[]", pealLabel: ing.pealLabel || "", brandName: (ing as any).brandName || "", barcode: ing.barcode || "", shelfLife: ing.shelfLife || "", storageTemp: ing.storageTemp || "", categoriesJson: ing.categoriesJson || "[]" }); setOpen(true); }}
                           data-testid={`button-edit-ingredient-${ing.id}`}>
                           <Pencil size={13} />
                         </Button>
@@ -580,25 +618,57 @@ export default function Ingredients() {
               <>
             {/* Dietaries section */}
             <div className="space-y-2">
+              {/* Allergens section */}
               <div className="flex items-center justify-between">
-                <Label className="text-sm font-semibold">Allergens / Dietaries</Label>
+                <Label className="text-sm font-semibold">Allergens</Label>
                 {editing && (
                   <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={autoFillDietaries} disabled={autoFilling} data-testid="button-ai-fill-dietaries">
                     <Sparkles size={12} />{autoFilling ? "Filling…" : "AI Fill"}
                   </Button>
                 )}
               </div>
-              <div className="grid grid-cols-3 gap-x-4 gap-y-2">
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
                 {ALLERGENS.map((a) => (
                   <label key={a.key} className="flex items-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
-                      checked={formDietaries.includes(a.key)}
-                      onChange={() => toggleDietary(a.key)}
-                      data-testid={`checkbox-dietary-${a.key.toLowerCase().replace(/\s+/g, '-')}`}
+                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer flex-shrink-0"
+                      checked={formAllergens.includes(a.key)}
+                      onChange={() => toggleAllergen(a.key)}
+                      data-testid={`checkbox-allergen-${a.key.toLowerCase().replace(/\s+/g, '-')}`}
                     />
+                    <span
+                      className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white flex-shrink-0"
+                      style={{ backgroundColor: a.color, width: 22, height: 22, minWidth: 22 }}
+                    >{a.abbr}</span>
                     <span className="text-xs">{a.label}</span>
+                  </label>
+                ))}
+              </div>
+
+              {/* Dietary Requirements section */}
+              <div className="flex items-center justify-between pt-1">
+                <Label className="text-sm font-semibold">Dietary Requirements</Label>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
+                {DIETARIES.map((d) => (
+                  <label key={d.key} className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer flex-shrink-0"
+                      checked={formDietaries.includes(d.key)}
+                      onChange={() => toggleDietary(d.key)}
+                      data-testid={`checkbox-dietary-${d.key.toLowerCase().replace(/\s+/g, '-')}`}
+                    />
+                    <span
+                      className="inline-flex items-center justify-center rounded-full text-[10px] font-bold flex-shrink-0"
+                      style={{
+                        backgroundColor: d.color,
+                        color: ['#FDD835','#FFD54F','#A5D6A7','#AED581','#BDBDBD','#CE93D8','#F48FB1'].includes(d.color) ? '#1a1a1a' : '#fff',
+                        width: 22, height: 22, minWidth: 22
+                      }}
+                    >{d.abbr}</span>
+                    <span className="text-xs">{d.label}</span>
                   </label>
                 ))}
               </div>

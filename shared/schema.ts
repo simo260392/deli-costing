@@ -29,7 +29,8 @@ export const ingredients = sqliteTable("ingredients", {
   bestSupplierId: integer("best_supplier_id"),
   avgWeightPerUnit: real("avg_weight_per_unit"),
   notes: text("notes"),
-  dietariesJson: text("dietaries_json").default("[]"), // string[] of allergen keys
+  dietariesJson: text("dietaries_json").default("[]"), // string[] of dietary requirement keys (Vegetarian, Vegan, etc.)
+  allergensJson: text("allergens_json").default("[]"),   // string[] of allergen keys (Contains Nuts, Contains Dairy, etc.)
   pealLabel: text("peal_label").default(""), // PEAL ingredient description e.g. "Cheddar cheese (Milk)"
   // Nutrition per 100g/100ml (FSANZ mandatory 7): energy(kJ), protein(g), fatTotal(g), fatSat(g), carbs(g), sugars(g), sodium(mg)
   nutritionJson: text("nutrition_json").default(""), // JSON: {energy,protein,fatTotal,fatSat,carbs,sugars,sodium} or null

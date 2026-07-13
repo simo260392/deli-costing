@@ -201,7 +201,7 @@ export const storage: IStorage = {
   },
   updateIngredient: async (id, data) => {
     // Strip computed/joined fields that are not actual columns
-    const VALID_COLUMNS = new Set(["name","category","unit","best_cost_per_unit","best_supplier_id","notes","avg_weight_per_unit","dietaries_json","peal_label","brand_name","nutrition_json","barcode","shelf_life","storage_temp","categories_json"]);
+    const VALID_COLUMNS = new Set(["name","category","unit","best_cost_per_unit","best_supplier_id","notes","avg_weight_per_unit","dietaries_json","allergens_json","peal_label","brand_name","nutrition_json","barcode","shelf_life","storage_temp","categories_json"]);
     const snaked = toSnake(data as any);
     const filtered: any = {};
     for (const key of Object.keys(snaked)) {
