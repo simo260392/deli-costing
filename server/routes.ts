@@ -3767,6 +3767,117 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const originalName = (req.file.originalname || req.file.filename || "invoice");
       const uploadedPath = req.file.path;
 
+      // ── Image receipt: use Node.js Claude vision directly (Railway has no PIL/anthropic Python) ──
+      const isImageUpload = /\.(jpg|jpeg|png|gif|webp|tiff?|bmp)$/i.test(originalName);
+      if (isImageUpload && anthropic) {
+        const imgBuffer = fs.readFileSync(uploadedPath);
+        const mediaType = /\.png$/i.test(originalName) ? "image/png"
+          : /\.webp$/i.test(originalName) ? "image/webp"
+          : /\.gif$/i.test(originalName) ? "image/gif"
+          : "image/jpeg";
+        const imgB64 = imgBuffer.toString("base64");
+        // Extract supplier, date, total, and line items from the photo
+        const visionPrompt = `You are parsing a supplier receipt or invoice photo for an Australian catering business.
+Extract the following from this image and return ONLY valid JSON (no other text):
+{
+  "supplierName": "supplier company name (string or null)",
+  "invoiceDate": "date in YYYY-MM-DD format (string or null)",
+  "invoiceNumber": "invoice/receipt number (string or null)",
+  "totalAmount": total amount paid as a number (not string, null if unclear),
+  "lineItems": [
+    {
+      "description": "product name",
+      "quantity": number,
+      "unitPrice": price per unit as number,
+      "lineTotal": total for this line as number,
+      "unit": "each/kg/L/pack/etc"
+    }
+  ]
+}
+RULES:
+- For "Item x 4 ($14.00 each) $56.00": description="Item", quantity=4, unitPrice=14.00, lineTotal=56.00
+- For "Item $14.00": description="Item", quantity=1, unitPrice=14.00, lineTotal=14.00
+- Ignore subtotal, surcharge, GST, total, and payment lines
+- Include ALL product lines
+- totalAmount is the final total including surcharges/GST`;
+        try {
+          const visionMsg = await anthropic.messages.create({
+            model: "claude-haiku-4-5",
+            max_tokens: 2000,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: mediaType, data: imgB64 } },
+                { type: "text", text: visionPrompt }
+              ]
+            }]
+          });
+          const raw = (visionMsg.content[0] as any)?.text?.trim() || "";
+          const jsonStart = raw.indexOf("{"); const jsonEnd = raw.lastIndexOf("}");
+          if (jsonStart !== -1 && jsonEnd !== -1) {
+            const visionParsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+            // Normalise and fall through to existing import logic below
+            const parsed: any = {
+              supplierName: visionParsed.supplierName || null,
+              invoiceNumber: visionParsed.invoiceNumber || null,
+              invoiceDate: visionParsed.invoiceDate || null,
+              totalAmount: visionParsed.totalAmount || null,
+              lineItems: (visionParsed.lineItems || []).map((i: any) => ({
+                description: String(i.description || "").trim(),
+                quantity: parseFloat(i.quantity) || 1,
+                unitPrice: parseFloat(i.unitPrice) || 0,
+                lineTotal: parseFloat(i.lineTotal) || 0,
+                unit: String(i.unit || "each").toLowerCase(),
+              })).filter((i: any) => i.description),
+              error: null,
+            };
+            // Use filename for supplier/date/total fallbacks (same as Python parser)
+            const fnMatch = originalName.match(/^([^_]+?)_?(\d{4}-\d{2}-\d{2})?_?([\d.]+)?\.(jpg|jpeg|png|gif|webp)$/i);
+            if (!parsed.supplierName && fnMatch) parsed.supplierName = fnMatch[1].replace(/-/g, " ");
+            if (!parsed.invoiceDate && fnMatch?.[2]) parsed.invoiceDate = fnMatch[2];
+            if (!parsed.totalAmount && fnMatch?.[3]) parsed.totalAmount = parseFloat(fnMatch[3]);
+            // Save image file with .jpg extension for display
+            const fakeId = `manual_${Date.now()}_${req.file.size}`;
+            const invoiceId = `drive_${fakeId}`;
+            const destExt = /\.png$/i.test(originalName) ? ".png" : ".jpg";
+            const destPath = path.join(PDF_CACHE_DIR, `${invoiceId}${destExt}`);
+            try { fs.renameSync(uploadedPath, destPath); } catch { fs.copyFileSync(uploadedPath, destPath); fs.unlinkSync(uploadedPath); }
+            const cleanName = originalName.replace(/\.(jpg|jpeg|png|gif|webp|tiff?|bmp)$/i, "");
+            const allSuppliers = await storage.getSuppliers();
+            let supplierId: number | null = null;
+            if (parsed.supplierName) {
+              const parsedLower = parsed.supplierName.toLowerCase();
+              let match = allSuppliers.find((s: any) => s.name.toLowerCase() === parsedLower);
+              if (!match) match = allSuppliers.find((s: any) => parsedLower.includes(s.name.toLowerCase()) || s.name.toLowerCase().includes(parsedLower));
+              if (match) supplierId = match.id;
+            }
+            const lineItemsCreated = parsed.lineItems?.length || 0;
+            const imported = await storage.createXeroImport({
+              file_id: invoiceId, file_name: cleanName,
+              supplier_id: supplierId, supplier_name: parsed.supplierName || cleanName,
+              invoice_number: parsed.invoiceNumber || null,
+              invoice_date: parsed.invoiceDate || null,
+              total_amount: parsed.totalAmount || null,
+              status: "pending", raw_data: {},
+            });
+            if (parsed.lineItems?.length) {
+              for (const item of parsed.lineItems) {
+                await storage.createXeroLineItem({
+                  import_id: imported.id, description: item.description,
+                  quantity: item.quantity, unit_price: item.unitPrice,
+                  line_total: item.lineTotal, unit: item.unit,
+                  account_code: null, matched_ingredient_id: null,
+                });
+              }
+            }
+            return res.json({ success: true, importId: imported.id, supplierName: parsed.supplierName, invoiceNumber: parsed.invoiceNumber, invoiceDate: parsed.invoiceDate, totalAmount: parsed.totalAmount, lineItemsCreated, parseWarning: null });
+          }
+        } catch (visionErr: any) {
+          console.error("[drive/upload] vision error for image:", visionErr.message);
+          // Fall through to Python parser below
+        }
+      }
+
       // Run Python parser — it handles PDF and images, always returns valid JSON
       const { execFile } = await import("child_process");
       const parsePath = path.join(__dirname, "parse_invoice.py");
