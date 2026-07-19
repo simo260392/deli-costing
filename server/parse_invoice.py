@@ -2423,17 +2423,32 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
                         price = round(total / qty, 4)
                     if desc and qty:
                         _acc_items.append({'description': desc, 'quantity': qty, 'unitPrice': price, 'lineTotal': total, 'unit': 'each'})
-        # Fallback: raw text regex if table parse failed
+        # Fallback: raw text regex if table parse failed (pdftotext layout format)
+        # Format: CODE   DESCRIPTION   Today  Adjust  Return  QtyChg   Price   TOTAL
         if not _acc_items:
-            _acc_re = re.compile(r'^([A-Z0-9]+)\s+(.+?)\s+(\d+)\s+\d+\s+\d+\s+(\d+)\s+([\d.]+)\s+([\d.]+)$')
-            for raw_line in raw_lines:
+            _acc_re = re.compile(
+                r'^([A-Z0-9]+)'
+                r'\s+'
+                r'(.+?)'
+                r'\s{2,}'
+                r'\d+\s+'      # Today qty
+                r'\d+\s+'      # Adjust
+                r'\d+\s+'      # Return
+                r'(\d+)'       # Qty Chg (delivered)
+                r'\s+'
+                r'([\d]+\.[\d]+)'  # Price
+                r'\s+'
+                r'([\d]+\.[\d]+)'  # Total
+                r'\s*$'
+            )
+            for raw_line in full_text.split('\n'):
                 m = _acc_re.match(raw_line.strip())
                 if m:
                     desc = m.group(2).strip()
-                    qty = clean_num(m.group(4))
-                    price = clean_num(m.group(5))
-                    total = clean_num(m.group(6))
-                    if desc and qty:
+                    qty = clean_num(m.group(3))
+                    price = clean_num(m.group(4))
+                    total = clean_num(m.group(5))
+                    if desc and qty and not re.search(r'Total Nett|Freight|Customer Message|Notes|Normal Office', desc, re.IGNORECASE):
                         _acc_items.append({'description': desc, 'quantity': qty, 'unitPrice': price, 'lineTotal': total, 'unit': 'each'})
         if _acc_items:
             line_items = _acc_items
@@ -2443,8 +2458,34 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     if is_be_foods:
         if not supplier_name or re.match(r'^(TAX[\s\-]?INVOICE|INVOICE)', supplier_name or '', re.IGNORECASE):
             supplier_name = "B&E Foods Perth Pty Ltd"
-        # Always use B&E-specific parser — earlier generic strategies misparse this format
+        # Use B&E-specific table parser first; fall back to text regex on Railway (no pdfplumber)
         be_items = extract_be_foods_format(all_tables)
+        if not be_items:
+            # pdftotext format: ItemCode  Description  Ordered  Shipped  UOM  ShipDoc+UOM  $Price  $GST  $LineTotal
+            _be_re = re.compile(
+                r'^(\d{4,8})'
+                r'\s+'
+                r'(.+?)'
+                r'\s{2,}'
+                r'[\d.]+\s+'           # ordered qty
+                r'([\d.]+)\s+'         # shipped qty
+                r'([A-Z]+)\s+'         # UOM
+                r'[\d.]+\s+[A-Z]+\s+' # ship doc + unit uom
+                r'\$([\d.]+)'          # item price
+                r'\s+\$[\d.]+\s+'      # GST
+                r'\$([\d,]+\.[\d]+)'   # line total
+                r'\s*$'
+            )
+            for raw_line in full_text.split('\n'):
+                m = _be_re.match(raw_line.strip())
+                if m:
+                    desc = m.group(2).strip()
+                    qty = clean_num(m.group(3))   # use shipped qty
+                    uom = m.group(4).strip()
+                    price = clean_num(m.group(5))
+                    total = clean_num(m.group(6))
+                    if desc and qty and not re.search(r'^(Dear|Total|GST|Please|Note)', desc, re.IGNORECASE):
+                        be_items.append({'description': desc, 'quantity': qty, 'unitPrice': price, 'lineTotal': total, 'unit': uom.lower()})
         if be_items:
             line_items = be_items
 
