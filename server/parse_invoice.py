@@ -2657,13 +2657,13 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         r'\s+'
         r'(\d+(?:\.\d+)?)'
         r'\s+'
-        r'(GST|FRE)\s*$',
+        r'(GST|FRE|N-T|NT)\s*$',
         re.IGNORECASE
     )
     _is_qty_first = (
         'littlehomebakery' in full_text.lower()
         or 'little home bakery' in full_text.lower()
-        or bool(re.search(r'^\d+\s+.+?\s{2,}[A-Z0-9]{2,8}\s+\d+\.\d+\s+\d+%\s+\d+\.\d+\s+(GST|FRE)', full_text, re.MULTILINE | re.IGNORECASE))
+        or bool(re.search(r'^\d+\s+.+?\s{2,}[A-Z0-9]{2,8}\s+\d+\.\d+\s+\d+%\s+\d+\.\d+\s+(GST|FRE|N-T|NT)', full_text, re.MULTILINE | re.IGNORECASE))
     )
     if not line_items and _is_qty_first:
         _lhb_skip = ('total', 'subtotal', 'gst', 'tax', 'amount', 'balance', 'payment', 'van run')
