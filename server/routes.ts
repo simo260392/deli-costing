@@ -33,6 +33,14 @@ const upload = multer({ dest: "uploads/" });
 const pdfUpload = multer({ dest: "uploads/pdf-cache/" });
 const memoryUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Resolve python3 executable path (handles nix environments where python3 may not be in PATH)
+let PYTHON3_BIN = 'python3';
+try {
+  const { execSync } = require('child_process');
+  const found = execSync('which python3 2>/dev/null || which python 2>/dev/null || echo ""', { encoding: 'utf8', timeout: 5000 }).trim();
+  if (found) PYTHON3_BIN = found;
+} catch { /* keep default */ }
+
 // PDF cache directory
 const PDF_CACHE_DIR = path.join(process.cwd(), "uploads", "pdf-cache");
 
@@ -781,8 +789,10 @@ export function registerRoutes(httpServer: Server, app: Express) {
     const parsePath = path.join(__dirname, "parse_invoice.py");
     const fs2 = await import("fs");
     const pyExists = fs2.existsSync(parsePath);
-    execFile("python3", ["-c", "import sys,pdfplumber; print('ok pdfplumber=' + pdfplumber.__version__ + ' py=' + sys.version)"], { timeout: 10000 }, (_err, stdout, stderr) => {
-      res.json({ parsePath, pyExists, stdout: stdout.trim(), stderr: stderr.trim(), err: _err?.message });
+    const { execSync } = require('child_process');
+    const pdfPath2 = (() => { try { return execSync('which pdftotext', { encoding: 'utf8', timeout: 5000 }).trim(); } catch { return 'not found'; } })();
+    execFile(PYTHON3_BIN, ["-c", "import sys; print('py=' + sys.version)"], { timeout: 10000 }, (_err, stdout, stderr) => {
+      res.json({ parsePath, pyExists, PYTHON3_BIN, pdfPath2, stdout: stdout.trim(), stderr: stderr.trim(), err: _err?.message });
     });
   });
 
@@ -3500,7 +3510,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     const { execFile } = await import("child_process");
     const parsed: any = await new Promise((resolve) => {
       execFile(
-        "python3", [path.join(__dirname, "parse_invoice.py"), destPath, fileName],
+        PYTHON3_BIN, [path.join(__dirname, "parse_invoice.py"), destPath, fileName],
         { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
         (_err, stdout, _stderr) => {
           let jsonStr = stdout;
@@ -3599,7 +3609,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     const { execFile } = await import("child_process");
     const parsed: any = await new Promise((resolve) => {
       execFile(
-        "python3", [path.join(__dirname, "parse_invoice.py"), pdfPath, fileName],
+        PYTHON3_BIN, [path.join(__dirname, "parse_invoice.py"), pdfPath, fileName],
         { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
         (_err, stdout, _stderr) => {
           let jsonStr = stdout;
@@ -3681,7 +3691,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
       const parsePath = path.join(__dirname, "parse_invoice.py");
       const parsed: any = await new Promise((resolve) => {
         execFile(
-          "python3", [parsePath, uploadedPath, originalName],
+          PYTHON3_BIN, [parsePath, uploadedPath, originalName],
           { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
           (_err, stdout, _stderr) => {
             if (_err) console.error('[drive/upload] python3 error:', _err.message, '| stderr:', _stderr?.slice(0, 500));
@@ -3879,7 +3889,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           // Parse with parse_invoice.py
           const parsed = await new Promise<any>((resolve, reject) => {
             const scriptPath = path.join(__dirname, "parse_invoice.py");
-            execFile("python3", [scriptPath, tmpPath, fileName], {
+            execFile(PYTHON3_BIN, [scriptPath, tmpPath, fileName], {
               maxBuffer: 10 * 1024 * 1024,
               env: { ...process.env },
             }, (err: any, stdout: string, stderr: string) => {
