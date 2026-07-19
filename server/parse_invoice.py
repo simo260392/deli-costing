@@ -2377,7 +2377,13 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     # Format: CODE DESCRIPTION Today Adjust Return Qty Chg Price TOTAL
     # pdfplumber merges all item rows into a single table cell — parse from table directly.
     # No supplier name in invoice — leave blank for user to set on first match.
-    is_acc1170 = 'today adjust return' in full_text.lower() or 'acc no: 1170' in full_text.lower()
+    is_acc1170 = (
+        'today adjust return' in full_text.lower()
+        or bool(re.search(r'acc\s+no[:\s]+1170', full_text, re.IGNORECASE))
+        or bool(re.search(r'today\s+adjust\s+return', full_text, re.IGNORECASE))
+        or 'il granino' in full_text.lower()
+        or 'ilgranino' in full_text.lower()
+    )
     if is_acc1170:
         if not supplier_name or supplier_name.lower().startswith('total nett') or 'drive' in (supplier_name or '').lower():
             supplier_name = 'Bread Supplier (ACC 1170)'  # Unknown — user will set on first match
