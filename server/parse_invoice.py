@@ -1277,6 +1277,128 @@ def extract_bidfood_format(pages):
 
     return items
 
+
+def extract_bidfood_from_text(lines):
+    """
+    Fallback Bidfood parser using plain text lines (pdftotext layout output).
+    Used when pdfplumber is not available (e.g. Railway without pdfplumber installed).
+    Same regex as extract_bidfood_format but operates on text lines directly.
+    """
+    SKIP_DESC = (
+        'frozen', 'chiller', 'dry', 'summary', 'carton counts', 'type comment',
+        'signature', 'payment', 'sale subject', 'bidfood', 'total', 'totals',
+        'we are aware', 'bidfood is absorbing', 'rising fuel', 'off introducing',
+        'that prices', 'expected and costs', 'but we will',
+        '*', '=', '-',
+    )
+    right_pat = re.compile(
+        r'^(\d{4,8})'
+        r'\s+'
+        r'(.+?)'
+        r'\s+'
+        r'(\d+x\d+(?:gr|g|kg|l|ml)?|\d+\'s|\d+(?:\.\d+)?(?:kg|g|l|lt|ml|ltr|gr)?)'
+        r'\s+'
+        r'(CTN=\d+|BAG=\d+|EA=\d*|\w+=\d+)'
+        r'\s+'
+        r'(\d+(?:\.\d+)?)'
+        r'\s+'
+        r'(\d+(?:\.\d+)?)'
+        r'\s+'
+        r'([\d]+\.\d{2})'
+        r'\s+'
+        r'([\d]+\.\d{2})'
+        r'\s+'
+        r'([\d]+\.\d{2})'
+        r'\s+'
+        r'([\d]+\.\d{2})'
+        r'\s*$',
+        re.IGNORECASE
+    )
+    GENERIC_WORDS = {
+        'FREE', 'CUT', 'PACK', 'LARGE', 'MINI', 'FRESH', 'DRIED',
+        'SLICED', 'WHOLE', 'DICED', 'FROZEN', 'RAW', 'COOKED',
+        'NATURAL', 'ORGANIC', 'LIGHT', 'DARK', 'SMOKED', 'MIXED',
+        'SELECTION', 'VARIETY', 'ASSORTED', 'PLAIN', 'FLAVOURED',
+        'INSTANT', 'REGULAR', 'EXTRA', 'THICK', 'THIN', 'FINE',
+        'SPRAY', 'SAUCE', 'OIL', 'SWEET', 'GLUTEN',
+        'DAIRY', 'VEGAN', 'GRATED', 'RTB', 'COLOUR', 'TRI',
+        'NO', 'IN', 'OF', 'AND', 'THE', '&',
+    }
+    items = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if any(low.startswith(s) for s in SKIP_DESC) or '***' in line:
+            continue
+        m = right_pat.match(line)
+        if not m:
+            continue
+        desc_brand    = m.group(2).strip()
+        pack_size_str = m.group(3).strip()
+        unit_measure  = m.group(4).strip()
+        cartons       = float(m.group(5))
+        total_value   = float(m.group(10))
+        unit_price    = round(total_value / cartons, 4) if cartons else total_value
+        brand_name = None
+        description = desc_brand
+        words = desc_brand.split()
+        def word_could_be_brand(w):
+            return (
+                w.upper() == w and
+                w.rstrip("'.") not in GENERIC_WORDS and
+                len(w) <= 12 and len(w) >= 1
+            )
+        if len(words) >= 3:
+            last2 = ' '.join(words[-2:])
+            last1 = words[-1]
+            remaining2 = words[:-2]
+            remaining1 = words[:-1]
+            last1_is_brand = word_could_be_brand(last1)
+            last2_is_brand = (
+                len(words) >= 4 and
+                word_could_be_brand(words[-2]) and
+                last1_is_brand and
+                len(last2) <= 12 and
+                len(remaining2) >= 1
+            )
+            if last2_is_brand:
+                description = ' '.join(remaining2)
+                brand_name = last2
+            elif last1_is_brand and len(remaining1) >= 1:
+                description = ' '.join(remaining1)
+                brand_name = last1
+        packs_per_carton_match = re.search(r'=(\d+)', unit_measure)
+        packs_per_carton = int(packs_per_carton_match.group(1)) if packs_per_carton_match else 1
+        xpack_match = re.match(r'^(\d+)x(\d+(?:\.\d+)?)(gr|g|kg|l|lt|ml|ltr|each)?$', pack_size_str, re.IGNORECASE)
+        if xpack_match:
+            packs_per_carton = int(xpack_match.group(1))
+            pack_size_val = float(xpack_match.group(2))
+            raw_unit = (xpack_match.group(3) or 'each').lower()
+            pack_size_unit = 'g' if raw_unit == 'gr' else raw_unit
+        else:
+            ps_match = re.match(r"(\d+(?:\.\d+)?)(kg|g|l|lt|ml|ltr|'s|s)?", pack_size_str, re.IGNORECASE)
+            pack_size_val = float(ps_match.group(1)) if ps_match else None
+            pack_size_unit = ps_match.group(2).lower() if ps_match and ps_match.group(2) else 'each'
+            if pack_size_unit in ("'s", 's'):
+                pack_size_unit = 'each'
+        item = {
+            'description':     description,
+            'quantity':        cartons,
+            'unitPrice':       unit_price,
+            'lineTotal':       total_value,
+            'unit':            unit_measure,
+            'cartonsSupplied': cartons,
+            'packsPerCarton':  packs_per_carton,
+            'packSize':        pack_size_val,
+            'packUnit':        pack_size_unit,
+        }
+        if brand_name:
+            item['brandName'] = brand_name
+        items.append(item)
+    return items
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Strategy: Campbells / Metcash wholesale format
 # Line items look like:
@@ -2423,7 +2545,11 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
             if m_sup:
                 supplier_name = m_sup.group(1).strip()
                 break
-        bidfood_items = extract_bidfood_format(pdf.pages)
+        if pdfplumber_ok:
+            bidfood_items = extract_bidfood_format(pdf.pages)
+        else:
+            # pdfplumber not available — use text-based fallback (pdftotext layout)
+            bidfood_items = extract_bidfood_from_text(full_text.split('\n'))
         if bidfood_items:
             line_items = bidfood_items
         # Extract GST-inclusive total from Bidfood summary line.
