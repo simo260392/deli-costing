@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "tesseract", "ffmpeg", "poppler_utils", "imagemagick", "python3", "python3Packages.pdfplumber", "python3Packages.pillow", "python3Packages.img2pdf"]
+nixPkgs = ["nodejs_20", "tesseract", "ffmpeg", "poppler_utils", "imagemagick"]
 
 [phases.install]
 cmds = ["npm install"]
