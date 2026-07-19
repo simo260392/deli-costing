@@ -160,6 +160,8 @@ def extract_line_items_via_vision(image_path):
     Returns a list of line item dicts, or empty list on error.
     This bypasses regex parsing and works for any thermal receipt photo.
     """
+    import sys
+    print(f"[vision] extract_line_items_via_vision called for {image_path}", file=sys.stderr)
     try:
         import anthropic, base64
         ext = os.path.splitext(image_path)[1].lower()
@@ -217,7 +219,9 @@ def extract_line_items_via_vision(image_path):
                 })
             return [i for i in items if i["description"]]
         return []
-    except Exception:
+    except Exception as _ve:
+        import sys
+        print(f"[vision] extract_line_items_via_vision error: {_ve}", file=sys.stderr)
         return []
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1930,6 +1934,19 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     if not full_text.strip() and original_image_path and os.path.exists(original_image_path):
         full_text = ocr_image_with_vision(original_image_path)
 
+    # ── Early-exit for photo receipts: use vision JSON extraction directly ────
+    # When the source is a photo/image (original_image_path set) and OCR text is
+    # short or unreliable, skip all regex strategies and ask Claude to extract
+    # structured line items from the image directly. This handles any thermal
+    # receipt format (Bun Banh Mi, Spud Shed, etc.) without needing a dedicated
+    # regex strategy per supplier.
+    _is_photo_receipt = (
+        original_image_path is not None
+        and os.path.exists(original_image_path)
+        and len(full_text.strip()) < 500  # OCR got very little — unreliable for regex
+    )
+    _vision_line_items = None  # populated lazily below if needed
+
     raw_lines = [l.strip() for l in full_text.split("\n") if l.strip()]
 
     # Strip webmail/print noise and capture From: line
@@ -2763,7 +2780,11 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     # ── Strategy 5b: Vision JSON extraction — image receipt fallback ─────────────────
     # If all strategies failed AND we have the original image, ask Claude to extract
     # line items directly as structured JSON. Works for any thermal/photo receipt.
-    if not line_items and original_image_path and os.path.exists(original_image_path):
+    if not line_items and _is_photo_receipt:
+        if _vision_line_items is None:
+            _vision_line_items = extract_line_items_via_vision(original_image_path)
+        line_items = _vision_line_items
+    elif not line_items and original_image_path and os.path.exists(original_image_path):
         line_items = extract_line_items_via_vision(original_image_path)
 
     # ── Strategy 6: Simple price-pair fallback ─────────────────────────────────
