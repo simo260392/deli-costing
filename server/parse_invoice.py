@@ -1913,10 +1913,13 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     except Exception:
         pass
 
+    # Always get pdftotext layout output — used by layout-sensitive strategies
+    # regardless of whether pdfplumber succeeded (pdfplumber collapses column spacing)
+    pdftotext_text = pdf_text_with_pdftotext(pdf_path)
+
     if not pdfplumber_ok:
-        # Fallback: pdftotext (poppler_utils — always available on Railway)
-        raw = pdf_text_with_pdftotext(pdf_path)
-        text_pages = [raw]
+        # Fallback: use pdftotext for full_text too
+        text_pages = [pdftotext_text]
         all_tables = []
         all_pages_words = [[]]
 
@@ -2447,7 +2450,7 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
                 r'([\d]+\.[\d]+)'  # Total
                 r'\s*$'
             )
-            for raw_line in full_text.split('\n'):
+            for raw_line in pdftotext_text.split('\n'):
                 m = _acc_re.match(raw_line.strip())
                 if m:
                     desc = m.group(2).strip()
@@ -2482,7 +2485,7 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
                 r'\$([\d,]+\.[\d]+)'   # line total
                 r'\s*$'
             )
-            for raw_line in full_text.split('\n'):
+            for raw_line in pdftotext_text.split('\n'):
                 m = _be_re.match(raw_line.strip())
                 if m:
                     desc = m.group(2).strip()
@@ -2668,7 +2671,9 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     if not line_items and _is_qty_first:
         _lhb_skip = ('total', 'subtotal', 'gst', 'tax', 'amount', 'balance', 'payment', 'van run')
         _lhb_items = []
-        for _line in full_text.split('\n'):
+        # Always use pdftotext_text here — it preserves column spacing
+        # pdfplumber collapses whitespace, causing article codes to merge into descriptions
+        for _line in pdftotext_text.split('\n'):
             _line = _line.strip()
             if not _line:
                 continue
