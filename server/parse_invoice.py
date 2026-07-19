@@ -2594,6 +2594,56 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         if markets_items:
             line_items = markets_items
 
+    # ── Strategy 1g: QTY-first invoice format (Little Home Bakery, Xero/MYOB invoices) ──
+    # Format: QTY   DESCRIPTION   ARTICLE_CODE   UNIT_PRICE   DISC%   EXT_PRICE   GST/FRE
+    # Detected by presence of littlehomebakery keyword OR the GST/FRE column pattern
+    _lhb_pat = re.compile(
+        r'^(\d+(?:\.\d+)?)'
+        r'\s+'
+        r'(.+?)'
+        r'\s{2,}'
+        r'([A-Z0-9]{2,8})'
+        r'\s+'
+        r'(\d+(?:\.\d+)?)'
+        r'\s+'
+        r'(\d+(?:\.\d+)?)%'
+        r'\s+'
+        r'(\d+(?:\.\d+)?)'
+        r'\s+'
+        r'(GST|FRE)\s*$',
+        re.IGNORECASE
+    )
+    _is_qty_first = (
+        'littlehomebakery' in full_text.lower()
+        or 'little home bakery' in full_text.lower()
+        or bool(re.search(r'^\d+\s+.+?\s{2,}[A-Z0-9]{2,8}\s+\d+\.\d+\s+\d+%\s+\d+\.\d+\s+(GST|FRE)', full_text, re.MULTILINE | re.IGNORECASE))
+    )
+    if not line_items and _is_qty_first:
+        _lhb_skip = ('total', 'subtotal', 'gst', 'tax', 'amount', 'balance', 'payment', 'van run')
+        _lhb_items = []
+        for _line in full_text.split('\n'):
+            _line = _line.strip()
+            if not _line:
+                continue
+            if any(_line.lower().startswith(s) for s in _lhb_skip):
+                continue
+            _m = _lhb_pat.match(_line)
+            if _m:
+                _qty = float(_m.group(1))
+                _desc = _m.group(2).strip()
+                _uprice = float(_m.group(4))
+                _total = float(_m.group(6))
+                if len(_desc) >= 2 and _qty > 0:
+                    _lhb_items.append({
+                        'description': _desc,
+                        'quantity': _qty,
+                        'unitPrice': _uprice,
+                        'lineTotal': _total,
+                        'unit': None,
+                    })
+        if _lhb_items:
+            line_items = _lhb_items
+
     # ── Strategy 2: Wing Hong text-line regex ──────────────────────────────────
     if not line_items:
         wing_pat = re.compile(
