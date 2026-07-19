@@ -65,9 +65,10 @@ def parse_date(raw):
     return raw
 
 def image_to_pdf(img_path):
-    """Convert image file to PDF using img2pdf, fallback to PIL."""
+    """Convert image file to PDF using img2pdf, PIL, or imagemagick (Railway)."""
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp.close()
+    # Try img2pdf first (best quality)
     try:
         import img2pdf
         with open(tmp.name, 'wb') as f:
@@ -75,6 +76,7 @@ def image_to_pdf(img_path):
         return tmp.name
     except Exception:
         pass
+    # Try PIL/Pillow
     try:
         from PIL import Image
         img = Image.open(img_path)
@@ -83,7 +85,19 @@ def image_to_pdf(img_path):
         img.save(tmp.name, 'PDF', resolution=200)
         return tmp.name
     except Exception:
-        return None
+        pass
+    # Try imagemagick convert (available on Railway via nixpacks)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['convert', img_path, tmp.name],
+            capture_output=True, timeout=30
+        )
+        if result.returncode == 0 and os.path.getsize(tmp.name) > 0:
+            return tmp.name
+    except Exception:
+        pass
+    return None
 
 def detect_file_type(file_path, original_filename=None):
     """Detect if file is PDF or image based on magic bytes and filename."""
@@ -115,12 +129,23 @@ def detect_file_type(file_path, original_filename=None):
 
 def ocr_image_with_vision(image_path):
     """
-    Use Claude vision API to OCR an image (or image converted from PDF).
+    OCR an image using tesseract (always available on Railway) or Claude vision API.
     Returns plain text. Falls back to empty string on error.
     """
+    # Try tesseract first — always available via nixpacks on Railway
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['tesseract', image_path, 'stdout', '--psm', '6'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+    except Exception:
+        pass
+    # Fall back to Claude vision (requires ANTHROPIC_API_KEY and anthropic Python package)
     try:
         import anthropic, base64, mimetypes
-        # Determine media type
         ext = os.path.splitext(image_path)[1].lower()
         mime_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
                     '.gif': 'image/gif', '.webp': 'image/webp'}
@@ -134,23 +159,17 @@ def ocr_image_with_vision(image_path):
             messages=[{
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": img_data},
-                    },
-                    {
-                        "type": "text",
-                        "text": (
-                            "This is a receipt or invoice photo. Please transcribe ALL text exactly as it appears, "
-                            "line by line, preserving the layout. Include every item description, quantity, price, "
-                            "date, supplier name, and total. Do not summarise — output raw text only."
-                        )
-                    }
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_data}},
+                    {"type": "text", "text": (
+                        "This is a receipt or invoice photo. Please transcribe ALL text exactly as it appears, "
+                        "line by line, preserving the layout. Include every item description, quantity, price, "
+                        "date, supplier name, and total. Do not summarise — output raw text only."
+                    )}
                 ],
             }]
         )
         return msg.content[0].text if msg.content else ""
-    except Exception as e:
+    except Exception:
         return ""
 
 
@@ -2776,6 +2795,68 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     # ── Strategy 5: MarketBase / Etherington printed-email format ─────────────
     if not line_items:
         line_items = extract_marketbase_format(lines)
+
+    # ── Strategy 5a: Thermal POS receipt format ─────────────────────────────────────
+    # Handles receipts from point-of-sale systems (e.g. Lightspeed, Kounta, Square)
+    # Line formats:
+    #   "Item name × 4  $56.00"  (qty × count, total only)
+    #   "Item name x 4  ($14.00 each)"  may precede or follow total line
+    #   "Item name  $14.00"  (single item)
+    # Detection: has "TAKEAWAY" or card surcharge or "× N" quantity notation
+    _is_pos_receipt = (
+        'takeaway' in full_text.lower()
+        or 'card surcharge' in full_text.lower()
+        or bool(re.search(r'[×x]\s*\d+', full_text))
+        or 'tap & go' in full_text.lower()
+        or 'contactless' in full_text.lower()
+    )
+    if not line_items and _is_pos_receipt:
+        _pos_items = []
+        _pos_lines = [l.strip() for l in full_text.split('\n') if l.strip()]
+        _skip_pos = ('subtotal', 'card surcharge', 'total', 'gst', 'tax', 'visa', 'mastercard',
+                     'eftpos', 'cash', 'change', 'receipt', 'takeaway', 'dine in', 'ticket',
+                     'authorisation', 'psn:', 'atc:', 'aid ', 'payment', 'approved', 'contactless',
+                     'tap & go', '10%', 'included', 'van run', 'abn')
+        # Pattern 1: "Item × N  $total" or "Item x N  $total"
+        _pos_multi = re.compile(r'^(.+?)\s+[×x]\s*(\d+)\s+\$?([\d,]+\.\d{2})\s*$', re.IGNORECASE)
+        # Pattern 2a: "Item  $price" or "Item  price" (2+ spaces before price, with or without $)
+        _pos_single = re.compile(r'^(.+?)\s{2,}\$?([\d,]+\.\d{2})\s*$')
+        # Pattern 2b: "Item $price" (single space + $, common in POS receipts)
+        _pos_dollar = re.compile(r'^(.+?)\s+\$([\d,]+\.\d{2})\s*$')
+        _skip_any = ('subtotal', 'card surcharge', '10% tax', 'visa ', 'mastercard', 'psn:',
+                     'atc:', 'aid ', 'total', 'surcharge', 'tax included', 'contactless', 'eftpos')
+        for _pl in _pos_lines:
+            if any(_pl.lower().startswith(s) for s in _skip_pos):
+                continue
+            if any(s in _pl.lower() for s in _skip_any):
+                continue
+            # Skip lines that are purely address/phone/ABN/date/OCR noise
+            if re.match(r'^[\\|/\s*_~<>]+$', _pl):
+                continue
+            if re.match(r'^(ABN|Ph|Tel|0[245]\d{8}|\d{1,2}[\s/]\w+[\s/]\d{4})', _pl):
+                continue
+            m = _pos_multi.match(_pl)
+            if m:
+                desc = m.group(1).strip()
+                qty = float(m.group(2))
+                total = float(m.group(3).replace(',', ''))
+                uprice = round(total / qty, 4) if qty else 0
+                if desc and qty > 0 and len(desc) >= 3 and not re.search(r'^[\\|/\s*]', desc):
+                    _pos_items.append({'description': desc, 'quantity': qty, 'unitPrice': uprice, 'lineTotal': total, 'unit': 'each'})
+                continue
+            m2 = _pos_single.match(_pl)
+            if not m2:
+                m2 = _pos_dollar.match(_pl)
+            if m2:
+                desc = m2.group(1).strip()
+                total = float(m2.group(2).replace(',', ''))
+                if (desc and total > 0 and len(desc) >= 3
+                        and not re.search(r'(subtotal|surcharge|gst|total|tax|visa|mastercard|eftpos|contactless)', desc, re.IGNORECASE)
+                        and not re.search(r'^[\\|/\s*~<>]', desc)
+                        and not re.match(r'^\d+\.\d{2}$', desc)):
+                    _pos_items.append({'description': desc, 'quantity': 1, 'unitPrice': total, 'lineTotal': total, 'unit': 'each'})
+        if _pos_items:
+            line_items = _pos_items
 
     # ── Strategy 5b: Vision JSON extraction — image receipt fallback ─────────────────
     # If all strategies failed AND we have the original image, ask Claude to extract

@@ -3769,6 +3769,9 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
 
       // ── Image receipt: use Node.js Claude vision directly (Railway has no PIL/anthropic Python) ──
       const isImageUpload = /\.(jpg|jpeg|png|gif|webp|tiff?|bmp)$/i.test(originalName);
+      if (isImageUpload && !anthropic) {
+        console.warn("[drive/upload] Image receipt uploaded but ANTHROPIC_API_KEY not set — cannot parse line items from image");
+      }
       if (isImageUpload && anthropic) {
         const imgBuffer = fs.readFileSync(uploadedPath);
         const mediaType = /\.png$/i.test(originalName) ? "image/png"
