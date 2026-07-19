@@ -1600,21 +1600,49 @@ def extract_costco_format(lines):
 # Main parser
 # ─────────────────────────────────────────────────────────────────────────────
 
-def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
-    import pdfplumber
+def pdf_text_with_pdftotext(pdf_path):
+    """Fallback text extractor using pdftotext (part of poppler_utils, always installed)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['pdftotext', '-layout', pdf_path, '-'],
+            capture_output=True, text=True, timeout=30
+        )
+        return result.stdout
+    except Exception:
+        return ''
 
+
+def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
     text_pages = []
     all_tables = []
     all_pages_words = []   # list of word-dicts per page (for Strategy 3)
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text() or ""
-            text_pages.append(t)
-            tbls = page.extract_tables() or []
-            all_tables.extend(tbls)
-            words = page.extract_words() or []
-            all_pages_words.append(words)
+    # Try pdfplumber first (preferred — gives tables and word positions)
+    pdfplumber_ok = False
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text() or ""
+                text_pages.append(t)
+                tbls = page.extract_tables() or []
+                all_tables.extend(tbls)
+                words = page.extract_words() or []
+                all_pages_words.append(words)
+        pdfplumber_ok = True
+    except ImportError:
+        # pdfplumber not installed — fall back to pdftotext
+        pass
+    except Exception:
+        pass
+
+    if not pdfplumber_ok:
+        # Fallback: pdftotext (poppler_utils — always available on Railway)
+        raw = pdf_text_with_pdftotext(pdf_path)
+        text_pages = [raw]
+        all_tables = []
+        all_pages_words = [[]]
 
     full_text = "\n".join(text_pages)
 
