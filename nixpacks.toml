@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "tesseract", "ffmpeg", "poppler_utils", "imagemagick", "python3", "python3Packages.pip"]
+nixPkgs = ["nodejs_20", "tesseract", "ffmpeg", "poppler_utils", "imagemagick", "python3", "python3Packages.pip", "python3Packages.setuptools"]
 
 [phases.install]
-cmds = ["npm install", "pip install pdfplumber pillow img2pdf --quiet"]
+cmds = ["npm install", "python3 -m pip install --upgrade pip --quiet", "python3 -m pip install pdfplumber pillow img2pdf --quiet"]
 
 [phases.build]
 cmds = ["npm run build"]

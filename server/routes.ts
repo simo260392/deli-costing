@@ -775,6 +775,17 @@ export function registerRoutes(httpServer: Server, app: Express) {
   // ─── Suppliers ──────────────────────────────────────────────────────────────
   app.get("/api/suppliers", async (req, res) => res.json(await storage.getSuppliers()));
 
+  // Diagnostic: check python3 and parse_invoice.py availability
+  app.get("/api/debug/python", async (req, res) => {
+    const { execFile } = await import("child_process");
+    const parsePath = path.join(__dirname, "parse_invoice.py");
+    const fs2 = await import("fs");
+    const pyExists = fs2.existsSync(parsePath);
+    execFile("python3", ["-c", "import sys,pdfplumber; print('ok pdfplumber=' + pdfplumber.__version__ + ' py=' + sys.version)"], { timeout: 10000 }, (_err, stdout, stderr) => {
+      res.json({ parsePath, pyExists, stdout: stdout.trim(), stderr: stderr.trim(), err: _err?.message });
+    });
+  });
+
   app.post("/api/suppliers", async (req, res) => {
     try {
       const b = req.body;
