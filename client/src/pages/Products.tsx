@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -1163,6 +1163,7 @@ function ProductCard({
   ingredients,
   settings,
   initialCosting,
+  forceExpand,
 }: {
   product: FlexProduct;
   recipes: Recipe[];
@@ -1170,9 +1171,18 @@ function ProductCard({
   ingredients: Ingredient[];
   settings: Record<string, string>;
   initialCosting: FlexProductCosting | null;
+  forceExpand?: boolean;
 }) {
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (forceExpand) {
+      setExpanded(true);
+      setTimeout(() => cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    }
+  }, [forceExpand]);
 
   // Use bulk-loaded costing as initial data so the card header shows
   // cost/margin/mismatch immediately without needing to expand first.
@@ -1224,7 +1234,7 @@ function ProductCard({
   })();
 
   return (
-    <Card className={cn(
+    <Card ref={cardRef} className={cn(
       "transition-all",
       hasMismatch && "border-red-300 dark:border-red-800"
     )} data-testid={`card-product-${product.id}`}>
@@ -1484,6 +1494,7 @@ export default function Products() {
   type MissingVariant = { id: number; attributesSummary: string; sku: string };
   type MissingProduct = { productUuid: string; productName: string; emptyVariants: MissingVariant[] };
   const [missingExpanded, setMissingExpanded] = useState(false);
+  const [focusProductId, setFocusProductId] = useState<number | null>(null);
   const { data: missingComponents } = useQuery<{ count: number; products: MissingProduct[] }>({
     queryKey: ["/api/product-size-variants/missing-components"],
     queryFn: () => apiRequest("GET", "/api/product-size-variants/missing-components").then(r => r.json()),
@@ -1582,18 +1593,34 @@ export default function Products() {
           </button>
           {missingExpanded && (
             <div className="mt-3 space-y-2 pl-7">
-              {missingComponents.products.map(p => (
-                <div key={p.productUuid}>
-                  <p className="text-xs font-semibold text-amber-800">{p.productName}</p>
-                  <div className="flex flex-wrap gap-1.5 mt-1">
-                    {p.emptyVariants.map(v => (
-                      <span key={v.id} className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 border border-amber-200 rounded px-2 py-0.5 font-mono">
-                        {v.attributesSummary || "(default)"}
-                      </span>
-                    ))}
+              {missingComponents.products.map(p => {
+                const matchedProduct = products.find(pr => pr.flexUuid === p.productUuid);
+                return (
+                  <div key={p.productUuid}>
+                    {matchedProduct ? (
+                      <button
+                        className="text-xs font-semibold text-amber-800 underline underline-offset-2 hover:text-amber-600 text-left"
+                        onClick={() => {
+                          setMissingExpanded(false);
+                          setFocusProductId(null);
+                          setTimeout(() => setFocusProductId(matchedProduct.id), 20);
+                        }}
+                      >
+                        {p.productName}
+                      </button>
+                    ) : (
+                      <p className="text-xs font-semibold text-amber-800">{p.productName}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {p.emptyVariants.map(v => (
+                        <span key={v.id} className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 border border-amber-200 rounded px-2 py-0.5 font-mono">
+                          {v.attributesSummary || "(default)"}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1681,6 +1708,7 @@ export default function Products() {
               ingredients={ingredients}
               settings={settingsData}
               initialCosting={allCostingsMap[product.id] ?? null}
+              forceExpand={focusProductId === product.id}
             />
           ))}
           {filtered.length === 0 && products.length > 0 && (
