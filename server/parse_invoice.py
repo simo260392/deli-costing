@@ -1600,6 +1600,160 @@ def extract_costco_format(lines):
 # Main parser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def extract_perth_markets_format(lines):
+    """
+    Parse Perth Markets supplier invoices (Australian Produce Brokers, Quality Produce
+    International, Mercer Mooney, and similar market vendors).
+
+    Line format (pdftotext -layout):
+      APB/QPI:   LotNo  Cont  Qty  Description  [Variety]  [Comments]  Wt/Ct  Price  Extension
+      Mercer:    Description  Unit  Qty  Price  Tax  Amount
+
+    The function handles both by detecting which header style is present.
+    """
+    items = []
+    _SKIP = re.compile(
+        r'^(lot\s*no|cont|qty|description|variety|comments|wt/ct|price|extension|'
+        r'unit|tax|amount|deposit|produce\s+total|invoice\s+total|'
+        r'no\s+claims|\*\s+indicates|total\s+ex|gst\s+amount|total\s+due|'
+        r'comment\(s\)|subtotal|balance|all\s+credit|email:|banking|'
+        r'telephone|fax:|phone:|mobile:|terms|payment|page\s*$)',
+        re.IGNORECASE
+    )
+
+    # Detect Mercer Mooney style: has column header "UNIT" and "TAX" and "AMOUNT"
+    header_text = ' '.join(lines[:30]).lower()
+    is_mercer = 'unit' in header_text and 'amount' in header_text and 'mercer' in header_text
+
+    if is_mercer:
+        # Mercer Mooney: Description  Unit(text)  Qty  Price  [Tax]  Amount
+        # Two layout variants:
+        #   A) pdftotext: "Pineapples                                     Carton 23kg                1.00   80.00                      80.00"
+        #   B) pdfplumber condensed: "Pineapples Carton 23kg 1.00 80.00 80.00"
+        in_items = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Start capturing after the column header line
+            if re.search(r'DESCRIPTION\s+UNIT\s+QTY\s+PRICE', stripped, re.IGNORECASE):
+                in_items = True
+                continue
+            if not in_items:
+                continue
+            if _SKIP.match(stripped):
+                continue
+            # Variant A: multi-space layout
+            m = re.match(
+                r'^(.+?)\s{2,}(.+?)\s{2,}(\d+\.\d+)\s+(\d+\.\d+)\s+(?:\d*\.?\d*\s+)?(\d+\.\d+)\s*$',
+                stripped
+            )
+            if not m:
+                # Variant B: pdfplumber condensed
+                # Description words then unit words (1+ words ending in kg/pcs/each/ctn/box/bag/l)
+                # then Qty Price [Tax] Amount
+                # Pattern: capture everything before the last 3 numbers, split desc/unit by unit keyword
+                m2 = re.match(
+                    r'^(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(?:\d*\.?\d*\s+)?(\d+\.\d+)\s*$',
+                    stripped
+                )
+                if m2:
+                    # Split desc+unit: unit is usually last 1-3 words before the numbers
+                    desc_unit = m2.group(1).strip()
+                    qty = float(m2.group(2))
+                    price = float(m2.group(3))
+                    total = float(m2.group(4))
+                    # Try to split unit from description: look for unit keyword
+                    unit_m = re.search(
+                        r'\s+((?:\w+\s+)?\d+\w*|carton|ctn|box|bag|each|pcs|kg|l|litre)\s*$',
+                        desc_unit, re.IGNORECASE
+                    )
+                    if unit_m:
+                        desc = desc_unit[:unit_m.start()].strip()
+                        unit = unit_m.group(1).strip()
+                    else:
+                        desc = desc_unit
+                        unit = 'each'
+                    if _SKIP.match(desc) or not desc:
+                        continue
+                    items.append({
+                        'description': desc,
+                        'quantity': qty,
+                        'unitPrice': price,
+                        'lineTotal': total,
+                        'unit': unit,
+                    })
+                continue
+            desc = m.group(1).strip()
+            unit = m.group(2).strip()
+            qty = float(m.group(3))
+            price = float(m.group(4))
+            total = float(m.group(5))
+            if _SKIP.match(desc) or not desc:
+                continue
+            items.append({
+                'description': desc,
+                'quantity': qty,
+                'unitPrice': price,
+                'lineTotal': total,
+                'unit': unit,
+            })
+    else:
+        # APB / QPI style: LotNo  Cont  Qty  Description  [Variety]  Wt/Ct  Price  Extension
+        # LotNo format: 6 digits, dash, 2 digits e.g. 411676-00
+        #
+        # Two sub-variants:
+        #  A) pdftotext -layout: multi-space gaps between columns
+        #     "218216-00   B10     1     BEETROOT                                  10.00        35.00          35.00"
+        #  B) pdfplumber condensed: single-space between all tokens
+        #     "411676-00 CTN1 10 LETTUCE MIX SPEC 1KG 1.00 9.40 94.00"
+
+        # Variant A: multi-space layout (pdftotext -layout output)
+        lot_rx_layout = re.compile(
+            r'^(\d{6}-\d{2})\s+'   # Lot No
+            r'(\S+)\s+'             # Cont (e.g. B10, CTN1)
+            r'(\d+\.?\d*)\s+'      # Qty
+            r'(.+?)\s{2,}'          # Description (greedy up to 2+ spaces)
+            r'(\d+\.\d+)\s+'       # Wt/Ct
+            r'(\d+\.\d+)\s+'       # Price
+            r'(\d+\.\d+)\s*$'      # Extension (line total)
+        )
+        # Variant B: pdfplumber condensed — last 3 numbers are Wt/Ct, Price, Extension
+        # Description is everything between Qty and those last 3 numbers
+        lot_rx_condensed = re.compile(
+            r'^(\d{6}-\d{2})\s+'   # Lot No
+            r'(\S+)\s+'             # Cont
+            r'(\d+)\s+'             # Qty (integer)
+            r'(.+?)\s+'             # Description (non-greedy)
+            r'(\d+\.\d+)\s+'       # Wt/Ct
+            r'(\d+\.\d+)\s+'       # Price
+            r'(\d+\.\d+)\s*$'      # Extension
+        )
+
+        for line in lines:
+            stripped = line.strip()
+            m = lot_rx_layout.match(stripped) or lot_rx_condensed.match(stripped)
+            if not m:
+                continue
+            desc_raw = m.group(4).strip()
+            # Remove any trailing numeric fragment that crept into description
+            desc = re.sub(r'\s+\d+\.\d+\s*$', '', desc_raw).strip()
+            qty = float(m.group(3))
+            price = float(m.group(6))
+            total = float(m.group(7))
+            wt_ct = m.group(5)  # weight per carton
+            if _SKIP.match(desc) or not desc:
+                continue
+            items.append({
+                'description': desc,
+                'quantity': qty,
+                'unitPrice': price,
+                'lineTotal': total,
+                'unit': f'{wt_ct}kg' if wt_ct else 'each',
+            })
+    return items
+
+
 def pdf_text_with_pdftotext(pdf_path):
     """Fallback text extractor using pdftotext (part of poppler_utils, always installed)."""
     import subprocess
@@ -1684,6 +1838,14 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         ('befoods.com',         'B&E Foods Perth Pty Ltd'),
         ('fresh express',       'Fresh Express Produce'),
         ('spudshed',            'Spud Shed'),
+        # Perth Markets suppliers
+        ('australian produce brokers', 'Australian Produce Brokers'),
+        ('apbperth.com',              'Australian Produce Brokers'),
+        ('quality produce international', 'Quality Produce International'),
+        ('qualityproduce.com',         'Quality Produce International'),
+        ('qpi.net.au',                 'Quality Produce International'),
+        ('mercer mooney',              'Mercer Mooney'),
+        ('mercermooney.com',           'Mercer Mooney'),
     ]
     if not supplier_name:
         for keyword, name in _known_suppliers:
@@ -1777,6 +1939,8 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         r'invoice\s*[:\s]+(\d{6,})',
         r'sale\s+no\.?\s*[:\s]+(\d{4,})',
         r'(?:^|\b)([A-Z]{1,3}\d{5,9})\b',
+        # Mercer Mooney: "0001-00233719" (appears on line after "TAX INVOICE")
+        r'^(\d{4}-\d{6,10})$',
         # Last resort: standalone 6-8 digit number on a line that looks like an invoice number
         r'^(\d{6,10})$',
     ]
@@ -1830,9 +1994,14 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
             # Standard invoice date labels
             r'(?:invoice\s+date|date\s+of\s+invoice)[:\s]+(\d{1,2}[-\/\s]\w+[-\/\s]\d{2,4})',
             r'(?:invoice\s+date|date\s+of\s+invoice)[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+            # Mercer Mooney tabular row: header "Invoice Date" then next line has the data row
+            # e.g. "Cust Order No  Invoice Date ..." followed by "108185  17/07/2026  GR2 ..."
+            r'invoice\s+date[^\n]*\n\s*\d+\s+(\d{1,2}\/\d{1,2}\/\d{4})',
+            # APB/QPI: "Date:" label in invoice header — skip lines containing "due"
+            r'^Date:\s*(\d{1,2}\/\d{1,2}\/\d{4})',
             # Spud Shed / thermal receipt: "Date: 13/04/26 9:44"
             r'(?:^|\n)Date:\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
-            # Generic "date:" — AFTER the specific ones
+            # Generic "date:" — skip lines that also contain "due"
             r'\bdate[:\s]+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
             r'(?<!\d)(\d{1,2}[\/]\d{1,2}[\/]\d{4})(?!\d)',
             r'\b(\d{4}-\d{2}-\d{2})\b',
@@ -1843,8 +2012,12 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
             r'\b(\d{1,2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\d{4})\b',
         ]
         for pat in date_pats:
-            m = re.search(pat, full_text, re.IGNORECASE)
+            m = re.search(pat, full_text, re.IGNORECASE | re.MULTILINE)
             if m:
+                # Skip if the matched line also contains "due" (avoid due dates)
+                match_line = full_text[max(0, m.start()-80):m.end()+20]
+                if 'due' in match_line.lower() and 'invoice date' not in match_line.lower():
+                    continue
                 invoice_date = parse_date(m.group(1))
                 break
 
@@ -2278,6 +2451,22 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         campbells_items = extract_campbells_format(lines)
         if campbells_items:
             line_items = campbells_items
+
+    # ── Strategy 1f: Perth Markets format (APB, QPI, Mercer Mooney, etc.) ─────
+    # Detected by Lot No pattern (dddddd-dd) in text OR known supplier keywords
+    _is_perth_markets = (
+        re.search(r'\b\d{6}-\d{2}\b', full_text) is not None
+        or 'australian produce brokers' in full_text.lower()
+        or 'quality produce international' in full_text.lower()
+        or 'mercer mooney' in full_text.lower()
+        or 'apbperth.com' in full_text.lower()
+        or 'qualityproduce.com' in full_text.lower()
+        or 'mercermooney.com' in full_text.lower()
+    )
+    if _is_perth_markets:
+        markets_items = extract_perth_markets_format(lines)
+        if markets_items:
+            line_items = markets_items
 
     # ── Strategy 2: Wing Hong text-line regex ──────────────────────────────────
     if not line_items:

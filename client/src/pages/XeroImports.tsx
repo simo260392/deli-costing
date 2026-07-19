@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +16,7 @@ import {
 import {
   Link2, PlusCircle, EyeOff, RefreshCw, CheckCircle2, AlertCircle,
   Clock, ChevronDown, ChevronRight, Trash2, Receipt, FileText,
-  Upload, X, ExternalLink, CloudDownload, Ban
+  Upload, X, ExternalLink, CloudDownload, Ban, Pencil
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -736,6 +736,7 @@ function LineItemRow({
 }) {
   const { toast } = useToast();
   const [resolveMode, setResolveMode] = useState(false);
+  const [editMode, setEditMode] = useState(false);
 
   const ignoreMutation = useMutation({
     mutationFn: () => apiRequest("PUT", `/api/xero/line-items/${line.id}/resolve`, { status: "ignored" }).then(r => r.json()),
@@ -817,15 +818,25 @@ function LineItemRow({
             </Button>
           </div>
         ) : (
-          <Button
-            size="sm" variant="ghost"
-            className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-            onClick={() => deleteMutation.mutate()}
-            disabled={deleteMutation.isPending}
-            data-testid={`button-line-delete-${line.id}`}
-          >
-            <Trash2 size={10} />
-          </Button>
+          <div className="flex items-center gap-1 shrink-0">
+            <Button
+              size="sm" variant="ghost"
+              className="h-6 px-2 text-xs gap-1 text-muted-foreground hover:text-primary hover:bg-primary/10"
+              onClick={() => setEditMode(true)}
+              data-testid={`button-line-edit-${line.id}`}
+            >
+              <Pencil size={10} /> Edit
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+              onClick={() => deleteMutation.mutate()}
+              disabled={deleteMutation.isPending}
+              data-testid={`button-line-delete-${line.id}`}
+            >
+              <Trash2 size={10} />
+            </Button>
+          </div>
         )}
       </div>
 
@@ -835,6 +846,14 @@ function LineItemRow({
           invoice={invoice}
           ingredients={ingredients}
           onClose={() => setResolveMode(false)}
+        />
+      )}
+      {editMode && (
+        <EditLineItemDialog
+          line={line}
+          invoice={invoice}
+          ingredients={ingredients}
+          onClose={() => setEditMode(false)}
         />
       )}
     </>
@@ -854,6 +873,7 @@ function InvoiceCard({
   const { toast } = useToast();
   const [open, setOpen] = useState(defaultOpen ?? false);
   const [descInput, setDescInput] = useState("");
+  const [editSupplierMode, setEditSupplierMode] = useState(false);
 
   const { data: lineItems = [], isLoading: linesLoading } = useQuery<XeroLineItem[]>({
     queryKey: ["/api/xero/imports", invoice.id, "line-items"],
@@ -936,6 +956,15 @@ function InvoiceCard({
           </span>
           <StatusBadge status={invoice.status} />
           {/* Ignore invoice button — always visible on pending invoices */}
+          <Button
+            size="sm" variant="ghost"
+            className="h-7 px-2 text-xs gap-1 text-muted-foreground hover:text-primary hover:bg-primary/10"
+            onClick={e => { e.stopPropagation(); setEditSupplierMode(true); }}
+            title="Change supplier"
+            data-testid={`button-edit-supplier-${invoice.id}`}
+          >
+            <Pencil size={12} /> Supplier
+          </Button>
           {invoice.status === "pending" && (
             <Button
               size="sm" variant="ghost"
@@ -1022,7 +1051,228 @@ function InvoiceCard({
           )}
         </div>
       )}
+      {editSupplierMode && (
+        <EditSupplierDialog invoice={invoice} onClose={() => setEditSupplierMode(false)} />
+      )}
     </div>
+  );
+}
+
+
+// ── Edit Supplier dialog ──────────────────────────────────────────────────────
+function EditSupplierDialog({ invoice, onClose }: { invoice: XeroImport; onClose: () => void }) {
+  const { toast } = useToast();
+  const [selectedId, setSelectedId] = useState<string>(invoice.supplierId ? String(invoice.supplierId) : "");
+  const [supplierSearch, setSupplierSearch] = useState("");
+
+  const { data: suppliers = [] } = useQuery<any[]>({
+    queryKey: ["/api/suppliers"],
+    queryFn: () => apiRequest("GET", "/api/suppliers").then(r => r.json()),
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: () => apiRequest("PATCH", `/api/xero/imports/${invoice.id}/supplier`, {
+      supplierId: Number(selectedId),
+    }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/xero/imports"] });
+      toast({ title: "Supplier updated" });
+      onClose();
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const filtered = suppliers.filter(s =>
+    !supplierSearch || s.name.toLowerCase().includes(supplierSearch.toLowerCase())
+  );
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Change Supplier</DialogTitle>
+          <DialogDescription>
+            Currently: <span className="font-medium">{invoice.supplierName || "Unknown"}</span>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <Input
+            placeholder="Search suppliers…"
+            value={supplierSearch}
+            onChange={e => setSupplierSearch(e.target.value)}
+            className="h-8 text-sm"
+            data-testid="input-edit-supplier-search"
+          />
+          <div className="max-h-56 overflow-y-auto border rounded-md divide-y">
+            {filtered.map(s => (
+              <button
+                key={s.id}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-sm hover:bg-muted/50 transition-colors",
+                  String(s.id) === selectedId && "bg-primary/10 text-primary font-medium"
+                )}
+                onClick={() => setSelectedId(String(s.id))}
+                data-testid={`option-supplier-${s.id}`}
+              >
+                {s.name}
+              </button>
+            ))}
+            {filtered.length === 0 && (
+              <p className="px-3 py-4 text-xs text-muted-foreground text-center">No suppliers found</p>
+            )}
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button
+            size="sm"
+            disabled={!selectedId || saveMutation.isPending}
+            onClick={() => saveMutation.mutate()}
+            data-testid="button-save-supplier"
+          >
+            {saveMutation.isPending ? "Saving…" : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Edit Line Item dialog ─────────────────────────────────────────────────────
+function EditLineItemDialog({
+  line, invoice, ingredients, onClose,
+}: {
+  line: XeroLineItem;
+  invoice: XeroImport;
+  ingredients: Ingredient[];
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [ingSearch, setIngSearch] = useState(line.ingredientName || "");
+  const [selectedIngId, setSelectedIngId] = useState<string>(line.ingredientId ? String(line.ingredientId) : "");
+  const [qty, setQty] = useState(line.quantity != null ? String(line.quantity) : "");
+  const [cpu, setCpu] = useState(line.costPerUnit != null ? String(line.costPerUnit) : "");
+  const [unit, setUnit] = useState(line.unit || "each");
+  const [showIngList, setShowIngList] = useState(false);
+
+  const computedTotal = qty && cpu ? (Number(qty) * Number(cpu)).toFixed(2) : null;
+
+  const filteredIngs = ingredients.filter(i =>
+    !ingSearch || i.name.toLowerCase().includes(ingSearch.toLowerCase())
+  );
+
+  const saveMutation = useMutation({
+    mutationFn: () => apiRequest("PATCH", `/api/xero/line-items/${line.id}`, {
+      ingredientId: selectedIngId ? Number(selectedIngId) : undefined,
+      costPerUnit: cpu ? Number(cpu) : undefined,
+      quantity: qty ? Number(qty) : undefined,
+      unit,
+      lineTotal: computedTotal ? Number(computedTotal) : undefined,
+    }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/xero/imports", invoice.id, "line-items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/xero/imports"] });
+      toast({ title: "Line item updated" });
+      onClose();
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit Line Item</DialogTitle>
+          <DialogDescription className="text-xs">{line.description}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Ingredient</label>
+            <div className="relative">
+              <Input
+                placeholder="Search ingredients…"
+                value={ingSearch}
+                onChange={e => { setIngSearch(e.target.value); setShowIngList(true); setSelectedIngId(""); }}
+                onFocus={() => setShowIngList(true)}
+                className="h-8 text-sm"
+                data-testid="input-edit-ingredient-search"
+              />
+              {showIngList && ingSearch && (
+                <div className="absolute z-50 w-full mt-1 bg-background border rounded-md shadow-md max-h-44 overflow-y-auto">
+                  {filteredIngs.slice(0, 20).map(i => (
+                    <button
+                      key={i.id}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted/50"
+                      onClick={() => {
+                        setSelectedIngId(String(i.id));
+                        setIngSearch(i.name);
+                        setShowIngList(false);
+                      }}
+                      data-testid={`option-ing-${i.id}`}
+                    >
+                      {i.name}
+                    </button>
+                  ))}
+                  {filteredIngs.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No match</p>
+                  )}
+                </div>
+              )}
+            </div>
+            {selectedIngId && (
+              <p className="text-xs text-primary mt-1">✓ {ingSearch}</p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground block mb-1">Quantity</label>
+              <Input
+                type="number" step="any" min="0"
+                value={qty}
+                onChange={e => setQty(e.target.value)}
+                className="h-8 text-sm"
+                data-testid="input-edit-qty"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground block mb-1">Unit</label>
+              <Input
+                value={unit}
+                onChange={e => setUnit(e.target.value)}
+                className="h-8 text-sm"
+                data-testid="input-edit-unit"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Price per unit ($)</label>
+            <Input
+              type="number" step="any" min="0"
+              value={cpu}
+              onChange={e => setCpu(e.target.value)}
+              className="h-8 text-sm"
+              data-testid="input-edit-cpu"
+            />
+          </div>
+          {computedTotal && (
+            <p className="text-xs text-muted-foreground">
+              Line total: <span className="font-medium text-foreground">${computedTotal}</span>
+            </p>
+          )}
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+          <Button
+            size="sm"
+            disabled={saveMutation.isPending}
+            onClick={() => saveMutation.mutate()}
+            data-testid="button-save-line-edit"
+          >
+            {saveMutation.isPending ? "Saving…" : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

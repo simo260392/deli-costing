@@ -3410,6 +3410,72 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
     }
   });
 
+  // PATCH /api/xero/line-items/:id — edit an already-resolved line item
+  // Body: { ingredientId?, ingredientName?, costPerUnit?, quantity?, unit?, lineTotal? }
+  // Also updates the supplier_ingredient price record so costing stays accurate.
+  app.patch("/api/xero/line-items/:id", async (req, res) => {
+    try {
+      const lineId = Number(req.params.id);
+      const line = await storage.getXeroLineItem(lineId);
+      if (!line) return res.status(404).json({ error: "Line item not found" });
+
+      const { ingredientId, ingredientName, costPerUnit, quantity, unit, lineTotal } = req.body;
+
+      // Resolve ingredient name if only ID provided
+      let resolvedIngName = ingredientName;
+      if (ingredientId && !resolvedIngName) {
+        const ing = await storage.getIngredient(Number(ingredientId));
+        resolvedIngName = ing?.name ?? null;
+      }
+
+      const effectiveLineTotal = lineTotal != null ? Number(lineTotal)
+        : (costPerUnit && quantity) ? Number(costPerUnit) * Number(quantity) : line.lineTotal;
+
+      const updated = await storage.resolveXeroLineItem(lineId, {
+        status: line.status as any,
+        ingredientId: ingredientId != null ? Number(ingredientId) : (line.ingredientId ?? undefined),
+        ingredientName: resolvedIngName ?? line.ingredientName ?? undefined,
+        costPerUnit: costPerUnit != null ? Number(costPerUnit) : (line.costPerUnit ?? undefined),
+        quantity: quantity != null ? Number(quantity) : (line.quantity ?? undefined),
+        unit: unit ?? line.unit ?? undefined,
+        lineTotal: effectiveLineTotal ?? undefined,
+      });
+      if (!updated) return res.status(404).json({ error: "Update failed" });
+
+      // Update supplier_ingredient price record if ingredient linked
+      const effIngId = ingredientId != null ? Number(ingredientId) : line.ingredientId;
+      const effCpu = costPerUnit != null ? Number(costPerUnit) : line.costPerUnit;
+      if (effIngId && effCpu) {
+        const xeroImport = await storage.getXeroImport(line.xeroImportId);
+        const supplierId = xeroImport?.supplierId || await findSupplierId(xeroImport?.supplierName ?? null);
+        if (supplierId) {
+          // Upsert supplier_ingredient price record
+          await storage.createSupplierIngredient({
+            ingredientId: effIngId,
+            supplierId,
+            costPerUnit: effCpu,
+            packSize: quantity != null ? Number(quantity) : line.quantity,
+            packCost: effectiveLineTotal,
+            invoiceDate: xeroImport?.invoiceDate || null,
+            invoiceRef: xeroImport?.xeroInvoiceNumber || null,
+            notes: null,
+          });
+          // Trigger costing recalculation
+          ;(async () => {
+            try {
+              const markup = await getMarkup();
+              await cascadeIngredientPrice(effIngId, effCpu, supplierId, markup);
+            } catch {}
+          })();
+        }
+      }
+
+      res.json({ ok: true, lineItem: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // PUT /api/xero/imports/:id/ignore — ignore entire invoice
   app.put("/api/xero/imports/:id/ignore", async (req, res) => {
     try {
