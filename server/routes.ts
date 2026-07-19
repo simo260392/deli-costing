@@ -784,6 +784,21 @@ export function registerRoutes(httpServer: Server, app: Express) {
   app.get("/api/suppliers", async (req, res) => res.json(await storage.getSuppliers()));
 
   // Diagnostic: check python3 and parse_invoice.py availability
+  // Temporary: POST a PDF and get raw parse output for debugging
+  const debugParseUpload = multer({ dest: "uploads/pdf-cache/" });
+  app.post("/api/debug/parse", debugParseUpload.single("pdf"), async (req: any, res) => {
+    if (!req.file) return res.status(400).json({ error: "no file" });
+    const { execFile } = await import("child_process");
+    const parsePath = path.join(__dirname, "parse_invoice.py");
+    const originalName = req.file.originalname || "invoice.pdf";
+    const result: any = await new Promise((resolve) => {
+      execFile(PYTHON3_BIN, [parsePath, req.file.path, originalName], { maxBuffer: 10 * 1024 * 1024 }, (_err, stdout, stderr) => {
+        resolve({ stdout: stdout?.slice(0, 5000), stderr: stderr?.slice(0, 2000), err: _err?.message });
+      });
+    });
+    res.json(result);
+  });
+
   app.get("/api/debug/python", async (req, res) => {
     const { execFile } = await import("child_process");
     const parsePath = path.join(__dirname, "parse_invoice.py");
