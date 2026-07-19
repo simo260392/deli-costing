@@ -3673,6 +3673,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
           "python3", [parsePath, uploadedPath, originalName],
           { maxBuffer: 10 * 1024 * 1024, env: { ...process.env } },
           (_err, stdout, _stderr) => {
+            if (_err) console.error('[drive/upload] python3 error:', _err.message, '| stderr:', _stderr?.slice(0, 500));
             // parse_invoice.py always outputs valid JSON — extract it robustly
             // (strip any Python warnings/notices that may appear before the JSON)
             let jsonStr = stdout;
@@ -3691,7 +3692,7 @@ Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingF
                 invoiceDate: null,
                 totalAmount: null,
                 lineItems: [],
-                error: `Could not parse output: ${stdout.slice(0, 300)}`,
+                error: `Could not parse output: ${stdout.slice(0, 300)} | stderr: ${_stderr?.slice(0, 300)}`,
               });
             }
           }
