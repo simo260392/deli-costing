@@ -483,6 +483,50 @@ def extract_brownes_format(all_tables):
     return items
 
 
+def extract_brownes_from_text(lines):
+    """
+    Text-based fallback for Brownes invoices when pdfplumber tables are unavailable.
+    Each product line has: GTIN  CODE  DESCRIPTION  UOM  QTY  LIST_PRICE  [DISCOUNT]  NETT_PRICE  EXTENDED  GST
+    UOM is one of EA, OT, KG, L, CS, PK, CTN, BOX, DOZ
+    """
+    # Pattern: optional GTIN (13-14 digits), optional CODE (4-6 digits), DESCRIPTION, UOM, QTY, ..., NETT_PRICE, EXTENDED, GST_FLAG
+    # Allow optional discount column (may be absent for items with no discount)
+    ROW_PAT = re.compile(
+        r'^\s*(?:\d{10,14}\s+)?'      # optional GTIN
+        r'(?:\d{4,6}\s+)?'             # optional product code
+        r'(.+?)\s+'                     # description
+        r'(EA|OT|KG|L|ML|CS|PK|CTN|BOX|DOZ|EACH)\s+'  # UOM
+        r'(\d+(?:\.\d+)?)\s+'         # quantity
+        r'[\d]+\.\d+\s+'              # list price
+        r'(?:-[\d]+\.\d+\s+)?'        # optional discount (negative)
+        r'([\d]+\.\d+)\s+'            # nett unit price
+        r'([\d]+\.\d+)\s*'            # extended price
+        r'[YN]?\s*$',                   # GST flag
+        re.IGNORECASE
+    )
+    items = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Skip totals/footer lines
+        if re.search(r'total\s+(units|excluding|due|gst)|^gst\s+\d', line, re.IGNORECASE):
+            continue
+        m = ROW_PAT.match(line)
+        if m:
+            desc = m.group(1).strip()
+            # Skip if description looks like a header
+            if any(kw in desc.lower() for kw in ['product description', 'gtin', 'product code']):
+                continue
+            items.append({
+                'description': desc,
+                'unit':        m.group(2).upper(),
+                'quantity':    float(m.group(3)),
+                'unitPrice':   float(m.group(4)),
+                'lineTotal':   float(m.group(5)),
+            })
+    return items
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Strategy: Spud Shed / thermal receipt format
@@ -2337,6 +2381,11 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
                 })
 
     # ── Strategy 1b: Brownes embedded-column format ─────────────────────────────
+    # Detection: Brownes invoice has 'brownesdairy.com' or 'brownes foods' in text
+    is_brownes = ('brownesdairy.com' in full_text.lower() or
+                  'brownes foods' in full_text.lower() or
+                  'brownes dairy' in full_text.lower())
+
     # Runs when Strategy 1 got items but none had any quantity/price (all None)
     if line_items and not any(
         item.get("quantity") is not None or item.get("lineTotal") is not None
@@ -2345,12 +2394,22 @@ def parse_invoice(pdf_path, original_filename=None, original_image_path=None):
         brownes_items = extract_brownes_format(all_tables)
         if brownes_items:
             line_items = brownes_items
+        elif is_brownes:
+            # pdfplumber tables failed — fall back to text lines
+            brownes_items = extract_brownes_from_text(pdftotext_text.splitlines())
+            if brownes_items:
+                line_items = brownes_items
 
     # Also try if no items at all
     if not line_items:
         brownes_items = extract_brownes_format(all_tables)
         if brownes_items:
             line_items = brownes_items
+        elif is_brownes:
+            # pdfplumber tables failed — fall back to text lines
+            brownes_items = extract_brownes_from_text(pdftotext_text.splitlines())
+            if brownes_items:
+                line_items = brownes_items
 
     # ── Strategy 1b0a: Del Basso Smallgoods format ──────────────────────────────
     # Format: CODE DESCRIPTION QUANTITY PRICE [GST] AMOUNT (fixed-width text)
