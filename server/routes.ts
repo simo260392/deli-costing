@@ -10535,7 +10535,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // ── LIGHTSPEED (KOUNTA) INTEGRATION ────────────────────────────────────────
   const LS_CLIENT_ID     = 'm84SAi9TOkmCErV9';
-  const LS_CLIENT_SECRET = 'OaK9HOL2YpAW1Or2GxVzS7qS9DfY0RcS00UaXnNU';
+  const LS_CLIENT_SECRET = 'iVcSnbqwNDlnILZuM2ahSd9PiHM1HZN6uD8ZAEjh';
   const LS_REDIRECT_URI  = 'https://the-deli.app/api/lightspeed/callback';
   const LS_TOKEN_URL     = 'https://api.kounta.com/v1/token';
   const LS_API_BASE      = 'https://api.kounta.com/v1';
