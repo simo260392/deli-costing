@@ -10591,7 +10591,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     if (!code) return res.status(400).send('Missing code');
     const r = await fetch(LS_TOKEN_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         code: String(code),
