@@ -10550,7 +10550,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       if (!row.refresh_token) return null;
       const r = await fetch(LS_TOKEN_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
           refresh_token: row.refresh_token,
