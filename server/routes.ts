@@ -10544,30 +10544,35 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   async function getLightspeedToken(): Promise<string | null> {
     const { data: row } = await supabase.from('lightspeed_tokens').select('*').order('id', { ascending: false }).limit(1).single();
     if (!row) return null;
-    // Check if expired (with 5-min buffer)
-    if (row.expires_at && new Date(row.expires_at) < new Date(Date.now() + 5 * 60 * 1000)) {
-      // Attempt refresh
-      if (!row.refresh_token) return null;
-      const r = await fetch(LS_TOKEN_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token: row.refresh_token,
-          client_id: LS_CLIENT_ID,
-          client_secret: LS_CLIENT_SECRET,
-        }).toString(),
-      });
-      const d = await r.json();
-      if (!d.access_token) return null;
-      const expiresAt = new Date(Date.now() + (d.expires_in || 86400) * 1000).toISOString();
-      await supabase.from('lightspeed_tokens').update({
-        access_token: d.access_token,
-        refresh_token: d.refresh_token || row.refresh_token,
-        expires_at: expiresAt,
-        updated_at: new Date().toISOString(),
-      }).eq('id', row.id);
-      return d.access_token;
+    // Check if expired (with 2-min buffer)
+    const isExpired = row.expires_at && new Date(row.expires_at) < new Date(Date.now() + 2 * 60 * 1000);
+    if (isExpired) {
+      // Attempt refresh — Kounta refresh tokens don't expire and are not rotated
+      if (!row.refresh_token) return row.access_token; // fall back to existing token
+      try {
+        const r = await fetch(LS_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: row.refresh_token,
+            client_id: LS_CLIENT_ID,
+            client_secret: LS_CLIENT_SECRET,
+          }).toString(),
+        });
+        const d = await r.json();
+        if (!d.access_token) return row.access_token; // fall back to existing token
+        const expiresAt = new Date(Date.now() + (d.expires_in || 3600) * 1000).toISOString();
+        await supabase.from('lightspeed_tokens').update({
+          access_token: d.access_token,
+          refresh_token: d.refresh_token || row.refresh_token, // Kounta doesn't rotate refresh tokens
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        }).eq('id', row.id);
+        return d.access_token;
+      } catch {
+        return row.access_token; // fall back to existing token on error
+      }
     }
     return row.access_token;
   }
