@@ -10647,9 +10647,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       url = r.headers.get('X-Next-Page');
     }
 
-    // Sum total_price (tax inclusive) across all orders
-    const totalInclGST = allOrders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0);
-    const totalExGST   = allOrders.reduce((sum, o) => sum + (parseFloat(o.total_price_ex_tax ?? o.total_price) || 0), 0);
+    // Kounta order objects have top-level `total` (incl GST) and `total_tax` fields
+    const totalInclGST = allOrders.reduce((sum, o) => sum + (parseFloat(o.total) || 0), 0);
+    const totalExGST   = allOrders.reduce((sum, o) => sum + ((parseFloat(o.total) || 0) - (parseFloat(o.total_tax) || 0)), 0);
 
     res.json({
       date,
