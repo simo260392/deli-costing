@@ -10581,7 +10581,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // GET /api/lightspeed/auth — redirect user to Kounta OAuth
   app.get('/api/lightspeed/auth', (req: any, res: any) => {
-    const url = `https://my.kounta.com/authorize?response_type=code&client_id=${LS_CLIENT_ID}&redirect_uri=${encodeURIComponent(LS_REDIRECT_URI)}&scope=read`;
+    const url = `https://my.kounta.com/authorize?response_type=code&client_id=${LS_CLIENT_ID}&redirect_uri=${encodeURIComponent(LS_REDIRECT_URI)}&state=deliapp`;
     res.redirect(url);
   });
 
