@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import {
   RefreshCw, AlertTriangle, CheckCircle2, Package2, ExternalLink,
-  Trash2, Plus, ChevronDown, ChevronUp, Loader2, Store, CloudOff, Upload, Layers
+  Trash2, Plus, ChevronDown, ChevronUp, Loader2, Store, CloudOff, Upload, Layers, Check
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -1272,6 +1272,16 @@ function ProductCard({
                   Not yet costed
                 </Badge>
               )}
+              {product.status === "active_no_website" && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0 h-4 text-amber-700 border-amber-300">
+                  Not on website
+                </Badge>
+              )}
+              {product.status === "hidden" && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0 h-4 text-amber-700 border-amber-300">
+                  Hidden
+                </Badge>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               {product.sku && (
@@ -1455,13 +1465,16 @@ export default function Products() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
-  const [statusFilter, setStatusFilter] = useState("active");
+  const [statusFilter, setStatusFilter] = useState<"live" | "active" | "active_no_website" | "hidden">("live");
   const [costingFilter, setCostingFilter] = useState<"all" | "costed" | "uncosted" | "mismatch">("all");
 
-  const { data: products = [], isLoading, refetch } = useQuery<FlexProduct[]>({
+  const { data: allProducts = [], isLoading, refetch } = useQuery<FlexProduct[]>({
     queryKey: ["/api/flex-products"],
     queryFn: () => apiRequest("GET", "/api/flex-products").then(r => r.json()),
   });
+  // Only products that are live on Flex — inactive or deleted products are never shown
+  const LIVE_STATUSES = ["active", "active_no_website", "hidden"];
+  const products = useMemo(() => allProducts.filter(p => LIVE_STATUSES.includes(p.status || "active")), [allProducts]);
 
   const { data: recipes = [] } = useQuery<Recipe[]>({
     queryKey: ["/api/recipes"],
@@ -1509,7 +1522,9 @@ export default function Products() {
     mutationFn: () => apiRequest("POST", "/api/flex-products/sync").then(r => r.json()),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/flex-products"] });
-      toast({ title: "Sync complete", description: `${data.synced} products synced from Flex.` });
+      toast({ title: "Sync complete", description: `${data.synced} products synced from Flex${data.removed ? `, ${data.removed} removed (no longer in Flex)` : ""}.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/flex-products/costing-inconsistencies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/missing-components"] });
     },
     onError: (e: any) => toast({ title: "Sync failed", description: e.message, variant: "destructive" }),
   });
@@ -1529,7 +1544,7 @@ export default function Products() {
   // Filter products
   const filtered = useMemo(() => {
     return products.filter(p => {
-      if (statusFilter !== "all" && p.status !== statusFilter) return false;
+      if (statusFilter !== "live" && p.status !== statusFilter) return false;
       if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
       if (categoryFilter !== "All") {
         const cats: { name: string }[] = (() => { try { return JSON.parse(p.categoriesJson); } catch { return []; } })();
@@ -1552,7 +1567,7 @@ export default function Products() {
             <Store size={22} /> Products
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {products.length} products synced from Flex Catering
+            {products.length} live products from Flex Catering
             {lastSync && ` · Last sync ${lastSync}`}
           </p>
         </div>
@@ -1677,13 +1692,14 @@ export default function Products() {
           </select>
           <select
             value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
+            onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
             className="h-8 text-sm rounded-md border border-input bg-background px-3 py-1"
             data-testid="select-status-filter"
           >
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
+            <option value="live">All live products</option>
+            <option value="active">On website</option>
+            <option value="active_no_website">Not on website</option>
+            <option value="hidden">Hidden</option>
           </select>
           <span className="text-xs text-muted-foreground ml-auto">{filtered.length} shown</span>
         </div>

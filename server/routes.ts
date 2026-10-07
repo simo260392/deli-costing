@@ -765,6 +765,10 @@ const deputyRosterCache = new Map<string, { data: any; expiresAt: number }>();
 const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
 const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const kpiCache = new Map<string, { data: any; expiresAt: number }>();
+// Flex product statuses that are still orderable ("live"). Excludes
+// "inactive" and products that have been removed from Flex ("deleted").
+const LIVE_FLEX_STATUSES = new Set(["active", "active_no_website", "hidden"]);
+const isLiveFlexStatus = (status?: string | null) => LIVE_FLEX_STATUSES.has(String(status || "active"));
 let kpiLoggedFlexKeys = false;
 let kpiLoggedSurcharges = 0;
 
@@ -1890,26 +1894,22 @@ Return ONLY the JSON object, no explanation.`;
   // GET /api/flex-products/costing-inconsistencies — for dashboard alert
   app.get("/api/flex-products/costing-inconsistencies", async (req, res) => {
     try {
-      const products = await storage.getFlexProducts();
+      const [products, costings] = await Promise.all([storage.getFlexProducts(), storage.getAllFlexProductCostings()]);
+      const costingByProduct = new Map((costings as any[]).map((c) => [c.flexProductId, c]));
       const inconsistencies: any[] = [];
       for (const p of products) {
-        const costing = await storage.getFlexProductCosting(p.id);
-      if (!costing) continue;
-      const flexDietaries: string[] = JSON.parse(p.flexDietariesJson || "[]");
-      const computedDietaries: string[] = JSON.parse(costing.computedDietariesJson || "[]");
-      // Compare sets
-      const flexSet = new Set(flexDietaries.map((d: any) => typeof d === 'string' ? d : d.code));
-      const computedSet = new Set(computedDietaries);
-      const hasInconsistency = [...flexSet].some(d => !computedSet.has(d)) ||
-        [...computedSet].some(d => !flexSet.has(d));
-      if (hasInconsistency) {
-        inconsistencies.push({
-          id: p.id,
-          name: p.name,
-          flexDietaries,
-          computedDietaries,
-        });
-      }
+        if (!isLiveFlexStatus(p.status)) continue;
+        const costing: any = costingByProduct.get(p.id);
+        if (!costing) continue;
+        const flexDietaries: string[] = JSON.parse(p.flexDietariesJson || "[]");
+        const computedDietaries: string[] = JSON.parse(costing.computedDietariesJson || "[]");
+        const flexSet = new Set(flexDietaries.map((d: any) => typeof d === 'string' ? d : d.code));
+        const computedSet = new Set(computedDietaries);
+        const hasInconsistency = Array.from(flexSet).some(d => !computedSet.has(d)) ||
+          Array.from(computedSet).some(d => !flexSet.has(d));
+        if (hasInconsistency) {
+          inconsistencies.push({ id: p.id, name: p.name, flexDietaries, computedDietaries });
+        }
       }
       res.json({ count: inconsistencies.length, items: inconsistencies });
     } catch (err: any) {
@@ -2222,6 +2222,7 @@ Return ONLY the JSON object, no explanation.`;
     try {
       let nextPath: string | null = `/api/v1/products?per_page=100&page=1`;
       let totalSynced = 0;
+      const seenUuids = new Set<string>();
 
       const allergenMap: Record<string, string> = {
         'CG': 'Gluten', 'CD': 'Dairy', 'CE': 'Eggs', 'CN': 'Tree Nuts',
@@ -2266,6 +2267,7 @@ Return ONLY the JSON object, no explanation.`;
             null
           );
 
+          seenUuids.add(item.uuid || String(item.product_id || ''));
           await storage.upsertFlexProduct({
             flexUuid: item.uuid || String(item.product_id || ''),
             flexId: item.product_id || null,
@@ -2289,7 +2291,21 @@ Return ONLY the JSON object, no explanation.`;
         } else { nextPath = null; }
       }
 
-      res.json({ ok: true, synced: totalSynced });
+      // Products no longer in Flex at all: mark as deleted so they drop off
+      // the Products page. Only after a complete, non-empty sync.
+      let removed = 0;
+      if (seenUuids.size > 0) {
+        const { data: existing } = await supabase.from('flex_products').select('id, flex_uuid, status');
+        const goneIds = (existing || [])
+          .filter((r: any) => !seenUuids.has(r.flex_uuid) && r.status !== 'deleted')
+          .map((r: any) => r.id);
+        for (let i = 0; i < goneIds.length; i += 100) {
+          await supabase.from('flex_products').update({ status: 'deleted' }).in('id', goneIds.slice(i, i + 100));
+        }
+        removed = goneIds.length;
+      }
+
+      res.json({ ok: true, synced: totalSynced, removed });
     } catch (e: any) {
       console.error('Flex sync error:', e);
       res.status(500).json({ error: e.message });
@@ -2331,16 +2347,22 @@ Return ONLY the JSON object, no explanation.`;
   // Products that only have packaging (e.g. 12oz coffee cups) are NOT flagged.
   // Response: { count: number; products: [{productUuid, productName, emptyVariants: [{id, attributesSummary, sku}]}] }
   app.get("/api/product-size-variants/missing-components", asyncRoute(async (_req, res) => {
-    const { data: variants, error } = await supabase
-      .from('product_size_variants')
-      .select('id, product_uuid, product_name, attributes_summary, sku, components_json, packaging_json')
-      .order('product_name')
-      .order('attributes_summary');
+    const [{ data: variants, error }, { data: prodRows }] = await Promise.all([
+      supabase
+        .from('product_size_variants')
+        .select('id, product_uuid, product_name, attributes_summary, sku, components_json, packaging_json')
+        .order('product_name')
+        .order('attributes_summary'),
+      supabase.from('flex_products').select('flex_uuid, status'),
+    ]);
     if (error) throw error;
+    // Only products that are live on Flex
+    const liveUuids = new Set((prodRows || []).filter((r: any) => isLiveFlexStatus(r.status)).map((r: any) => r.flex_uuid));
 
     // Group by product, flag variants that have neither components nor packaging
     const productMap = new Map<string, { productUuid: string; productName: string; emptyVariants: any[] }>();
     for (const v of (variants ?? [])) {
+      if (!liveUuids.has(v.product_uuid)) continue;
       let comps: any[] = [];
       let pkgs: any[] = [];
       try { comps = JSON.parse(v.components_json || '[]'); } catch {}
@@ -4692,7 +4714,7 @@ RULES:
     const fcIssues: { id: number; name: string; fc: number }[] = [];
     for (const c of costings as any[]) {
       const p: any = productById.get(c.flexProductId);
-      if (!p || (p.status && p.status !== 'active')) continue;
+      if (!p || !isLiveFlexStatus(p.status)) continue;
       const priceExGst = (Number(c.flexPrice) || Number(p.price) || 0) / 1.1;
       const cost = Number(c.totalCost) || 0;
       if (priceExGst <= 0 || cost <= 0) continue;
