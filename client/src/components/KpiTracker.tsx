@@ -174,11 +174,11 @@ export function KpiTracker() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Tile
           icon={TrendingUp}
-          label="Turnover to date (ex GST)"
+          label="Turnover to date (ex GST, excl. delivery)"
           value={money(t?.turnover)}
           sub={t ? (
             <>
-              {t.orders} orders delivered to date · incl. wholesale & {money(t.deliveryFees)} delivery
+              {t.orders} orders delivered to date · incl. wholesale
               {data?.bookedAhead && data.bookedAhead.orders > 0 && (
                 <span className="block text-gray-400 mt-0.5">+ {money(data.bookedAhead.turnover)} booked for later this period ({data.bookedAhead.orders} orders)</span>
               )}
@@ -191,7 +191,7 @@ export function KpiTracker() {
           label="Production wages (incl. super)"
           value={money(t?.productionWages)}
           badge={<PctBadge value={t?.productionPct ?? null} target={targets.productionPct} size="lg" />}
-          sub="of turnover (ex GST)"
+          sub="of turnover (ex GST, excl. delivery)"
           loading={isLoading}
         />
         <Tile
@@ -211,7 +211,7 @@ export function KpiTracker() {
             <thead>
               <tr className="text-xs text-gray-500 border-b border-gray-100">
                 <th className="text-left font-medium px-4 py-2.5">Week ending</th>
-                <th className="text-right font-medium px-3 py-2.5">Sales</th>
+                <th className="text-right font-medium px-3 py-2.5">Turnover</th>
                 <th className="text-right font-medium px-3 py-2.5">Prod. wages</th>
                 <th className="text-right font-medium px-3 py-2.5">%</th>
                 <th className="text-right font-medium px-3 py-2.5">Delivery fees</th>
@@ -255,7 +255,7 @@ export function KpiTracker() {
         <div className="flex items-start justify-between gap-3 px-4 py-2.5 border-t border-gray-100 text-[11px] text-gray-400">
           <div className="space-y-0.5">
             <p>
-              Sales from Flex (ex GST) · wages from Deputy plus 12% super.
+              Turnover from Flex, ex GST and excluding delivery fees · wages from Deputy plus 12% super.
               Production excludes Drivers & Events areas
               {data?.excludedStaff?.matched?.length ? ` and ${data.excludedStaff.matched.join(", ")}` : ""}.
             </p>

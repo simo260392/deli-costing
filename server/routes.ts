@@ -766,6 +766,7 @@ const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
 const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const kpiCache = new Map<string, { data: any; expiresAt: number }>();
 let kpiLoggedFlexKeys = false;
+let kpiLoggedSurcharges = 0;
 
 export function registerRoutes(httpServer: Server, app: Express) {
   // Helper to wrap async route handlers and forward errors to Express error handler
@@ -7114,7 +7115,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // GET /api/kpi/period?date=YYYY-MM-DD
   // Returns the 4-week KPI period containing `date` (default today), with
   // per-week and period totals for:
-  //   • turnover — all Flex sales ex GST (incl. wholesale & delivery; cancelled excluded)
+  //   • turnover — Flex sales ex GST, excluding delivery fees (incl. wholesale; cancelled excluded)
   //   • production wages — Deputy timesheets incl. super, excluding the Drivers
   //     and Events areas and anyone in the `kpi_excluded_staff` setting
   //   • delivery fees ex GST (Flex) vs Drivers-area wages incl. super
@@ -7123,7 +7124,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const p = periodFor(date);
     const today = todayPerth();
     const isCurrent = today >= p.start && today <= p.end;
-    const cacheKey = `kpi:${p.start}`;
+    const cacheKey = `kpi2:${p.start}`;
     const cached = kpiCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt && req.query.refresh !== "true") {
       return res.json({ ...cached.data, _cached: true });
@@ -7169,9 +7170,21 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           let exGst: number;
           if (tax !== null && tax >= 0 && tax < grand) { exGst = grand - tax; gstFromFlex++; }
           else { exGst = grand / 1.1; gstEstimated++; }
+          // Delivery fee ex GST. Flex gives shipping.price_incl_tax and
+          // shipping.tax_amount (shipping.price is already ex tax).
           const ship = o.shipping || {};
-          const shipEx = num(ship.price_excl_tax) ?? num(ship.price_ex_tax) ??
-            ((num(ship.price_incl_tax) ?? num(ship.price) ?? 0) / 1.1);
+          const shipIncl = num(ship.price_incl_tax);
+          const shipTax = num(ship.tax_amount);
+          const shipEx = num(ship.price_excl_tax) ??
+            (shipIncl !== null && shipTax !== null ? shipIncl - shipTax : null) ??
+            num(ship.price) ?? ((shipIncl ?? 0) / 1.1);
+          if (kpiLoggedSurcharges < 3 && (num(o.extra_delivery) || num(o.delivery_surcharge) ||
+              (o.extra_delivery && typeof o.extra_delivery === "object") || (o.delivery_surcharge && typeof o.delivery_surcharge === "object"))) {
+            kpiLoggedSurcharges++;
+            console.log("[kpi] delivery extras sample:", JSON.stringify({ extra_delivery: o.extra_delivery, delivery_surcharge: o.delivery_surcharge, shipping: o.shipping, grand_total: o.grand_total }).slice(0, 400));
+          }
+          // Production KPI turnover excludes delivery fees
+          exGst = Math.max(0, exGst - shipEx);
           // KPIs compare against sales delivered up to today; later orders
           // are reported separately as "booked ahead".
           if (day > today) { bookedAhead += exGst; bookedAheadOrders++; continue; }
