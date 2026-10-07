@@ -165,6 +165,21 @@ function ingredientToGrams(ing: any, quantity: number): number | null {
   return null;
 }
 
+// Cost of ONE unit of a sub-recipe's yield (e.g. per kg when it yields 10 kg).
+// Product/platter components enter quantities in yield units, so they must be
+// multiplied by this — never by the whole-batch totalCost.
+function subRecipeUnitCost(sr: any): number {
+  const perUnit = Number(sr?.costPerUnit);
+  if (Number.isFinite(perUnit) && perUnit > 0) return perUnit;
+  const total = Number(sr?.totalCost) || 0;
+  const yieldAmt = Number(sr?.yieldAmount) || 0;
+  return yieldAmt > 0 ? total / yieldAmt : total;
+}
+// Cost of ONE serve of a recipe used as a component.
+function recipeServeCost(r: any): number {
+  return Number(r?.costPerServe ?? r?.totalCost) || 0;
+}
+
 // Compute total batch weight in grams from ingredient lines.
 // Pass a preloaded `lookup` when calculating many items at once.
 async function computeBatchWeightGrams(
@@ -649,10 +664,10 @@ async function cascadeFlexProductCostings(updatedRecipeIds: Set<number>, updated
     for (const comp of components) {
       if (comp.type === "recipe") {
         const r = await storage.getRecipe(comp.id);
-        if (r) recipeCost += (r.totalCost || 0) * (comp.quantity || 1);
+        if (r) recipeCost += recipeServeCost(r) * (comp.quantity || 1);
       } else if (comp.type === "sub_recipe") {
         const sr = await storage.getSubRecipe(comp.id);
-        if (sr) recipeCost += (sr.totalCost || 0) * (comp.quantity || 1);
+        if (sr) recipeCost += subRecipeUnitCost(sr) * (comp.quantity || 1);
       }
     }
 
@@ -730,7 +745,7 @@ async function computePlatterCosts(
       if (r) itemsCost += (r.costPerServe ?? r.totalCost) * item.quantity;
     } else if (item.type === "subrecipe") {
       const sr = await storage.getSubRecipe(item.id);
-      if (sr) itemsCost += (sr.totalCost ?? 0) * item.quantity;
+      if (sr) itemsCost += subRecipeUnitCost(sr) * item.quantity;
     } else {
       itemsCost += await ingredientLineCost(item.id, item.quantity);
     }
@@ -1022,10 +1037,10 @@ export function registerRoutes(httpServer: Server, app: Express) {
           for (const comp of components) {
             if (comp.type === 'recipe') {
               const r = await storage.getRecipe(comp.id);
-              if (r) newRecipeCost += (r.totalCost || 0) * (comp.quantity || 1);
+              if (r) newRecipeCost += recipeServeCost(r) * (comp.quantity || 1);
             } else if (comp.type === 'sub_recipe') {
               const sr = await storage.getSubRecipe(comp.id);
-              if (sr) newRecipeCost += (sr.totalCost || 0) * (comp.quantity || 1);
+              if (sr) newRecipeCost += subRecipeUnitCost(sr) * (comp.quantity || 1);
             } else if (comp.type === 'ingredient') {
               const ci = await storage.getIngredient(comp.id);
               if (ci) newRecipeCost += (ci.bestCostPerUnit || 0) * (comp.quantity || 1);
@@ -1946,10 +1961,10 @@ Return ONLY the JSON object, no explanation.`;
       for (const comp of components) {
         if (comp.type === 'recipe') {
           const r = await storage.getRecipe(comp.id);
-          if (r) recipeCost += (Number(r.totalCost) || 0) * (Number(comp.quantity) || 1);
+          if (r) recipeCost += recipeServeCost(r) * (Number(comp.quantity) || 1);
         } else if (comp.type === 'sub_recipe') {
           const sr = await storage.getSubRecipe(comp.id);
-          if (sr) recipeCost += (Number(sr.totalCost) || 0) * (Number(comp.quantity) || 1);
+          if (sr) recipeCost += subRecipeUnitCost(sr) * (Number(comp.quantity) || 1);
         } else if (comp.type === 'ingredient') {
           const ing = await storage.getIngredient(comp.id);
           if (ing) recipeCost += (Number(ing.bestCostPerUnit) || 0) * (Number(comp.quantity) || 1);
@@ -2169,10 +2184,10 @@ Return ONLY the JSON object, no explanation.`;
         for (const comp of components) {
           if (comp.type === 'recipe') {
             const r = await storage.getRecipe(comp.id);
-            if (r) recipeCost += (Number(r.totalCost) || 0) * (Number(comp.quantity) || 1);
+            if (r) recipeCost += recipeServeCost(r) * (Number(comp.quantity) || 1);
           } else if (comp.type === 'sub_recipe') {
             const sr = await storage.getSubRecipe(comp.id);
-            if (sr) recipeCost += (Number(sr.totalCost) || 0) * (Number(comp.quantity) || 1);
+            if (sr) recipeCost += subRecipeUnitCost(sr) * (Number(comp.quantity) || 1);
           } else if (comp.type === 'ingredient') {
             const ing = await storage.getIngredient(comp.id);
             if (ing) recipeCost += (Number(ing.bestCostPerUnit) || 0) * (Number(comp.quantity) || 1);
@@ -2415,7 +2430,7 @@ Return ONLY the JSON object, no explanation.`;
         } else if (c.type === 'sub_recipe') {
           const sr = await storage.getSubRecipe(c.id);
           // sub_recipes store costPerUnit = cost per unit of yield
-          if (sr) componentsCost += ((sr as any).costPerUnit ?? (sr as any).totalCost ?? 0) * (c.quantity || 1);
+          if (sr) componentsCost += subRecipeUnitCost(sr) * (c.quantity || 1);
         } else if (c.type === 'ingredient') {
           componentsCost += await ingredientLineCost(c.id, c.quantity || 1);
         }
@@ -2455,7 +2470,7 @@ Return ONLY the JSON object, no explanation.`;
             if (r) compCost += ((r as any).costPerServe ?? (r as any).totalCost ?? 0) * (c.quantity || 1);
           } else if (c.type === 'sub_recipe') {
             const sr = await storage.getSubRecipe(c.id);
-            if (sr) compCost += ((sr as any).costPerUnit ?? (sr as any).totalCost ?? 0) * (c.quantity || 1);
+            if (sr) compCost += subRecipeUnitCost(sr) * (c.quantity || 1);
           } else if (c.type === 'ingredient') {
             compCost += await ingredientLineCost(c.id, c.quantity || 1);
           }

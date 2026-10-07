@@ -53,7 +53,37 @@ type FlexProductCosting = {
 };
 
 type Recipe = { id: number; name: string; totalCost: number; costPerServe?: number; category?: string; portionSize?: string };
-type SubRecipe = { id: number; name: string; totalCost: number; category?: string; yieldUnit?: string };
+type SubRecipe = { id: number; name: string; totalCost: number; costPerUnit?: number; yieldAmount?: number; category?: string; yieldUnit?: string };
+
+// Price of ONE unit of a component, from the current recipe/ingredient data:
+//  • sub-recipe → cost per unit of its yield (e.g. per kg for a 10 kg batch)
+//  • recipe     → cost per serve
+//  • ingredient → best cost per unit
+// Returns null if the item can't be found (keep whatever was saved).
+function currentUnitCost(
+  c: { type: string; id: number },
+  recipes: { id: number; costPerServe?: number | null; totalCost?: number | null }[],
+  subRecipes: SubRecipe[],
+  ingredients: { id: number; bestCostPerUnit?: number; costPerUnit?: number }[],
+): number | null {
+  if (c.type === "sub_recipe") {
+    const sr = subRecipes.find(x => x.id === c.id);
+    if (!sr) return null;
+    const per = Number(sr.costPerUnit);
+    if (Number.isFinite(per) && per > 0) return per;
+    const y = Number(sr.yieldAmount) || 0;
+    return y > 0 ? (Number(sr.totalCost) || 0) / y : Number(sr.totalCost) || 0;
+  }
+  if (c.type === "recipe") {
+    const r = recipes.find(x => x.id === c.id);
+    return r ? Number(r.costPerServe ?? r.totalCost) || 0 : null;
+  }
+  if (c.type === "ingredient") {
+    const ing = ingredients.find(x => x.id === c.id);
+    return ing ? Number(ing.bestCostPerUnit ?? ing.costPerUnit) || 0 : null;
+  }
+  return null;
+}
 type Ingredient = { id: number; name: string; category: string; unit: string; costPerUnit: number; bestCostPerUnit?: number; isPackaging?: boolean };
 
 type ComponentLine = {
@@ -197,6 +227,16 @@ function SizeVariantRow({
   const [components, setComponents] = useState<ComponentLine[]>(() => {
     try { return JSON.parse(variant.componentsJson || "[]"); } catch { return []; }
   });
+  // Saved lines carry the unit price from when they were added; re-price them
+  // from current recipe/ingredient data so costs are always up to date.
+  useEffect(() => {
+    setComponents(prev => prev.map(c => {
+      const cost = currentUnitCost(c, recipes as any, subRecipes, ingredients as any);
+      const unit = c.unit || (c.type === "sub_recipe" ? subRecipes.find(x => x.id === c.id)?.yieldUnit : c.type === "recipe" ? "serve" : undefined);
+      if ((cost === null || cost === c.costPerUnit) && unit === c.unit) return c;
+      return { ...c, costPerUnit: cost ?? c.costPerUnit, unit };
+    }));
+  }, [recipes, subRecipes, ingredients]);
   const [packaging, setPackaging] = useState<PackagingLine[]>(() => {
     try { return JSON.parse(variant.packagingJson || "[]"); } catch { return []; }
   });
@@ -256,7 +296,7 @@ function SizeVariantRow({
     } else if (type === 'sub_recipe') {
       const r = subRecipes.find(x => x.id === id);
       if (!r) return;
-      item = { type: 'sub_recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: r.totalCost || 0 };
+      item = { type: 'sub_recipe', id: r.id, name: r.name, quantity: qty, costPerUnit: currentUnitCost({ type: 'sub_recipe', id: r.id }, recipes, subRecipes, ingredients) ?? 0, unit: r.yieldUnit };
     } else {
       const ing = ingredients.find(x => x.id === id);
       if (!ing) return;
@@ -509,6 +549,14 @@ function CostingEditor({
     if (!costing) return [];
     try { return JSON.parse(costing.componentsJson || "[]"); } catch { return []; }
   });
+  useEffect(() => {
+    setComponents(prev => prev.map(c => {
+      const cost = currentUnitCost(c, recipes as any, subRecipes, ingredients as any);
+      const unit = c.unit || (c.type === "sub_recipe" ? subRecipes.find(x => x.id === c.id)?.yieldUnit : c.type === "recipe" ? "serve" : undefined);
+      if ((cost === null || cost === c.costPerUnit) && unit === c.unit) return c;
+      return { ...c, costPerUnit: cost ?? c.costPerUnit, unit };
+    }));
+  }, [recipes, subRecipes, ingredients]);
   const [packaging, setPackaging] = useState<PackagingLine[]>(() => {
     if (!costing) return [];
     try {
@@ -569,7 +617,8 @@ function CostingEditor({
     } else if (type === "sub_recipe") {
       const sr = subRecipes.find(sr => sr.id === id);
       name = sr?.name || "";
-      costPerUnit = Number(sr?.totalCost) || 0;
+      // Per unit of the sub-recipe's yield (e.g. per kg), not the whole batch
+      costPerUnit = currentUnitCost({ type: 'sub_recipe', id }, recipes, subRecipes, ingredients) ?? 0;
       unit = sr?.yieldUnit || "unit";
     } else if (type === "ingredient") {
       const ing = ingredients.find(i => i.id === id);
