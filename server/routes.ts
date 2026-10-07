@@ -428,7 +428,7 @@ function isHalalIngredient(ing: any): boolean {
 
 // ── Allergen helpers (module-level so cascadeFlexProductCostings can use them) ──
 const ALLERGEN_LABEL_TO_CODE_MAP: Record<string, string> = {
-  'Gluten': 'CG', 'Tree Nuts': 'CN', 'Nuts': 'CN', 'Nut': 'CN',
+  'Gluten': 'CG', 'Tree Nuts': 'CN', 'Nuts': 'CN', 'Nut': 'CN', 'Peanuts': 'CN', 'Peanut': 'CN',
   'Dairy': 'CD', 'Milk': 'CD', 'Eggs': 'CE', 'Egg': 'CE',
   'Seafood': 'CS', 'Fish': 'CS', 'Shellfish': 'CS', 'Crustacea': 'CS', 'Molluscs': 'CS',
   'Seeds': 'CX', 'Sesame': 'CX', 'Soy': 'CY', 'Soya': 'CY',
@@ -450,24 +450,36 @@ async function collectSubRecipeIngredientIds(srId: number, visited = new Set<num
   return ids;
 }
 
-async function computeAllergensForComponents(components: any[]): Promise<string[]> {
-  const codeSet = new Set<string>();
+// Every ingredient id inside a list of components, following recipes →
+// nested recipes → sub-recipes → nested sub-recipes (cycle-safe).
+async function collectComponentIngredientIds(components: any[], seenRecipes = new Set<number>()): Promise<number[]> {
+  const ids: number[] = [];
   for (const comp of components) {
-    let ingIds: number[] = [];
     if (comp.type === 'recipe') {
+      if (seenRecipes.has(comp.id)) continue;
+      seenRecipes.add(comp.id);
       const r = await storage.getRecipe(comp.id);
       if (!r) continue;
-      const directIngs: any[] = JSON.parse(r.ingredientsJson || "[]");
-      for (const item of directIngs) { if (item?.ingredientId) ingIds.push(item.ingredientId); }
-      const subs: any[] = JSON.parse(r.subRecipesJson || "[]");
-      for (const sub of subs) {
-        if (sub?.subRecipeId) ingIds.push(...(await collectSubRecipeIngredientIds(sub.subRecipeId)));
+      for (const item of JSON.parse(r.ingredientsJson || "[]")) { if (item?.ingredientId) ids.push(item.ingredientId); }
+      for (const sub of JSON.parse(r.subRecipesJson || "[]")) {
+        if (sub?.subRecipeId) ids.push(...(await collectSubRecipeIngredientIds(sub.subRecipeId)));
       }
+      const nested = JSON.parse((r as any).recipesJson || "[]")
+        .filter((l: any) => l?.recipeId).map((l: any) => ({ type: 'recipe', id: l.recipeId }));
+      if (nested.length) ids.push(...(await collectComponentIngredientIds(nested, seenRecipes)));
     } else if (comp.type === 'sub_recipe') {
-      ingIds = await collectSubRecipeIngredientIds(comp.id);
+      ids.push(...(await collectSubRecipeIngredientIds(comp.id)));
     } else if (comp.type === 'ingredient') {
-      ingIds = [comp.id];  // direct ingredient
+      ids.push(comp.id);
     }
+  }
+  return ids;
+}
+
+async function computeAllergensForComponents(components: any[]): Promise<string[]> {
+  const codeSet = new Set<string>();
+  {
+    const ingIds = Array.from(new Set(await collectComponentIngredientIds(components)));
     for (const id of ingIds) {
       const ing = await storage.getIngredient(id);
       if (!ing) continue;
@@ -489,24 +501,8 @@ async function computeFlexDietaries(components: any[]): Promise<{ allergens: str
   // Allergens: deep traverse, map labels → codes
   const allergens = await computeAllergensForComponents(components);
 
-  // Collect all allergen labels present across all ingredients
-  const allIngredientIds: number[] = [];
-  for (const comp of components) {
-    if (comp.type === 'recipe') {
-      const r = await storage.getRecipe(comp.id);
-      if (!r) continue;
-      const directIngs: any[] = JSON.parse(r.ingredientsJson || "[]");
-      for (const item of directIngs) { if (item?.ingredientId) allIngredientIds.push(item.ingredientId); }
-      const subs: any[] = JSON.parse(r.subRecipesJson || "[]");
-      for (const sub of subs) {
-        if (sub?.subRecipeId) allIngredientIds.push(...(await collectSubRecipeIngredientIds(sub.subRecipeId)));
-      }
-    } else if (comp.type === 'sub_recipe') {
-      allIngredientIds.push(...(await collectSubRecipeIngredientIds(comp.id)));
-    } else if (comp.type === 'ingredient') {
-      allIngredientIds.push(comp.id);
-    }
-  }
+  // Every ingredient across recipes, nested recipes and sub-recipes
+  const allIngredientIds: number[] = Array.from(new Set(await collectComponentIngredientIds(components)));
 
   if (allIngredientIds.length === 0) {
     return { allergens, dietaries: [] };
