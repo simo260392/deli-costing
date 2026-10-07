@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { AllergenMatrix } from "@/components/AllergenMatrix";
+import { AllergenMatrix, ALLERGEN_COLUMNS, DIET_COLUMNS } from "@/components/AllergenMatrix";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Pencil, Trash2, Package, Check, RefreshCw, Download, Upload, Sparkles } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -458,20 +458,14 @@ export default function Ingredients() {
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <div className="flex flex-col gap-1">
                         <span>{ing.bestSupplierName || "—"}</span>
-                        {(getAllergens(ing).length > 0 || getDietaries(ing).length > 0) && (
+                        {getDietaries(ing).length > 0 && (
                           <div className="flex flex-wrap gap-1">
-                            {getAllergens(ing).map((key) => {
-                              const a = ALLERGENS.find(x => x.key === key);
-                              if (!a) return <span key={key} className="inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{key}</span>;
-                              return (
-                                <span key={key} className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ backgroundColor: a.color, width: 20, height: 20, minWidth: 20 }} title={a.label}>{a.abbr}</span>
-                              );
-                            })}
                             {getDietaries(ing).map((key) => {
-                              const d = DIETARIES.find(x => x.key === key);
-                              if (!d) return <span key={key} className="inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-pink-100 text-pink-700 font-medium">{key}</span>;
+                              const diet = DIET_COLUMNS.some((d) => d.key === key);
                               return (
-                                <span key={key} className="inline-flex items-center justify-center rounded-full text-[10px] font-bold" style={{ backgroundColor: d.color, color: ['#FDD835','#FFD54F','#A5D6A7','#AED581','#BDBDBD','#CE93D8','#F48FB1'].includes(d.color) ? '#1a1a1a' : '#fff', width: 20, height: 20, minWidth: 20 }} title={d.label}>{d.abbr}</span>
+                                <span key={key} className={`inline-block text-[10px] leading-none px-1.5 py-0.5 rounded-full font-medium ${diet ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-700"}`}>
+                                  {key}
+                                </span>
                               );
                             })}
                           </div>
@@ -607,85 +601,45 @@ export default function Ingredients() {
               </div>
             </div>
 
-            {/* Categories (ingredient tags) */}
-            <div className="space-y-1.5">
-              <Label>Categories</Label>
-              <div className="flex flex-wrap gap-2">
-                {["Gluten Free", "Dairy Free", "Vegan", "Vegetarian", "Raw", "Organic", "Seasonal"].map((cat) => {
-                  const current: string[] = (() => { try { return JSON.parse(form.categoriesJson || "[]"); } catch { return []; } })();
-                  const active = current.includes(cat);
-                  return (
-                    <button key={cat} type="button"
-                      onClick={() => {
-                        const next = active ? current.filter((c) => c !== cat) : [...current, cat];
-                        setForm({ ...form, categoriesJson: JSON.stringify(next) });
-                      }}
-                      className={`px-3 py-1 rounded-full text-xs border transition-colors ${
-                        active ? "bg-primary text-white border-primary" : "bg-background text-muted-foreground border-border hover:border-primary"
-                      }`}>
-                      {cat}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
             {/* Dietaries, Nutrition, PEAL — not applicable for Packaging */}
             {form.category !== "Packaging" && (
               <>
-            {/* Dietaries section */}
+            {/* Allergens — same list and data as the Allergen matrix */}
             <div className="space-y-2">
-              {/* Allergens section */}
               <div className="flex items-center justify-between">
-                <Label className="text-sm font-semibold">Allergens</Label>
+                <Label className="text-sm font-semibold">Contains</Label>
                 {editing && (
                   <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={autoFillDietaries} disabled={autoFilling} data-testid="button-ai-fill-dietaries">
                     <Sparkles size={12} />{autoFilling ? "Filling…" : "AI Fill"}
                   </Button>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
-                {ALLERGENS.map((a) => (
+              <p className="text-xs text-muted-foreground -mt-1">Tick everything this ingredient contains. Dietaries (GF, DF, V, VG, Halal…) are worked out from this for recipes and products.</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
+                {ALLERGEN_COLUMNS.map((a) => (
                   <label key={a.key} className="flex items-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer flex-shrink-0"
-                      checked={formAllergens.includes(a.key)}
-                      onChange={() => toggleAllergen(a.key)}
-                      data-testid={`checkbox-allergen-${a.key.toLowerCase().replace(/\s+/g, '-')}`}
+                      className="h-4 w-4 rounded border-border accent-red-600 cursor-pointer flex-shrink-0"
+                      checked={formDietaries.includes(a.key)}
+                      onChange={() => toggleDietary(a.key)}
+                      data-testid={`checkbox-contains-${a.key.toLowerCase().replace(/\s+/g, '-')}`}
                     />
-                    <span
-                      className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white flex-shrink-0"
-                      style={{ backgroundColor: a.color, width: 22, height: 22, minWidth: 22 }}
-                    >{a.abbr}</span>
-                    <span className="text-xs">{a.label}</span>
+                    <span className="text-sm">{a.label}</span>
                   </label>
                 ))}
               </div>
-
-              {/* Dietary Requirements section */}
-              <div className="flex items-center justify-between pt-1">
-                <Label className="text-sm font-semibold">Dietary Requirements</Label>
-              </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
-                {DIETARIES.map((d) => (
-                  <label key={d.key} className="flex items-center gap-2 cursor-pointer select-none">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 pt-1 border-t border-border mt-2">
+                {DIET_COLUMNS.map((d) => (
+                  <label key={d.key} className="flex items-center gap-2 cursor-pointer select-none pt-2">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-border accent-primary cursor-pointer flex-shrink-0"
+                      className="h-4 w-4 rounded border-border accent-amber-500 cursor-pointer flex-shrink-0"
                       checked={formDietaries.includes(d.key)}
                       onChange={() => toggleDietary(d.key)}
-                      data-testid={`checkbox-dietary-${d.key.toLowerCase().replace(/\s+/g, '-')}`}
+                      data-testid={`checkbox-contains-${d.key.toLowerCase().replace(/\s+/g, '-')}`}
                     />
-                    <span
-                      className="inline-flex items-center justify-center rounded-full text-[10px] font-bold flex-shrink-0"
-                      style={{
-                        backgroundColor: d.color,
-                        color: ['#FDD835','#FFD54F','#A5D6A7','#AED581','#BDBDBD','#CE93D8','#F48FB1'].includes(d.color) ? '#1a1a1a' : '#fff',
-                        width: 22, height: 22, minWidth: 22
-                      }}
-                    >{d.abbr}</span>
-                    <span className="text-xs">{d.label}</span>
+                    <span className="text-sm">{d.label} <span className="text-xs text-muted-foreground">({d.hint.toLowerCase()})</span></span>
                   </label>
                 ))}
               </div>

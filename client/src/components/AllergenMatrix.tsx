@@ -7,7 +7,7 @@ import { Check, CheckCircle2, Loader2 } from "lucide-react";
 
 // Labels stored in ingredients.dietaries_json — the "contains" list the
 // product allergen / dietary calculations read. Keep in sync with the server.
-const ALLERGEN_COLUMNS = [
+export const ALLERGEN_COLUMNS = [
   { key: "Gluten", label: "Gluten" },
   { key: "Dairy", label: "Dairy" },
   { key: "Eggs", label: "Eggs" },
@@ -21,11 +21,11 @@ const ALLERGEN_COLUMNS = [
   { key: "Sulphites", label: "Sulphites" },
   { key: "Lupin", label: "Lupin" },
 ] as const;
-const DIET_COLUMNS = [
+export const DIET_COLUMNS = [
   { key: "Meat", label: "Meat / poultry", hint: "Not vegetarian" },
   { key: "Honey", label: "Honey", hint: "Not vegan" },
 ] as const;
-const ALL_KEYS = [...ALLERGEN_COLUMNS, ...DIET_COLUMNS].map((c) => c.key as string);
+export const ALL_KEYS = [...ALLERGEN_COLUMNS, ...DIET_COLUMNS].map((c) => c.key as string);
 
 export interface MatrixIngredient {
   id: number;
