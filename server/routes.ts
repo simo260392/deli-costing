@@ -8,6 +8,7 @@ import os from "os";
 import PDFDocument from "pdfkit";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, supabase } from "./storage";
+import { periodFor, weekOf, todayPerth } from "../shared/kpiPeriods";
 
 // Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
 let anthropic: Anthropic | null = null;
@@ -763,6 +764,8 @@ const deputyRosterCache = new Map<string, { data: any; expiresAt: number }>();
 
 const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
 const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const kpiCache = new Map<string, { data: any; expiresAt: number }>();
+let kpiLoggedFlexKeys = false;
 
 export function registerRoutes(httpServer: Server, app: Express) {
   // Helper to wrap async route handlers and forward errors to Express error handler
@@ -819,6 +822,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
       const { key, value } = req.body;
       if (!key || value === undefined) return res.status(400).json({ error: "key and value required" });
       await storage.setSetting(key, String(value));
+      if (String(key).startsWith("kpi_")) kpiCache.clear();
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -6871,7 +6875,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     };
 
     // ── Deputy: timesheets by OU ──────────────────────────────────────────────
-    const DEPUTY_TOKEN = await storage.getSetting("deputy_token") || "1b457a884168403374ccd759a42d1f14";
+    const DEPUTY_TOKEN = await storage.getSetting("deputy_token") || "";
     const DEPUTY_SUBDOMAIN = await storage.getSetting("deputy_subdomain") || "thedeli.au.deputy.com";
     const deputyBase = DEPUTY_SUBDOMAIN.includes('.') ? `https://${DEPUTY_SUBDOMAIN}` : `https://${DEPUTY_SUBDOMAIN}.au.deputy.com`;
 
@@ -7094,6 +7098,209 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // GET /api/wages-dashboard/xero?from=YYYY-MM-DD&to=YYYY-MM-DD
   // Returns cached Xero delivery fee
+  // ─── Kitchen KPI tracker (dashboard) ─────────────────────────────────────
+  // GET /api/kpi/period?date=YYYY-MM-DD
+  // Returns the 4-week KPI period containing `date` (default today), with
+  // per-week and period totals for:
+  //   • turnover — all Flex sales ex GST (incl. wholesale & delivery; cancelled excluded)
+  //   • production wages — Deputy timesheets incl. super, excluding the Drivers
+  //     and Events areas and anyone in the `kpi_excluded_staff` setting
+  //   • delivery fees ex GST (Flex) vs Drivers-area wages incl. super
+  app.get("/api/kpi/period", asyncRoute(async (req, res) => {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || "")) ? String(req.query.date) : todayPerth();
+    const p = periodFor(date);
+    const today = todayPerth();
+    const isCurrent = today >= p.start && today <= p.end;
+    const cacheKey = `kpi:${p.start}`;
+    const cached = kpiCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt && req.query.refresh !== "true") {
+      return res.json({ ...cached.data, _cached: true });
+    }
+
+    const errors: string[] = [];
+    const weekIdx = (d: string) => p.weeks.findIndex((w) => d >= w.start && d <= w.end);
+    const blank = () => ({ turnover: 0, deliveryFees: 0, orders: 0, productionWages: 0, driverWages: 0, pendingWages: 0 });
+    const weeks = p.weeks.map(blank);
+
+    // ── Flex: sales + delivery fees ─────────────────────────────────────────
+    const num = (v: any) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+    const orderTax = (o: any): number | null =>
+      num(o.total_tax) ?? num(o.tax_total) ?? num(o.grand_total_tax) ?? num(o.tax_amount) ??
+      (typeof o.tax === "object" ? null : num(o.tax));
+    let gstFromFlex = 0, gstEstimated = 0;
+    const EXCLUDED_STATUSES = new Set(["cancelled", "canceled", "quote", "draft", "declined", "refunded", "void", "voided"]);
+    const flexTask = (async () => {
+      let page = 1;
+      while (page <= 50) {
+        const path = `/api/v1/orders?per_page=200&page=${page}` +
+          `&delivery_datetime_from=${encodeURIComponent(p.start + "T00:00:00+08:00")}` +
+          `&delivery_datetime_to=${encodeURIComponent(p.end + "T23:59:59+08:00")}`;
+        const r = await flexFetch(path, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) { errors.push(`Flex returned ${r.status}`); return; }
+        const body: any = await r.json();
+        const items: any[] = body.items || [];
+        if (!kpiLoggedFlexKeys && items[0]) {
+          kpiLoggedFlexKeys = true;
+          console.log("[kpi] Flex order fields:", Object.keys(items[0]).join(","), "| shipping:", JSON.stringify(items[0].shipping ?? null).slice(0, 300));
+        }
+        for (const o of items) {
+          if (EXCLUDED_STATUSES.has(String(o.status || "").toLowerCase())) continue;
+          const grand = num(o.grand_total) ?? 0;
+          if (grand <= 0) continue;
+          const dt = new Date(o.delivery_datetime || o.created_at || "");
+          if (isNaN(dt.getTime())) continue;
+          const i = weekIdx(new Date(dt.getTime() + 8 * 3_600_000).toISOString().slice(0, 10));
+          if (i < 0) continue;
+          const tax = orderTax(o);
+          let exGst: number;
+          if (tax !== null && tax >= 0 && tax < grand) { exGst = grand - tax; gstFromFlex++; }
+          else { exGst = grand / 1.1; gstEstimated++; }
+          const ship = o.shipping || {};
+          const shipEx = num(ship.price_excl_tax) ?? num(ship.price_ex_tax) ??
+            ((num(ship.price_incl_tax) ?? num(ship.price) ?? 0) / 1.1);
+          weeks[i].turnover += exGst;
+          weeks[i].deliveryFees += shipEx;
+          weeks[i].orders += 1;
+        }
+        const total = Number(body.total_items || body.total || 0);
+        if (!items.length || page * 200 >= total || !body.next_page && !total) break;
+        page++;
+      }
+    })().catch((e) => { errors.push(`Flex: ${e.message}`); });
+
+    // ── Deputy: timesheets ──────────────────────────────────────────────────
+    let excludedMatched: string[] = [];
+    let excludedUnmatched: string[] = [];
+    let superMethod = "deputy_oncost";
+    const deputyTask = (async () => {
+      const [token, sub] = await Promise.all([storage.getSetting("deputy_token"), storage.getSetting("deputy_subdomain")]);
+      if (!token || !sub) { errors.push("Deputy is not configured in Settings"); return; }
+      const base = sub.includes(".") ? `https://${sub}` : `https://${sub}.au.deputy.com`;
+      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" };
+
+      const fromS = Math.floor(new Date(p.start + "T00:00:00+08:00").getTime() / 1000);
+      const toS = Math.floor(new Date(p.end + "T23:59:59+08:00").getTime() / 1000);
+      const fetchTimesheets = async () => {
+        const all: any[] = [];
+        for (let start = 0; start < 10_000; start += 500) {
+          const r = await fetch(`${base}/api/v1/resource/Timesheet/QUERY`, {
+            method: "POST", headers,
+            body: JSON.stringify({
+              search: {
+                s1: { field: "Date", type: "ge", data: fromS },
+                s2: { field: "Date", type: "le", data: toS },
+              },
+              max: 500, start,
+            }),
+          });
+          if (!r.ok) throw new Error(`Deputy timesheets ${r.status}`);
+          const batch: any[] = await r.json();
+          all.push(...batch);
+          if (batch.length < 500) break;
+        }
+        return all;
+      };
+      const [timesheets, employees, ous, excludedSetting] = await Promise.all([
+        fetchTimesheets(),
+        fetch(`${base}/api/v1/resource/Employee?max=500`, { headers }).then((r) => r.ok ? r.json() : []),
+        fetch(`${base}/api/v1/resource/OperationalUnit?max=500`, { headers }).then((r) => r.ok ? r.json() : []),
+        storage.getSetting("kpi_excluded_staff"),
+      ]);
+
+      // Areas: anything named like "Driver" or "Event" is excluded from production
+      const ouName = new Map<number, string>((ous || []).map((o: any) => [o.Id, String(o.OperationalUnitName || o.Name || "")]));
+      const isDriverOu = (id: number) => /driver|deliver/i.test(ouName.get(id) || "") || (!ouName.size && id === 41);
+      const isEventOu = (id: number) => /event/i.test(ouName.get(id) || "") || (!ouName.size && id === 84);
+
+      // Staff excluded from production wages (owners/directors)
+      const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+      const entries = String(excludedSetting ?? "Scott Simpson\nIan Fletcher").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+      const excludedIds = new Set<number>();
+      for (const entry of entries) {
+        const want = words(entry);
+        const hits = (employees || []).filter((e: any) => {
+          const have = new Set(words(`${e.DisplayName || ""} ${e.FirstName || ""} ${e.LastName || ""}`));
+          return want.every((w) => have.has(w));
+        });
+        if (hits.length) {
+          for (const h of hits) { excludedIds.add(h.Id); excludedMatched.push(String(h.DisplayName || `${h.FirstName} ${h.LastName}`).trim()); }
+        } else excludedUnmatched.push(entry);
+      }
+
+      let totalCost = 0, totalOnCost = 0;
+      const rows: { i: number; cost: number; onCost: number; driver: boolean; production: boolean; pending: boolean }[] = [];
+      for (const ts of timesheets) {
+        if (ts.Discarded) continue;
+        const d = typeof ts.Date === "string"
+          ? ts.Date.slice(0, 10)
+          : new Date(((ts.StartTime || 0) * 1000) + 8 * 3_600_000).toISOString().slice(0, 10);
+        const i = weekIdx(d);
+        if (i < 0) continue;
+        const ou = Number(ts.OperationalUnit);
+        const driver = isDriverOu(ou);
+        const production = !driver && !isEventOu(ou) && !excludedIds.has(Number(ts.Employee));
+        const cost = Number(ts.Cost) || 0, onCost = Number(ts.OnCost) || 0;
+        totalCost += cost; totalOnCost += onCost;
+        rows.push({ i, cost, onCost, driver, production, pending: !ts.PayRuleApproved && !ts.TimeApproved });
+      }
+      // Wages include super. Use Deputy's on-costs when it records them,
+      // otherwise add the Superannuation Guarantee rate (12% from 1 July 2025).
+      const SUPER = 0.12;
+      const useOnCost = totalOnCost > 0;
+      if (!useOnCost) superMethod = "sg_12pct";
+      for (const r of rows) {
+        const wage = useOnCost ? r.cost + r.onCost : r.cost * (1 + SUPER);
+        if (r.driver) weeks[r.i].driverWages += wage;
+        if (r.production) weeks[r.i].productionWages += wage;
+        if (r.pending && (r.driver || r.production)) weeks[r.i].pendingWages += wage;
+      }
+    })().catch((e) => { errors.push(`Deputy: ${e.message}`); });
+
+    await Promise.all([flexTask, deputyTask]);
+
+    const pctOf = (a: number, b: number) => (b > 0 ? (a / b) * 100 : null);
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const sum = (k: keyof ReturnType<typeof blank>) => weeks.reduce((s, w) => s + w[k], 0);
+    const [prodTarget, driverTarget] = await Promise.all([
+      storage.getSetting("kpi_production_wage_target_pct"),
+      storage.getSetting("kpi_driver_wage_target_pct"),
+    ]);
+    const shape = (w: ReturnType<typeof blank>) => ({
+      turnover: round(w.turnover),
+      deliveryFees: round(w.deliveryFees),
+      orders: w.orders,
+      productionWages: round(w.productionWages),
+      productionPct: pctOf(w.productionWages, w.turnover),
+      driverWages: round(w.driverWages),
+      driverPct: pctOf(w.driverWages, w.deliveryFees),
+      pendingWages: round(w.pendingWages),
+    });
+    const data = {
+      fyLabel: p.fyLabel,
+      period: p.period,
+      start: p.start,
+      end: p.end,
+      isCurrent,
+      currentWeek: isCurrent ? weekOf(p, today) : null,
+      weeks: p.weeks.map((w, i) => ({ ...w, future: w.start > today, ...shape(weeks[i]) })),
+      totals: shape({
+        turnover: sum("turnover"), deliveryFees: sum("deliveryFees"), orders: sum("orders"),
+        productionWages: sum("productionWages"), driverWages: sum("driverWages"), pendingWages: sum("pendingWages"),
+      }),
+      targets: {
+        productionPct: parseFloat(prodTarget || "30"),
+        driverPct: parseFloat(driverTarget || "100"),
+      },
+      excludedStaff: { matched: Array.from(new Set(excludedMatched)), unmatched: excludedUnmatched },
+      method: { superannuation: superMethod, gstFromFlex, gstEstimated },
+      errors,
+      fetchedAt: new Date().toISOString(),
+    };
+    // Don't cache failures; current period refreshes every 10 min, past periods every 6 h
+    if (!errors.length) kpiCache.set(cacheKey, { data, expiresAt: Date.now() + (isCurrent ? 10 * 60_000 : 6 * 3_600_000) });
+    res.json(data);
+  }));
+
   app.get("/api/wages-dashboard/xero", asyncRoute(async (req, res) => {
     const { from, to } = req.query as { from?: string; to?: string };
     if (!from || !to) return res.status(400).json({ error: "from and to required" });
@@ -9725,7 +9932,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // ── GET /api/compliance/staff — Deputy employee list for staff pickers ─────
   app.get('/api/compliance/staff', async (req: any, res: any) => {
     try {
-      const deputyToken = await storage.getSetting('deputy_token') || '1b457a884168403374ccd759a42d1f14';
+      const deputyToken = await storage.getSetting('deputy_token') || '';
       const deputySubdomain = await storage.getSetting('deputy_subdomain') || 'thedeli.au.deputy.com';
       // subdomain may be stored as full domain (thedeli.au.deputy.com) or short name (thedeli)
       const deputyBase = deputySubdomain.includes('.') ? `https://${deputySubdomain}` : `https://${deputySubdomain}.au.deputy.com`;

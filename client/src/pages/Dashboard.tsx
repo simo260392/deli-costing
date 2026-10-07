@@ -3,53 +3,17 @@ import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
+import { KpiTracker } from "@/components/KpiTracker";
 import {
-  AlertTriangle, CheckCircle, Thermometer, Package, TrendingUp,
-  ClipboardCheck, DollarSign, ShoppingBag, FileText, ChevronRight,
-  Sparkles, Clock, Users
+  CheckCircle, Thermometer, Package,
+  ClipboardCheck, FileText, ChevronRight,
+  Sparkles
 } from "lucide-react";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-function currency(n: number | null | undefined) {
-  if (n == null) return "—";
-  return `$${n.toLocaleString("en-AU", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-}
-function pct(n: number | null | undefined) {
-  if (n == null) return "—";
-  return `${n.toFixed(1)}%`;
-}
 function todayAWST() {
   return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
-function thisWeekRange() {
-  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  const day = now.getUTCDay();
-  const monday = new Date(now);
-  monday.setUTCDate(now.getUTCDate() - ((day + 6) % 7));
-  const sunday = new Date(monday);
-  sunday.setUTCDate(monday.getUTCDate() + 6);
-  return {
-    from: monday.toISOString().slice(0, 10),
-    to: sunday.toISOString().slice(0, 10),
-  };
-}
-function lastWeekRange() {
-  const { from } = thisWeekRange();
-  const lastMon = new Date(from);
-  lastMon.setUTCDate(lastMon.getUTCDate() - 7);
-  const lastSun = new Date(lastMon);
-  lastSun.setUTCDate(lastMon.getUTCDate() + 6);
-  return {
-    from: lastMon.toISOString().slice(0, 10),
-    to: lastSun.toISOString().slice(0, 10),
-  };
-}
-
-function delta(curr: number | null, prev: number | null) {
-  if (!curr || !prev || prev === 0) return null;
-  return ((curr - prev) / prev) * 100;
-}
-
 // ── sub-components ───────────────────────────────────────────────────────────
 
 function SectionHeader({ icon: Icon, label, count, color = "#256984" }: {
@@ -96,77 +60,10 @@ function EmptyState({ label }: { label: string }) {
   );
 }
 
-function Card({ children, className }: { children: React.ReactNode; className?: string }) {
+function Card({ children, className, id }: { children: React.ReactNode; className?: string; id?: string }) {
   return (
-    <div className={cn("bg-white rounded-xl border border-gray-100 shadow-sm p-4", className)}>
+    <div id={id} className={cn("bg-white rounded-xl border border-gray-100 shadow-sm p-4", className)}>
       {children}
-    </div>
-  );
-}
-
-// ── Sales KPI card ────────────────────────────────────────────────────────────
-function KpiCard({ label, value, prev, icon: Icon, href, loading }: {
-  label: string; value: number | null; prev: number | null; icon: any; href: string; loading?: boolean;
-}) {
-  const d = delta(value, prev);
-  return (
-    <Link href={href}>
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 cursor-pointer hover:border-[#256984]/40 hover:shadow-md transition-all group">
-        <div className="flex items-start justify-between mb-2">
-          <div className="p-1.5 rounded-lg" style={{ backgroundColor: "#256984" + "18" }}>
-            <Icon size={15} style={{ color: "#256984" }} />
-          </div>
-          {d != null && (
-            <span className={cn(
-              "text-xs font-medium px-1.5 py-0.5 rounded-full",
-              d >= 0 ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-            )}>
-              {d >= 0 ? "↑" : "↓"} {Math.abs(d).toFixed(0)}%
-            </span>
-          )}
-        </div>
-        {loading ? (
-          <div className="space-y-1">
-            <div className="h-6 w-20 bg-gray-100 rounded animate-pulse" />
-            <div className="h-3 w-16 bg-gray-100 rounded animate-pulse" />
-          </div>
-        ) : (
-          <>
-            <p className="text-xl font-bold text-gray-900 tabular-nums">{currency(value)}</p>
-            <p className="text-xs text-gray-500 mt-0.5">{label}</p>
-            {prev != null && (
-              <p className="text-xs text-gray-400 mt-0.5">Last week: {currency(prev)}</p>
-            )}
-          </>
-        )}
-      </div>
-    </Link>
-  );
-}
-
-// ── Wages row ────────────────────────────────────────────────────────────────
-function WagesRow({ label, wages, sales, target, loading }: {
-  label: string; wages: number | null; sales: number | null; target: number; loading: boolean;
-}) {
-  const actualPct = wages && sales ? (wages / sales) * 100 : null;
-  const ok = actualPct != null && actualPct <= target;
-  return (
-    <div className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-      <span className="text-sm text-gray-700">{label}</span>
-      {loading ? (
-        <div className="h-4 w-28 bg-gray-100 rounded animate-pulse" />
-      ) : (
-        <div className="flex items-center gap-3">
-          <span className="text-sm tabular-nums text-gray-600">{currency(wages)}</span>
-          <span className={cn(
-            "text-xs font-medium px-1.5 py-0.5 rounded-full tabular-nums",
-            actualPct == null ? "bg-gray-100 text-gray-500" :
-            ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-          )}>
-            {pct(actualPct)} <span className="opacity-60">/ {target}%</span>
-          </span>
-        </div>
-      )}
     </div>
   );
 }
@@ -179,62 +76,12 @@ export default function Dashboard() {
   const isAdmin = staff?.accessLevel?.name === "Admin";
 
   const today = todayAWST();
-  const thisWeek = thisWeekRange();
-  const lastWeek = lastWeekRange();
-
   // Fast summary (alerts only — no external API calls)
   const { data: summary, isLoading: summaryLoading } = useQuery({
     queryKey: ["/api/dashboard-summary"],
     queryFn: () => apiRequest("GET", "/api/dashboard-summary").then(r => r.json()),
     staleTime: 2 * 60 * 1000,
   });
-
-  // Wages + catering sales this week
-  const { data: wagesThis, isLoading: wagesThisLoading } = useQuery({
-    queryKey: ["/api/wages-dashboard", thisWeek.from, thisWeek.to],
-    queryFn: () => apiRequest("GET", `/api/wages-dashboard?from=${thisWeek.from}&to=${thisWeek.to}`).then(r => r.json()),
-    staleTime: 5 * 60 * 1000,
-    enabled: hasAccess("wages") || isAdmin,
-  });
-
-  // Wages + catering sales last week
-  const { data: wagesLast, isLoading: wagesLastLoading } = useQuery({
-    queryKey: ["/api/wages-dashboard", lastWeek.from, lastWeek.to],
-    queryFn: () => apiRequest("GET", `/api/wages-dashboard?from=${lastWeek.from}&to=${lastWeek.to}`).then(r => r.json()),
-    staleTime: 30 * 60 * 1000,
-    enabled: hasAccess("wages") || isAdmin,
-  });
-
-  // CBD store sales (Lightspeed — monthly, we'll use current month)
-  const { data: cbdData } = useQuery({
-    queryKey: ["/api/lightspeed/turnover"],
-    queryFn: () => apiRequest("GET", "/api/lightspeed/turnover").then(r => r.json()),
-    staleTime: 30 * 60 * 1000,
-    enabled: hasAccess("wages") || isAdmin,
-  });
-
-  const wagesLoading = wagesThisLoading || wagesLastLoading;
-
-  // Extract values
-  const cateringThis = wagesThis?.flex?.cateringExGstInclWholesale ?? null;
-  const cateringLast = wagesLast?.flex?.cateringExGstInclWholesale ?? null;
-
-  const cbdRows: any[] = cbdData?.rows || [];
-  const currentMonthStr = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
-  const lastMonthStr = new Date(Date.now() + 8 * 60 * 60 * 1000 - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 7);
-  const cbdThis = cbdRows.find((r: any) => r.month_start?.startsWith(currentMonthStr))?.net_amount ?? null;
-  const cbdLast = cbdRows.find((r: any) => r.month_start?.startsWith(lastMonthStr))?.net_amount ?? null;
-
-  const totalWagesThis = wagesThis?.areas
-    ? Object.values(wagesThis.areas).reduce((sum: number, a: any) => sum + (a.totalWages || 0), 0)
-    : null;
-  const totalWagesLast = wagesLast?.areas
-    ? Object.values(wagesLast.areas).reduce((sum: number, a: any) => sum + (a.totalWages || 0), 0)
-    : null;
-
-  const cbdWagesThis = (wagesThis?.areas as any)?.cbd_store?.totalWages ?? null;
-  const productionWagesThis = (wagesThis?.areas as any)?.production?.totalWages ?? null;
-  const driverWagesThis = (wagesThis?.areas as any)?.drivers?.totalWages ?? null;
 
   // Alert counts from summary
   const missingCount = summary?.missingItems?.length ?? 0;
@@ -248,8 +95,11 @@ export default function Dashboard() {
   const showProducts = hasAccess("products") || isAdmin;
   const showProduction = hasAccess("prep") || isAdmin;
 
-  const dayLabel = new Date(Date.now() + 8 * 60 * 60 * 1000)
-    .toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
+  // Always show Perth's date/time, whatever time zone the device is set to
+  const now = new Date();
+  const dayLabel = now.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long", timeZone: "Australia/Perth" });
+  const perthHour = Number(now.toLocaleString("en-AU", { hour: "numeric", hourCycle: "h23", timeZone: "Australia/Perth" }));
+  const greeting = perthHour < 12 ? "Good morning" : perthHour < 17 ? "Good afternoon" : "Good evening";
 
   return (
     <div className="p-4 max-w-5xl mx-auto space-y-5">
@@ -257,7 +107,7 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-[#256984]">Good morning{staff?.name ? `, ${staff.name.split(' ')[0]}` : ""}</h1>
+          <h1 className="text-lg font-bold text-[#256984]">{greeting}{staff?.name ? `, ${staff.name.split(' ')[0]}` : ""}</h1>
           <p className="text-sm text-gray-500">{dayLabel}</p>
         </div>
         <div className="text-right">
@@ -270,55 +120,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Sales KPIs ───────────────────────────────────────────────────── */}
-      {showSales && (
-        <section id="sales">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">This Week vs Last Week</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <KpiCard
-              label="Catering sales (ex GST)"
-              value={cateringThis}
-              prev={cateringLast}
-              icon={TrendingUp}
-              href="/wages"
-              loading={wagesLoading}
-            />
-            <KpiCard
-              label="CBD store (this month)"
-              value={cbdThis}
-              prev={cbdLast}
-              icon={ShoppingBag}
-              href="/wages"
-              loading={false}
-            />
-            <KpiCard
-              label="Total wages"
-              value={totalWagesThis}
-              prev={totalWagesLast}
-              icon={Users}
-              href="/wages"
-              loading={wagesLoading}
-            />
-          </div>
-        </section>
-      )}
-
-      {/* ── Wages breakdown ─────────────────────────────────────────────── */}
-      {showSales && (
-        <Card>
-          <SectionHeader icon={DollarSign} label="Wages vs Sales Targets" />
-          <WagesRow label="CBD Store" wages={cbdWagesThis} sales={cateringThis} target={26} loading={wagesLoading} />
-          <WagesRow label="Production Kitchen" wages={productionWagesThis} sales={cateringThis} target={16} loading={wagesLoading} />
-          <WagesRow label="Drivers" wages={driverWagesThis} sales={cateringThis} target={88} loading={wagesLoading} />
-          <div className="mt-3 pt-2">
-            <Link href="/wages">
-              <span className="text-xs text-[#256984] font-medium hover:underline cursor-pointer">
-                View full wages dashboard →
-              </span>
-            </Link>
-          </div>
-        </Card>
-      )}
+      {/* ── Kitchen KPI tracker (period / week) ─────────────────────── */}
+      {showSales && <KpiTracker />}
 
       {/* ── Alerts grid ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

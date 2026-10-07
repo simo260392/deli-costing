@@ -573,6 +573,9 @@ export default function Settings() {
     drive_receipts_folder_id: "",
     google_client_id: "",
     dispatch_offset_mins: "30",
+    kpi_production_wage_target_pct: "30",
+    kpi_driver_wage_target_pct: "100",
+    kpi_excluded_staff: "Scott Simpson\nIan Fletcher",
   });
 
   const { data: settingsData = {}, isLoading } = useQuery({
@@ -591,6 +594,9 @@ export default function Settings() {
         drive_receipts_folder_id: settingsData.drive_receipts_folder_id || "",
         google_client_id: settingsData.google_client_id || "",
         dispatch_offset_mins: settingsData.dispatch_offset_mins || "30",
+        kpi_production_wage_target_pct: settingsData.kpi_production_wage_target_pct || "30",
+        kpi_driver_wage_target_pct: settingsData.kpi_driver_wage_target_pct || "100",
+        kpi_excluded_staff: settingsData.kpi_excluded_staff ?? "Scott Simpson\nIan Fletcher",
       });
     }
   }, [settingsData]);
@@ -603,6 +609,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/kpi/period"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recipes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/platters"] });
@@ -714,6 +721,54 @@ export default function Settings() {
                       data-testid="input-dispatch-offset"
                     />
                     <span className="text-sm text-muted-foreground">minutes before delivery</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Kitchen KPIs */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <TrendingUp size={16} className="text-primary" /> Kitchen KPIs (dashboard)
+                  </CardTitle>
+                  <CardDescription>
+                    Targets and who counts towards production wages. Drivers are anyone rostered in Deputy's
+                    Drivers area; Events area shifts are also left out.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">Production wages target</Label>
+                      <div className="flex items-center gap-2">
+                        <Input type="number" min="0" max="100" step="0.5" className="w-24"
+                          value={form.kpi_production_wage_target_pct}
+                          onChange={(e) => setForm({ ...form, kpi_production_wage_target_pct: e.target.value })}
+                          data-testid="input-kpi-production-target" />
+                        <span className="text-sm text-muted-foreground">% of catering sales or less</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm">Driver wages target</Label>
+                      <div className="flex items-center gap-2">
+                        <Input type="number" min="0" max="500" step="1" className="w-24"
+                          value={form.kpi_driver_wage_target_pct}
+                          onChange={(e) => setForm({ ...form, kpi_driver_wage_target_pct: e.target.value })}
+                          data-testid="input-kpi-driver-target" />
+                        <span className="text-sm text-muted-foreground">% of delivery fees or less</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label className="text-sm">Leave out of production wages</Label>
+                    <textarea
+                      rows={3}
+                      className="w-full max-w-sm rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={form.kpi_excluded_staff}
+                      onChange={(e) => setForm({ ...form, kpi_excluded_staff: e.target.value })}
+                      data-testid="input-kpi-excluded-staff"
+                    />
+                    <p className="text-xs text-muted-foreground">One name per line, as it appears in Deputy. The dashboard confirms who it matched.</p>
                   </div>
                 </CardContent>
               </Card>
