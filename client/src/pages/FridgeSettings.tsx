@@ -10,13 +10,12 @@ import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Settings, Thermometer, Clock, Plus, Pencil, Trash2, Check, X, Building2, ChefHat, Snowflake, RefreshCw } from "lucide-react";
+import { Settings, Thermometer, Clock, Plus, Pencil, Trash2, Check, X, ChefHat, Snowflake, RefreshCw } from "lucide-react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LOCATIONS = [
   { id: "osborne_park", label: "Osborne Park Production Kitchen", icon: ChefHat },
-  { id: "cbd_store",    label: "CBD Store",                       icon: Building2 },
 ] as const;
 type LocationId = typeof LOCATIONS[number]["id"];
 

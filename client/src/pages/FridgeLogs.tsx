@@ -16,21 +16,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Thermometer, Plus, Download, Trash2, Building2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity, CalendarDays } from "lucide-react";
+import { Thermometer, Plus, Download, Trash2, ChefHat, AlertTriangle, CheckCircle, Settings, Wifi, WifiOff, Activity, CalendarDays } from "lucide-react";
 import { StaffSearchPicker } from "@/components/StaffSearchPicker";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const LOCATIONS = [
   { id: "osborne_park", label: "Osborne Park Production Kitchen", icon: ChefHat },
-  { id: "cbd_store",    label: "CBD Store",                       icon: Building2 },
 ] as const;
 
 type LocationId = typeof LOCATIONS[number]["id"];
 
 const UNITS: Record<LocationId, string[]> = {
   osborne_park: ["Fridge 1", "Fridge 2", "Fridge 3", "Freezer 1", "Freezer 2", "Cool Room"],
-  cbd_store:    ["Fridge 1", "Fridge 2", "Freezer 1", "Display Fridge"],
 };
 
 interface FridgeUnitSetting {
@@ -210,7 +208,7 @@ type SensorReading = {
 };
 
 function SensorLivePanel({ location, date }: { location: string; date: string }) {
-  const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
+  const spLocation = 'osborne_park';
 
   const { data: sensors = [], isLoading, dataUpdatedAt } = useQuery<SensorReading[]>({
     queryKey: ['/api/sensorpush/latest', spLocation, date],
@@ -362,7 +360,7 @@ interface GridData {
 }
 
 function SensorReadingsGrid({ location, date }: { location: string; date: string }) {
-  const spLocation = location === 'cbd_store' ? 'cbd' : 'osborne_park';
+  const spLocation = 'osborne_park';
 
   const { data, isLoading } = useQuery<GridData>({
     queryKey: ['/api/sensorpush/daily-grid', spLocation, date],
@@ -610,8 +608,8 @@ export default function FridgeLogs() {
         </div>
       </div>
 
-      {/* Location toggle */}
-      <div className="flex gap-2">
+      {/* Location toggle (hidden while there's only one site) */}
+      {LOCATIONS.length > 1 && <div className="flex gap-2">
         {LOCATIONS.map(loc => {
           const Icon = loc.icon;
           const active = location === loc.id;
@@ -631,7 +629,7 @@ export default function FridgeLogs() {
             </button>
           );
         })}
-      </div>
+      </div>}
 
       {/* 1. Latest Sensor Readings (always live — not date-filtered) */}
       <SensorLivePanel location={location} date={todayAWST} />

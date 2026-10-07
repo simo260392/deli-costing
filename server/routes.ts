@@ -10522,6 +10522,41 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const sensorSamples = samplesData.sensors || {};
 
       // 3. Load our sensor list
+      // 2b. Discover sensors added in the SensorPush account that the app
+      //     doesn't know yet. They're saved as INACTIVE with their SensorPush
+      //     name, so they appear for an admin to switch on (and set location /
+      //     temperature limits) without anyone needing to look up IDs.
+      try {
+        const [{ data: known }, devRes] = await Promise.all([
+          supabase.from('sensorpush_sensors').select('id'),
+          fetch('https://api.sensorpush.com/api/v1/devices/sensors', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
+            body: JSON.stringify({}),
+          }),
+        ]);
+        const devices = devRes.ok ? (await devRes.json() as Record<string, any>) : {};
+        const knownIds = new Set((known || []).map((k: any) => String(k.id)));
+        const newSensors = Object.values(devices)
+          .filter((d: any) => d?.id && !knownIds.has(String(d.id)))
+          .map((d: any) => ({
+            id: String(d.id),
+            name: String(d.name || d.id),
+            location: 'osborne_park', // only site since the CBD store closed
+
+            temp_min: 0,
+            temp_max: 5,
+            active: false,
+          }));
+        if (newSensors.length > 0) {
+          const { error: newErr } = await supabase.from('sensorpush_sensors').insert(newSensors);
+          if (newErr) console.error('[sensorpush/poll] could not save new sensors:', newErr.message);
+          else console.log(`[sensorpush/poll] discovered ${newSensors.length} new sensor(s):`, newSensors.map(s => s.name).join(', '));
+        }
+      } catch (e: any) {
+        console.error('[sensorpush/poll] sensor discovery failed:', e?.message);
+      }
+
       const { data: ourSensors } = await supabase.from('sensorpush_sensors').select('*').eq('active', true);
 
       let inserted = 0;
@@ -10577,6 +10612,37 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       res.status(500).json({ error: err.message });
     }
   }));
+
+  // ── Built-in SensorPush polling ────────────────────────────────────────────
+  // Fridge temperatures are food-safety records, so the app polls SensorPush
+  // itself every 15 minutes, day and night, rather than relying on an outside
+  // scheduler (which had been leaving 6–10 hour gaps).
+  {
+    const POLL_EVERY_MS = 15 * 60 * 1000;
+    let polling = false;
+    const pollSensorPush = async () => {
+      const secret = process.env.APP_CRON_SECRET;
+      if (!secret || polling) return;
+      polling = true;
+      try {
+        const port = parseInt(process.env.PORT || "5000", 10);
+        const r = await fetch(`http://127.0.0.1:${port}/api/sensorpush/poll`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${secret}` },
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!r.ok) console.error(`[sensorpush] scheduled poll failed: HTTP ${r.status}`);
+      } catch (e: any) {
+        console.error("[sensorpush] scheduled poll error:", e?.message);
+      } finally {
+        polling = false;
+      }
+    };
+    if (process.env.NODE_ENV === "production") {
+      setTimeout(pollSensorPush, 60_000); // first poll a minute after start-up
+      setInterval(pollSensorPush, POLL_EVERY_MS);
+    }
+  }
 
   // Lightspeed (Kounta) live connection removed Oct 2026 — CBD store closed.
   // Historical store sales remain in lightspeed_turnover_cache for reports.
