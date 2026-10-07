@@ -6907,8 +6907,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         },
         body: JSON.stringify({
           search: {
-            s1: { field: "Date", type: "ge", data: Math.floor(fromMs) },
-            s2: { field: "Date", type: "le", data: Math.floor(toMs) },
+            s1: { field: "StartTime", type: "ge", data: Math.floor(fromMs) },
+            s2: { field: "StartTime", type: "le", data: Math.floor(toMs) },
             s3: { field: "PayRuleApproved", type: "eq", data: 1 },
           },
           max: 500,
@@ -6945,8 +6945,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             },
             body: JSON.stringify({
               search: {
-                s1: { field: "Date", type: "ge", data: Math.floor(fromMs) },
-                s2: { field: "Date", type: "le", data: Math.floor(toMs) },
+                s1: { field: "StartTime", type: "ge", data: Math.floor(fromMs) },
+                s2: { field: "StartTime", type: "le", data: Math.floor(toMs) },
               },
               max: 500,
             }),
@@ -7140,6 +7140,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       num(o.total_tax) ?? num(o.tax_total) ?? num(o.grand_total_tax) ?? num(o.tax_amount) ??
       (typeof o.tax === "object" ? null : num(o.tax));
     let gstFromFlex = 0, gstEstimated = 0;
+    let bookedAhead = 0, bookedAheadOrders = 0;
     const EXCLUDED_STATUSES = new Set(["cancelled", "canceled", "quote", "draft", "declined", "refunded", "void", "voided"]);
     const flexTask = (async () => {
       let page = 1;
@@ -7161,7 +7162,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           if (grand <= 0) continue;
           const dt = new Date(o.delivery_datetime || o.created_at || "");
           if (isNaN(dt.getTime())) continue;
-          const i = weekIdx(new Date(dt.getTime() + 8 * 3_600_000).toISOString().slice(0, 10));
+          const day = new Date(dt.getTime() + 8 * 3_600_000).toISOString().slice(0, 10);
+          const i = weekIdx(day);
           if (i < 0) continue;
           const tax = orderTax(o);
           let exGst: number;
@@ -7170,6 +7172,9 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
           const ship = o.shipping || {};
           const shipEx = num(ship.price_excl_tax) ?? num(ship.price_ex_tax) ??
             ((num(ship.price_incl_tax) ?? num(ship.price) ?? 0) / 1.1);
+          // KPIs compare against sales delivered up to today; later orders
+          // are reported separately as "booked ahead".
+          if (day > today) { bookedAhead += exGst; bookedAheadOrders++; continue; }
           weeks[i].turnover += exGst;
           weeks[i].deliveryFees += shipEx;
           weeks[i].orders += 1;
@@ -7184,6 +7189,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     let excludedMatched: string[] = [];
     let excludedUnmatched: string[] = [];
     const superMethod = "sg_12pct";
+    let deputyTimesheetCount = 0;
     const deputyTask = (async () => {
       const [token, sub] = await Promise.all([storage.getSetting("deputy_token"), storage.getSetting("deputy_subdomain")]);
       if (!token || !sub) { errors.push("Deputy is not configured in Settings"); return; }
@@ -7199,8 +7205,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
             method: "POST", headers,
             body: JSON.stringify({
               search: {
-                s1: { field: "Date", type: "ge", data: fromS },
-                s2: { field: "Date", type: "le", data: toS },
+                s1: { field: "StartTime", type: "ge", data: fromS },
+                s2: { field: "StartTime", type: "le", data: toS },
               },
               max: 500, start,
             }),
@@ -7239,6 +7245,10 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         } else excludedUnmatched.push(entry);
       }
 
+      deputyTimesheetCount = timesheets.length;
+      if (timesheets.length === 0 && p.start <= today) {
+        errors.push("Deputy returned no timesheets for this period");
+      }
       const rows: { i: number; cost: number; driver: boolean; production: boolean; pending: boolean }[] = [];
       for (const ts of timesheets) {
         if (ts.Discarded) continue;
@@ -7301,7 +7311,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         driverPct: parseFloat(driverTarget || "100"),
       },
       excludedStaff: { matched: Array.from(new Set(excludedMatched)), unmatched: excludedUnmatched },
-      method: { superannuation: superMethod, gstFromFlex, gstEstimated },
+      bookedAhead: { turnover: round(bookedAhead), orders: bookedAheadOrders },
+      method: { superannuation: superMethod, gstFromFlex, gstEstimated, deputyTimesheets: deputyTimesheetCount },
       errors,
       fetchedAt: new Date().toISOString(),
     };

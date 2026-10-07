@@ -19,6 +19,7 @@ interface KpiResponse {
   weeks: KpiWeekRow[]; totals: KpiFigures;
   targets: { productionPct: number; driverPct: number };
   excludedStaff: { matched: string[]; unmatched: string[] };
+  bookedAhead?: { turnover: number; orders: number };
   method: { superannuation: string };
   errors: string[]; fetchedAt: string;
 }
@@ -173,9 +174,16 @@ export function KpiTracker() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Tile
           icon={TrendingUp}
-          label="Catering sales (ex GST)"
+          label="Turnover to date (ex GST)"
           value={money(t?.turnover)}
-          sub={t ? `${t.orders} orders · incl. wholesale & ${money(t.deliveryFees)} delivery` : undefined}
+          sub={t ? (
+            <>
+              {t.orders} orders delivered to date · incl. wholesale & {money(t.deliveryFees)} delivery
+              {data?.bookedAhead && data.bookedAhead.orders > 0 && (
+                <span className="block text-gray-400 mt-0.5">+ {money(data.bookedAhead.turnover)} booked for later this period ({data.bookedAhead.orders} orders)</span>
+              )}
+            </>
+          ) : undefined}
           loading={isLoading}
         />
         <Tile
