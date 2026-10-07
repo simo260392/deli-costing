@@ -786,6 +786,7 @@ const LIVE_FLEX_STATUSES = new Set(["active", "active_no_website", "hidden"]);
 const isLiveFlexStatus = (status?: string | null) => LIVE_FLEX_STATUSES.has(String(status || "active"));
 let kpiLoggedFlexKeys = false;
 let kpiLoggedSurcharges = 0;
+let flexDetailLogged = false;
 
 export function registerRoutes(httpServer: Server, app: Express) {
   // Helper to wrap async route handlers and forward errors to Express error handler
@@ -2233,8 +2234,8 @@ Return ONLY the JSON object, no explanation.`;
   });
 
   // POST /api/flex-products/sync — fetch all products from Flex API and upsert
-  app.post("/api/flex-products/sync", async (req, res) => {
-    try {
+  // Pull all products from Flex (read-only) into flex_products.
+  async function syncFlexProducts(): Promise<{ synced: number; removed: number }> {
       let nextPath: string | null = `/api/v1/products?per_page=100&page=1`;
       let totalSynced = 0;
       const seenUuids = new Set<string>();
@@ -2284,6 +2285,7 @@ Return ONLY the JSON object, no explanation.`;
 
           seenUuids.add(item.uuid || String(item.product_id || ''));
           await storage.upsertFlexProduct({
+            rawJson: JSON.stringify(item),
             flexUuid: item.uuid || String(item.product_id || ''),
             flexId: item.product_id || null,
             name: item.name || '',
@@ -2296,7 +2298,7 @@ Return ONLY the JSON object, no explanation.`;
             flexAllergensJson: JSON.stringify(flexAllergens),
             imageUrl,
             lastSyncedAt: new Date().toISOString(),
-          });
+          } as any);
           totalSynced++;
         }
 
@@ -2320,12 +2322,40 @@ Return ONLY the JSON object, no explanation.`;
         removed = goneIds.length;
       }
 
-      res.json({ ok: true, synced: totalSynced, removed });
+      // One-off diagnostic: log a combo product's full detail so the size /
+      // option structure Flex uses can be mapped.
+      if (!flexDetailLogged) {
+        flexDetailLogged = true;
+        try {
+          const r = await flexFetch(`/api/v1/products/7370ebda-2259-4400-b1b9-31dd67a0a48d`);
+          const txt = await r.text();
+          for (let i = 0; i < Math.min(txt.length, 12000); i += 3000) {
+            console.log(`[flex] product detail ${i / 3000 + 1}:`, txt.slice(i, i + 3000));
+          }
+        } catch (e: any) { console.error("[flex] detail log failed", e?.message); }
+      }
+      return { synced: totalSynced, removed };
+  }
+
+  app.post("/api/flex-products/sync", async (req, res) => {
+    try {
+      const { synced, removed } = await syncFlexProducts();
+      res.json({ ok: true, synced, removed });
     } catch (e: any) {
       console.error('Flex sync error:', e);
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Keep products current without anyone pressing "Sync": shortly after
+  // start-up, then every 6 hours.
+  if (process.env.NODE_ENV === "production") {
+    const runProductSync = () => syncFlexProducts()
+      .then((r) => console.log(`[flex] scheduled product sync: ${r.synced} synced, ${r.removed} removed`))
+      .catch((e) => console.error("[flex] scheduled product sync failed:", e?.message));
+    setTimeout(runProductSync, 2 * 60_000);
+    setInterval(runProductSync, 6 * 3_600_000);
+  }
 
   // ─── Product Size Variants ──────────────────────────────────────────────────
 
