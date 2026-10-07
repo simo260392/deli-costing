@@ -1,4 +1,5 @@
 import { Switch, Route, Router, useLocation } from "wouter";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { useHashLocation } from "wouter/use-hash-location";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
@@ -83,7 +84,7 @@ function AuthenticatedApp() {
   }
 
   if (!staff) {
-    return <Login />;
+    return <><Login /><UpdateBanner signedIn={false} /></>;
   }
 
   // Access control: if on a page the user can't access, redirect to first allowed page
@@ -102,6 +103,7 @@ function AuthenticatedApp() {
 
   return (
     <AppLayout>
+      <UpdateBanner signedIn />
       <Switch>
         <Route path="/" component={Dashboard} />
         <Route path="/ingredients" component={Ingredients} />

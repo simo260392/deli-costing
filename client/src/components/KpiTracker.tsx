@@ -183,7 +183,7 @@ export function KpiTracker() {
           label="Production wages (incl. super)"
           value={money(t?.productionWages)}
           badge={<PctBadge value={t?.productionPct ?? null} target={targets.productionPct} size="lg" />}
-          sub="of catering sales"
+          sub="of turnover (ex GST)"
           loading={isLoading}
         />
         <Tile
@@ -247,8 +247,7 @@ export function KpiTracker() {
         <div className="flex items-start justify-between gap-3 px-4 py-2.5 border-t border-gray-100 text-[11px] text-gray-400">
           <div className="space-y-0.5">
             <p>
-              Sales from Flex · wages from Deputy, incl. super
-              {data?.method?.superannuation === "sg_12pct" ? " (12% added)" : ""}.
+              Sales from Flex (ex GST) · wages from Deputy plus 12% super.
               Production excludes Drivers & Events areas
               {data?.excludedStaff?.matched?.length ? ` and ${data.excludedStaff.matched.join(", ")}` : ""}.
             </p>

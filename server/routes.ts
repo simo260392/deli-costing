@@ -4625,74 +4625,86 @@ RULES:
     });
   });
 
+  // GET /api/version — lets open browsers/iPads notice a new deploy
+  const APP_VERSION = process.env.RAILWAY_DEPLOYMENT_ID || process.env.RAILWAY_GIT_COMMIT_SHA || String(Date.now());
+  app.get('/api/version', (_req: any, res: any) => {
+    res.set('Cache-Control', 'no-store');
+    res.json({ version: APP_VERSION });
+  });
+
   // GET /api/dashboard-summary — fast aggregated summary for new dashboard
   app.get('/api/dashboard-summary', asyncRoute(async (req: any, res: any) => {
     const todayAWST = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    // 1. Missing items today
-    const { data: missingItems } = await supabase
-      .from('missing_items_log')
-      .select('id, item_name, order_id, reason_type, reason_other, reason_ingredient, marked_by, created_at')
-      .eq('date', todayAWST)
-      .order('created_at', { ascending: false });
+    // Everything below runs in parallel (previously ~330 sequential DB
+    // round trips, taking ~40 s).
+    const [missingRes, sensorsRes, fcSetting, flexProducts, costings, pendingRes, pendingXero] = await Promise.all([
+      // 1. Missing items today
+      supabase
+        .from('missing_items_log')
+        .select('id, item_name, order_id, reason_type, reason_other, reason_ingredient, marked_by, created_at')
+        .eq('date', todayAWST)
+        .order('created_at', { ascending: false }),
+      // 2. Active fridge sensors
+      supabase.from('sensorpush_sensors').select('id, name, location, temp_min, temp_max').eq('active', true),
+      storage.getSetting('target_food_cost_percent'),
+      storage.getFlexProducts(),
+      storage.getAllFlexProductCostings(),
+      // 5. Compliance: in-progress logs
+      supabase
+        .from('compliance_logs')
+        .select('id, log_type, entity_name, status, entry_date, created_at')
+        .eq('status', 'in_progress')
+        .order('created_at', { ascending: false })
+        .limit(20),
+      // 6. Xero pending invoices
+      storage.getXeroPendingCount(),
+    ]);
+    const missingItems = missingRes.data;
+    const pendingLogs = pendingRes.data;
 
-    // 2. Out-of-range fridge sensors (latest reading per sensor)
-    const { data: sensors } = await supabase
-      .from('sensorpush_sensors')
-      .select('id, name, location, temp_min, temp_max')
-      .eq('active', true);
-
-    const fridgeAlerts: { name: string; location: string; temperature: number; temp_min: number; temp_max: number }[] = [];
-    for (const sensor of (sensors || [])) {
-      const { data: latest } = await supabase
+    // 2. Out-of-range fridge sensors — latest reading per sensor, fetched together
+    const sensors = sensorsRes.data || [];
+    const latestReadings = await Promise.all(sensors.map((sensor: any) =>
+      supabase
         .from('sensorpush_readings')
         .select('temperature, observed_at')
         .eq('sensor_id', sensor.id)
         .order('observed_at', { ascending: false })
-        .limit(1);
-      if (!latest || latest.length === 0) continue;
-      const temp = latest[0].temperature;
+        .limit(1)
+    ));
+    const fridgeAlerts: { name: string; location: string; temperature: number; temp_min: number; temp_max: number }[] = [];
+    sensors.forEach((sensor: any, i: number) => {
+      const latest = latestReadings[i].data?.[0];
+      if (!latest) return;
+      const temp = latest.temperature;
       if (temp < sensor.temp_min || temp > sensor.temp_max) {
         fridgeAlerts.push({ name: sensor.name, location: sensor.location, temperature: temp, temp_min: sensor.temp_min, temp_max: sensor.temp_max });
       }
-    }
+    });
 
-    // 3. Products not meeting FC target
-    const targetFCPct = parseFloat(await storage.getSetting('target_food_cost_percent') || '30');
-    const flexProducts = await storage.getFlexProducts();
+    // 3. Active products over the food-cost target: cost ÷ Flex price ex GST
+    //    (same basis as the Products page; previously referenced a field that
+    //    doesn't exist, so this list was always empty)
+    const targetFCPct = parseFloat(fcSetting || '30');
+    const productById = new Map(flexProducts.map((p: any) => [p.id, p]));
     const fcIssues: { id: number; name: string; fc: number }[] = [];
-    for (const p of flexProducts) {
-      const costing = await storage.getFlexProductCosting(p.id);
-      if (!costing || !costing.sellingPrice || !costing.totalCost) continue;
-      const fc = (costing.totalCost / costing.sellingPrice) * 100;
+    for (const c of costings as any[]) {
+      const p: any = productById.get(c.flexProductId);
+      if (!p || (p.status && p.status !== 'active')) continue;
+      const priceExGst = (Number(c.flexPrice) || Number(p.price) || 0) / 1.1;
+      const cost = Number(c.totalCost) || 0;
+      if (priceExGst <= 0 || cost <= 0) continue;
+      const fc = (cost / priceExGst) * 100;
       if (fc > targetFCPct) fcIssues.push({ id: p.id, name: p.name, fc: Math.round(fc * 10) / 10 });
     }
-
-    // 4. Products with missing size configs
-    const missingSizes: { id: number; name: string }[] = [];
-    for (const p of flexProducts) {
-      const sizes = JSON.parse(p.sizesJson || '[]');
-      const hasSize = sizes.some((s: any) => s.name || s.size || s.label);
-      if (!hasSize) missingSizes.push({ id: p.id, name: p.name });
-    }
-
-    // 5. Compliance: in-progress logs from today that haven't been completed
-    const { data: pendingLogs } = await supabase
-      .from('compliance_logs')
-      .select('id, log_type, entity_name, status, entry_date, created_at')
-      .eq('status', 'in_progress')
-      .order('created_at', { ascending: false })
-      .limit(20);
-
-    // 6. Xero pending invoices
-    const pendingXero = await storage.getXeroPendingCount();
+    fcIssues.sort((a, b) => b.fc - a.fc);
 
     res.json({
       todayAWST,
       missingItems: missingItems || [],
       fridgeAlerts,
       fcIssues,
-      missingSizes,
       pendingComplianceLogs: pendingLogs || [],
       pendingXeroInvoices: pendingXero,
     });
@@ -7171,7 +7183,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     // ── Deputy: timesheets ──────────────────────────────────────────────────
     let excludedMatched: string[] = [];
     let excludedUnmatched: string[] = [];
-    let superMethod = "deputy_oncost";
+    const superMethod = "sg_12pct";
     const deputyTask = (async () => {
       const [token, sub] = await Promise.all([storage.getSetting("deputy_token"), storage.getSetting("deputy_subdomain")]);
       if (!token || !sub) { errors.push("Deputy is not configured in Settings"); return; }
@@ -7227,8 +7239,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         } else excludedUnmatched.push(entry);
       }
 
-      let totalCost = 0, totalOnCost = 0;
-      const rows: { i: number; cost: number; onCost: number; driver: boolean; production: boolean; pending: boolean }[] = [];
+      const rows: { i: number; cost: number; driver: boolean; production: boolean; pending: boolean }[] = [];
       for (const ts of timesheets) {
         if (ts.Discarded) continue;
         const d = typeof ts.Date === "string"
@@ -7239,17 +7250,15 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         const ou = Number(ts.OperationalUnit);
         const driver = isDriverOu(ou);
         const production = !driver && !isEventOu(ou) && !excludedIds.has(Number(ts.Employee));
-        const cost = Number(ts.Cost) || 0, onCost = Number(ts.OnCost) || 0;
-        totalCost += cost; totalOnCost += onCost;
-        rows.push({ i, cost, onCost, driver, production, pending: !ts.PayRuleApproved && !ts.TimeApproved });
+        const cost = Number(ts.Cost) || 0; // wage cost only — excludes super and on-costs
+        rows.push({ i, cost, driver, production, pending: !ts.PayRuleApproved && !ts.TimeApproved });
       }
-      // Wages include super. Use Deputy's on-costs when it records them,
-      // otherwise add the Superannuation Guarantee rate (12% from 1 July 2025).
+      // KPI = wages + superannuation. Deputy's timesheet Cost excludes super,
+      // and its optional "on-costs" can include other items (payroll tax etc.),
+      // so always add the Superannuation Guarantee rate (12% from 1 July 2025).
       const SUPER = 0.12;
-      const useOnCost = totalOnCost > 0;
-      if (!useOnCost) superMethod = "sg_12pct";
       for (const r of rows) {
-        const wage = useOnCost ? r.cost + r.onCost : r.cost * (1 + SUPER);
+        const wage = r.cost * (1 + SUPER);
         if (r.driver) weeks[r.i].driverWages += wage;
         if (r.production) weeks[r.i].productionWages += wage;
         if (r.pending && (r.driver || r.production)) weeks[r.i].pendingWages += wage;
