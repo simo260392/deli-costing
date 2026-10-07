@@ -786,7 +786,6 @@ const LIVE_FLEX_STATUSES = new Set(["active", "active_no_website", "hidden"]);
 const isLiveFlexStatus = (status?: string | null) => LIVE_FLEX_STATUSES.has(String(status || "active"));
 let kpiLoggedFlexKeys = false;
 let kpiLoggedSurcharges = 0;
-let flexDetailLogged = false;
 
 export function registerRoutes(httpServer: Server, app: Express) {
   // Helper to wrap async route handlers and forward errors to Express error handler
@@ -2081,7 +2080,8 @@ Return ONLY the JSON object, no explanation.`;
       const { data: variants, error: variantsError } = await supabase
         .from('product_size_variants')
         .select('components_json')
-        .eq('product_uuid', flexUuidForVariants);
+        .eq('product_uuid', flexUuidForVariants)
+        .eq('archived', false);
       if (variantsError) throw variantsError;
 
       const seen = new Set<string>();
@@ -2322,24 +2322,120 @@ Return ONLY the JSON object, no explanation.`;
         removed = goneIds.length;
       }
 
-      // One-off diagnostic: log a combo product's full detail so the size /
-      // option structure Flex uses can be mapped.
-      if (!flexDetailLogged) {
-        flexDetailLogged = true;
-        try {
-          const r = await flexFetch(`/api/v1/products/7370ebda-2259-4400-b1b9-31dd67a0a48d`);
-          const txt = await r.text();
-          for (let i = 0; i < Math.min(txt.length, 12000); i += 3000) {
-            console.log(`[flex] product detail ${i / 3000 + 1}:`, txt.slice(i, i + 3000));
-          }
-        } catch (e: any) { console.error("[flex] detail log failed", e?.message); }
-      }
       return { synced: totalSynced, removed };
   }
+
+  // ── Size/option variants learned from orders ───────────────────────────
+  // Flex's API doesn't expose a product's options, only what appears on
+  // orders (sku + attributes_summary). So: scan recent and upcoming orders,
+  // add any new product/option combination as a size, and record when each
+  // size was last ordered. Sizes someone removed come back if ordered again.
+  async function syncVariantsFromOrders(): Promise<{ added: number; refreshed: number; restored: number }> {
+    const norm = (s: string) => String(s || "").replace(/ pax\b/gi, " person").replace(/\s+/g, " ").trim();
+    const keyOf = (uuid: string, attrs: string) => `${uuid}|${norm(attrs).toLowerCase()}`;
+    const parseAttrs = (summary: string) => norm(summary).split(" | ").filter(Boolean).map((part) => {
+      const i = part.indexOf(": ");
+      return i > 0 ? { label: part.slice(0, i), value: part.slice(i + 2) } : { label: "", value: part };
+    });
+
+    const [{ data: prods }, { data: existing }] = await Promise.all([
+      supabase.from("flex_products").select("flex_uuid, name, sku, status"),
+      supabase.from("product_size_variants").select("id, product_uuid, attributes_summary, last_seen_at, archived, archived_at"),
+    ]);
+    // SKU → product (prefer live products when a SKU is shared)
+    const bySku = new Map<string, any>();
+    for (const p of (prods || []).sort((a: any, b: any) => Number(isLiveFlexStatus(b.status)) - Number(isLiveFlexStatus(a.status)))) {
+      if (p.sku && !bySku.has(p.sku)) bySku.set(p.sku, p);
+    }
+    const byUuid = new Map((prods || []).map((p: any) => [p.flex_uuid, p]));
+    const existingByKey = new Map<string, any>();
+    for (const v of existing || []) existingByKey.set(keyOf(v.product_uuid, v.attributes_summary), v);
+
+    // Scan orders: last 120 days and the next 30 days
+    const day = 86_400_000;
+    const from = new Date(Date.now() - 120 * day).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 30 * day).toISOString().slice(0, 10);
+    const seen = new Map<string, { product: any; attrs: string; lastSeen: string; price: number; sku: string }>();
+    for (let page = 1; page <= 100; page++) {
+      const r = await flexFetch(`/api/v1/orders?per_page=200&page=${page}` +
+        `&delivery_datetime_from=${encodeURIComponent(from + "T00:00:00+08:00")}` +
+        `&delivery_datetime_to=${encodeURIComponent(to + "T23:59:59+08:00")}`, { signal: AbortSignal.timeout(60000) });
+      if (!r.ok) throw new Error(`Flex orders ${r.status}`);
+      const body: any = await r.json();
+      const orders: any[] = body.items || [];
+      for (const o of orders) {
+        if (["cancelled", "canceled", "quote", "draft"].includes(String(o.status || "").toLowerCase())) continue;
+        const when = String(o.delivery_datetime || o.created_at || "");
+        for (const item of o.items || []) {
+          const product = (item.product_uuid && byUuid.get(item.product_uuid)) || (item.sku && bySku.get(item.sku));
+          if (!product) continue;
+          const attrs = norm(item.attributes_summary || "");
+          const k = keyOf(product.flex_uuid, attrs);
+          const prev = seen.get(k);
+          const price = Number(item.price_incl_tax) || 0;
+          if (!prev) seen.set(k, { product, attrs, lastSeen: when, price, sku: item.sku || product.sku || "" });
+          else {
+            if (when > prev.lastSeen) prev.lastSeen = when;
+            if (price > prev.price) prev.price = price;
+          }
+        }
+      }
+      if (!orders.length || !body.next_page) break;
+    }
+
+    let added = 0, refreshed = 0, restored = 0;
+    const inserts: any[] = [];
+    for (const [k, s] of Array.from(seen.entries())) {
+      const ex = existingByKey.get(k);
+      const seenIso = new Date(s.lastSeen).toISOString();
+      if (!ex) {
+        inserts.push({
+          product_uuid: s.product.flex_uuid,
+          product_name: s.product.name,
+          sku: s.sku,
+          attributes_summary: s.attrs,
+          attributes_json: JSON.stringify(parseAttrs(s.attrs)),
+          components_json: "[]",
+          packaging_json: "[]",
+          total_cost: 0,
+          sell_price: s.price || null,
+          last_seen_at: seenIso,
+          created_at: new Date().toISOString(),
+        });
+        continue;
+      }
+      const update: any = {};
+      if (!ex.last_seen_at || seenIso > new Date(ex.last_seen_at).toISOString()) update.last_seen_at = seenIso;
+      // Removed sizes come back if ordered again after they were removed
+      if (ex.archived && ex.archived_at && seenIso > new Date(ex.archived_at).toISOString()) {
+        update.archived = false; update.archived_at = null; restored++;
+      }
+      if (Object.keys(update).length) {
+        await supabase.from("product_size_variants").update(update).eq("id", ex.id);
+        refreshed++;
+      }
+    }
+    for (let i = 0; i < inserts.length; i += 100) {
+      const { error } = await supabase.from("product_size_variants").insert(inserts.slice(i, i + 100));
+      if (error) throw new Error(`Saving new sizes failed: ${error.message}`);
+      added += Math.min(100, inserts.length - i);
+    }
+    return { added, refreshed, restored };
+  }
+  let variantSyncRunning = false;
+  const runVariantSync = () => {
+    if (variantSyncRunning) return;
+    variantSyncRunning = true;
+    syncVariantsFromOrders()
+      .then((r) => console.log(`[flex] sizes from orders: ${r.added} added, ${r.refreshed} refreshed, ${r.restored} restored`))
+      .catch((e) => console.error("[flex] size sync failed:", e?.message))
+      .finally(() => { variantSyncRunning = false; });
+  };
 
   app.post("/api/flex-products/sync", async (req, res) => {
     try {
       const { synced, removed } = await syncFlexProducts();
+      runVariantSync(); // sizes/options from orders — runs in the background
       res.json({ ok: true, synced, removed });
     } catch (e: any) {
       console.error('Flex sync error:', e);
@@ -2352,7 +2448,8 @@ Return ONLY the JSON object, no explanation.`;
   if (process.env.NODE_ENV === "production") {
     const runProductSync = () => syncFlexProducts()
       .then((r) => console.log(`[flex] scheduled product sync: ${r.synced} synced, ${r.removed} removed`))
-      .catch((e) => console.error("[flex] scheduled product sync failed:", e?.message));
+      .catch((e) => console.error("[flex] scheduled product sync failed:", e?.message))
+      .finally(() => runVariantSync());
     setTimeout(runProductSync, 2 * 60_000);
     setInterval(runProductSync, 6 * 3_600_000);
   }
@@ -2365,6 +2462,7 @@ Return ONLY the JSON object, no explanation.`;
       const productUuid = req.query.product_uuid as string | undefined;
       let query = supabase.from("product_size_variants").select("*").order("product_name").order("attributes_summary");
       if (productUuid) query = query.eq("product_uuid", productUuid);
+      if (req.query.include_removed !== "true") query = query.eq("archived", false);
       const { data, error } = await query;
       if (error) throw error;
       return res.json(data?.map((r: any) => ({
@@ -2381,6 +2479,7 @@ Return ONLY the JSON object, no explanation.`;
         websitePrice: r.website_price,
         lastSeenAt: r.last_seen_at,
         createdAt: r.created_at,
+        archived: !!r.archived,
       })) || []);
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
@@ -2396,6 +2495,7 @@ Return ONLY the JSON object, no explanation.`;
       supabase
         .from('product_size_variants')
         .select('id, product_uuid, product_name, attributes_summary, sku, components_json, packaging_json')
+        .eq('archived', false)
         .order('product_name')
         .order('attributes_summary'),
       supabase.from('flex_products').select('flex_uuid, status'),
@@ -2481,8 +2581,12 @@ Return ONLY the JSON object, no explanation.`;
   app.patch("/api/product-size-variants/:id", async (req: any, res: any) => {
     try {
       const { id } = req.params;
-      const { components, packaging, websitePrice } = req.body as { components?: any[]; packaging?: any[]; websitePrice?: number | null };
+      const { components, packaging, websitePrice, archived } = req.body as { components?: any[]; packaging?: any[]; websitePrice?: number | null; archived?: boolean };
       const updates: Record<string, any> = {};
+      if (typeof archived === "boolean") {
+        updates.archived = archived;
+        updates.archived_at = archived ? new Date().toISOString() : null;
+      }
       if (components !== undefined) {
         updates.components_json = JSON.stringify(components);
       }
@@ -2659,7 +2763,8 @@ Return ONLY the JSON object, no explanation.`;
       const { data: variants, error } = await supabase
         .from('product_size_variants')
         .select('components_json')
-        .eq('product_uuid', productUuid);
+        .eq('product_uuid', productUuid)
+        .eq('archived', false);
       if (error) throw error;
 
       // Collect all unique components across all variants (deduplicate by type+id)

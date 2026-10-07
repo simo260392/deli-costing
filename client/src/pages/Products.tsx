@@ -108,6 +108,7 @@ type SizeVariant = {
   sellPrice: number | null;
   websitePrice: number | null;
   lastSeenAt: string;
+  archived?: boolean;
 };
 
 type PackagingLine = {
@@ -326,6 +327,24 @@ function SizeVariantRow({
   const displayAttrs = variant.attributesSummary || "(No size / individual)";
   const hasComponents = components.length > 0;
 
+  // When this size last appeared on a Flex order (sizes are learned from orders)
+  const lastSeen = variant.lastSeenAt ? new Date(variant.lastSeenAt) : null;
+  const lastOrdered = lastSeen && !isNaN(lastSeen.getTime())
+    ? lastSeen.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: lastSeen.getFullYear() === new Date().getFullYear() ? undefined : "numeric", timeZone: "Australia/Perth" })
+    : null;
+  const staleSize = !!lastSeen && Date.now() - lastSeen.getTime() > 90 * 86_400_000;
+
+  const removeMutation = useMutation({
+    mutationFn: () => apiRequest("PATCH", `/api/product-size-variants/${variant.id}`, { archived: true }).then(r => r.json()),
+    onSuccess: () => {
+      toast({ title: "Size removed", description: `${displayAttrs} — it will come back automatically if it's ordered again.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants", variant.productUuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/missing-components"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/product-size-variants/dietaries", variant.productUuid] });
+    },
+    onError: (e: any) => toast({ title: "Couldn't remove size", description: e.message, variant: "destructive" }),
+  });
+
   // Fetch live cost for this specific variant (recomputed from current ingredient/recipe prices)
   const { data: liveVariantCosts } = useQuery<{ id: number; liveCost: number }[]>({
     queryKey: ["/api/product-size-variants/live-costs", variant.productUuid],
@@ -357,7 +376,14 @@ function SizeVariantRow({
         <Layers size={14} className="text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">{displayAttrs}</p>
-          <p className="text-xs text-muted-foreground font-mono">{variant.sku}</p>
+          <p className="text-xs text-muted-foreground">
+            <span className="font-mono">{variant.sku}</span>
+            {lastOrdered && (
+              <span className={cn("ml-2", staleSize && "text-amber-700")}>
+                · {staleSize ? "Not ordered since " : "Last ordered "}{lastOrdered}
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-3 shrink-0 text-xs">
           {sellPriceIncGst !== null && (
@@ -387,6 +413,23 @@ function SizeVariantRow({
       {/* Expanded editor */}
       {open && (
         <div className="border-t px-4 pb-4 pt-3 space-y-4">
+          <div className="flex items-start justify-between gap-3 rounded-md bg-muted/30 px-3 py-2">
+            <p className="text-xs text-muted-foreground">
+              {staleSize
+                ? "This option hasn't been ordered in over 3 months — if it's no longer on Flex, remove it."
+                : "No longer offered on Flex? Remove this size. It comes back automatically if it's ordered again."}
+            </p>
+            <button
+              onClick={() => {
+                if (window.confirm(`Remove "${displayAttrs}" from ${variant.productName}?`)) removeMutation.mutate();
+              }}
+              disabled={removeMutation.isPending}
+              className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+              data-testid={`button-remove-size-${variant.id}`}
+            >
+              <Trash2 size={12} /> Remove size
+            </button>
+          </div>
 
           {/* Component list */}
           {components.length > 0 && (
@@ -1180,14 +1223,14 @@ function SizesTab({
 
   if (!variants || variants.length === 0) return (
     <div className="rounded-md bg-muted/40 p-4 text-sm text-muted-foreground">
-      No size variants found for this product. Sizes are auto-populated from order history.
+      No sizes yet. Flex doesn't share a product's options directly, so sizes appear here automatically once the product has been ordered.
     </div>
   );
 
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground mb-3">
-        {variants.length} size variant{variants.length !== 1 ? 's' : ''} — click a size to set its components (recipes, sub-recipes, packaging).
+        {variants.length} size{variants.length !== 1 ? 's' : ''} — click a size to set its components. Sizes are learned from Flex orders; remove any that are no longer offered.
       </p>
       {sortedVariants.map(v => (
         <SizeVariantRow
