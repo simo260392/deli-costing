@@ -2340,7 +2340,7 @@ Return ONLY the JSON object, no explanation.`;
 
     const [{ data: prods }, { data: existing }] = await Promise.all([
       supabase.from("flex_products").select("flex_uuid, name, sku, status"),
-      supabase.from("product_size_variants").select("id, product_uuid, attributes_summary, last_seen_at, archived, archived_at"),
+      supabase.from("product_size_variants").select("id, product_uuid, product_name, attributes_summary, last_seen_at, archived, archived_at"),
     ]);
     // SKU → product (prefer live products when a SKU is shared)
     const bySku = new Map<string, any>();
@@ -2406,6 +2406,7 @@ Return ONLY the JSON object, no explanation.`;
       }
       const update: any = {};
       if (!ex.last_seen_at || seenIso > new Date(ex.last_seen_at).toISOString()) update.last_seen_at = seenIso;
+      if (s.product.name && ex.product_name !== s.product.name) update.product_name = s.product.name; // keep in step with Flex renames
       // Removed sizes come back if ordered again after they were removed
       if (ex.archived && ex.archived_at && seenIso > new Date(ex.archived_at).toISOString()) {
         update.archived = false; update.archived_at = null; restored++;
