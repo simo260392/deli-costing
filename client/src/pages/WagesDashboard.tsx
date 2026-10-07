@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 import {
   TrendingUp, TrendingDown, Minus,
   RefreshCw, AlertTriangle, ChefHat,
-  Car, Store, Clock, DollarSign,
-  PlugZap, Calendar
+  Car, Clock, DollarSign,
+  Calendar
 } from "lucide-react";
 import { RevenueChart } from "@/components/RevenueChart";
 
@@ -76,33 +76,6 @@ function getWeekBounds(offsetWeeks = 0) {
     from: monday.toISOString().split("T")[0],
     to: sunday.toISOString().split("T")[0],
   };
-}
-
-// Returns how many Mon–Fri days have been completed (or are today) within the given week.
-// If the week is in the past, returns 5. If in the future, returns 0.
-// Used to pro-rate the $3,000/day shop turnover estimate until Lightspeed is connected.
-const SHOP_DAILY_ESTIMATE = 3000;
-
-function getElapsedWeekdays(fromDate: string, toDate: string): number {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const weekStart = new Date(fromDate + "T00:00:00");
-  const weekEnd   = new Date(toDate   + "T00:00:00");
-
-  // Past week — full 5 days
-  if (today > weekEnd) return 5;
-  // Future week — 0 days
-  if (today < weekStart) return 0;
-
-  // Current week — count Mon–Fri days from weekStart up to and including today
-  let count = 0;
-  const cursor = new Date(weekStart);
-  while (cursor <= today) {
-    const dow = cursor.getDay(); // 0=Sun, 6=Sat
-    if (dow >= 1 && dow <= 5) count++;
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return Math.min(count, 5);
 }
 
 function formatDateRange(from: string, to: string) {
@@ -355,40 +328,6 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
     queryFn: () => apiRequest("GET", "/api/settings").then(r => r.json()),
   });
 
-  // Lightspeed connection status
-  const { data: lsStatus } = useQuery<{ connected: boolean; company_id?: string }>({
-    queryKey: ['/api/lightspeed/status'],
-    refetchOnWindowFocus: true,
-  });
-
-  // Lightspeed weekly shop sales — fetch each day of the week and sum
-  const { data: lsWeeklySales, isLoading: lsSalesLoading } = useQuery<{ total_ex_gst: number } | null>({
-    queryKey: ['/api/lightspeed/weekly-sales', period.from, period.to],
-    enabled: !!lsStatus?.connected,
-    queryFn: async () => {
-      // Generate all dates Mon–Sun for the week
-      const dates: string[] = [];
-      const cursor = new Date(period.from + 'T12:00:00');
-      const end = new Date(period.to + 'T12:00:00');
-      while (cursor <= end) {
-        dates.push(cursor.toISOString().slice(0, 10));
-        cursor.setDate(cursor.getDate() + 1);
-      }
-      // Fetch sales for each day in parallel
-      const results = await Promise.all(
-        dates.map(d =>
-          apiRequest('GET', `/api/lightspeed/sales?date=${d}`)
-            .then(r => r.ok ? r.json() : { total_ex_gst: 0 })
-            .catch(() => ({ total_ex_gst: 0 }))
-        )
-      );
-      const total_ex_gst = results.reduce((sum: number, r: any) => sum + (r.total_ex_gst || 0), 0);
-      return { total_ex_gst: Math.round(total_ex_gst * 100) / 100 };
-    },
-    staleTime: 30 * 60 * 1000,
-    refetchOnWindowFocus: false,
-  });
-
   // Fetch Xero delivery fee via our backend proxy endpoint
   // We call our own backend which has stored the Pipedream Xero token
   const fetchXeroDelivery = useCallback(async () => {
@@ -433,20 +372,8 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
   const cateringGross = data?.flex?.cateringGross ?? null;
   const cateringExGstInclWholesale = data?.flex?.cateringExGstInclWholesale ?? null;
 
-  // Shop turnover: use live Lightspeed data when connected, otherwise pro-rate $3k/day estimate
-  const elapsedWeekdays = getElapsedWeekdays(period.from, period.to);
-  const shopTurnoverEstimate = elapsedWeekdays * SHOP_DAILY_ESTIMATE;
-  const lsConnected = !!lsStatus?.connected;
-  const shopSales = lsConnected
-    ? (lsWeeklySales?.total_ex_gst ?? null)   // null while loading
-    : shopTurnoverEstimate;                    // fallback estimate
-
-  // Combined sales denominator for Production KPI: live Flex + shop (real or estimated)
-  const combinedSales = cateringExGstInclWholesale != null && shopSales != null
-    ? cateringExGstInclWholesale + shopSales
-    : cateringExGstInclWholesale != null
-    ? cateringExGstInclWholesale
-    : null;
+  // CBD store closed (Oct 2026) — Production KPI uses catering sales only
+  const combinedSales = cateringExGstInclWholesale;
 
   // Total wages summary
   const totalWages = (cbdArea?.wages ?? 0) + (productionArea?.wages ?? 0) + (driversArea?.wages ?? 0);
@@ -537,42 +464,19 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
       </div>
 
       {/* Area KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* CBD Store */}
-        <KpiCard
-          title="CBD Store"
-          icon={Store}
-          wages={cbdArea?.wages ?? null}
-          sales={shopSales}
-          salesLabel={lsConnected ? 'Shop Turnover (Lightspeed)' : 'Shop Turnover (est.)'}
-          target={25}
-          hours={cbdArea?.hours}
-          shifts={cbdArea?.shifts}
-          pendingWages={cbdArea?.pendingWages}
-          salesNote={
-            lsConnected
-              ? (lsSalesLoading ? 'Loading Lightspeed data…' : `Lightspeed ex GST · ${period.from} to ${period.to}`)
-              : `$3k/day × ${elapsedWeekdays} day${elapsedWeekdays !== 1 ? 's' : ''} — connect Lightspeed in Settings`
-          }
-          isLoading={isLoading || (lsConnected && lsSalesLoading)}
-        />
-
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Production Kitchen */}
         <KpiCard
           title="Production Kitchen"
           icon={ChefHat}
           wages={productionArea?.wages ?? null}
           sales={combinedSales}
-          salesLabel="Catering + Shop Sales"
+          salesLabel="Catering Sales"
           target={20}
           hours={productionArea?.hours}
           shifts={productionArea?.shifts}
           pendingWages={productionArea?.pendingWages}
-          salesNote={
-            lsConnected && shopSales != null
-              ? `Flex ex GST + shop $${Math.round(shopSales).toLocaleString()} (Lightspeed)`
-              : `Flex ex GST + est. shop ($${shopTurnoverEstimate.toLocaleString()})`
-          }
+          salesNote="Flex ex GST incl. wholesale"
           isLoading={isLoading}
         />
 
@@ -633,35 +537,6 @@ export default function WagesDashboard({ embedded = false }: { embedded?: boolea
               <RefreshCw size={12} className={xeroLoading ? "animate-spin" : ""} />
               {xeroLoading ? "Loading…" : "Check Cache"}
             </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Lightspeed status block */}
-      <Card className={lsConnected ? 'border-green-200 bg-green-50/30' : 'border-dashed border-muted'}>
-        <CardContent className="py-4 px-4">
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <div className="flex items-center gap-3">
-              <div className={`rounded-full p-2 ${lsConnected ? 'bg-green-100' : 'bg-muted'}`}>
-                <PlugZap size={15} className={lsConnected ? 'text-green-600' : 'text-muted-foreground'} />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-foreground">
-                  Lightspeed O-Series — CBD Store Turnover
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {lsConnected
-                    ? (lsSalesLoading
-                        ? 'Fetching this week’s sales…'
-                        : `This week ex GST: $${Math.round(lsWeeklySales?.total_ex_gst ?? 0).toLocaleString()}`)
-                    : 'Connect Lightspeed in Settings to replace the estimated shop turnover with live POS data.'}
-                </p>
-              </div>
-            </div>
-            {lsConnected
-              ? <Badge className="text-xs bg-green-100 text-green-700 border-green-200">Connected</Badge>
-              : <Badge variant="outline" className="text-xs text-muted-foreground">Not connected</Badge>
-            }
           </div>
         </CardContent>
       </Card>
