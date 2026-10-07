@@ -133,34 +133,73 @@ async function ingredientQtyToGrams(ingredientId: number, quantity: number): Pro
   return null; // cannot determine
 }
 
-// Compute total batch weight in grams from ingredient lines
+// Preloaded lookup tables so batch-weight calculations don't hit the
+// database once per ingredient line (previously hundreds of round trips).
+type BatchLookup = {
+  ingredients: Map<number, any>;
+  subRecipes: Map<number, any>;
+  recipes: Map<number, any>;
+};
+
+async function loadBatchLookup(): Promise<BatchLookup> {
+  const [ings, srs, rs] = await Promise.all([
+    storage.getIngredients(),
+    storage.getSubRecipes(),
+    storage.getRecipes(),
+  ]);
+  return {
+    ingredients: new Map(ings.map((i: any) => [i.id, i])),
+    subRecipes: new Map(srs.map((s: any) => [s.id, s])),
+    recipes: new Map(rs.map((r: any) => [r.id, r])),
+  };
+}
+
+function ingredientToGrams(ing: any, quantity: number): number | null {
+  const unit = (ing.unit || "").toLowerCase();
+  if (unit === "kg" || unit === "l" || unit === "litre" || unit === "liter") return quantity * 1000;
+  if (unit === "g" || unit === "ml") return quantity;
+  if ((unit === "each" || unit === "") && ing.avgWeightPerUnit && ing.avgWeightPerUnit > 0) {
+    return quantity * ing.avgWeightPerUnit;
+  }
+  return null;
+}
+
+// Compute total batch weight in grams from ingredient lines.
+// Pass a preloaded `lookup` when calculating many items at once.
 async function computeBatchWeightGrams(
   ingredientsJson: string,
   subRecipesJson: string,
-  recipesJson?: string
+  recipesJson?: string,
+  lookup?: BatchLookup,
+  depth = 0
 ): Promise<number | null> {
+  if (!lookup) lookup = await loadBatchLookup();
+  if (depth > 10) return null; // guard against circular recipe references
   const lines: { ingredientId: number; quantity: number }[] = JSON.parse(ingredientsJson || "[]");
   const srLines: { subRecipeId: number; quantity: number }[] = JSON.parse(subRecipesJson || "[]");
   const rLines: { recipeId: number; quantity: number }[] = JSON.parse(recipesJson || "[]");
   let totalGrams = 0;
   let hasAny = false;
   for (const line of lines) {
-    const ing = await storage.getIngredient(line.ingredientId);
+    const ing = lookup.ingredients.get(Number(line.ingredientId));
     if (!ing) continue;
     // Skip packaging items — they don't contribute to edible weight
-    if ((ing as any).category === "Packaging") continue;
-    const grams = await ingredientQtyToGrams(line.ingredientId, line.quantity);
+    if (ing.category === "Packaging") continue;
+    const grams = ingredientToGrams(ing, line.quantity);
     if (grams === null) continue;
     totalGrams += grams;
     hasAny = true;
   }
   // Sub-recipes: use their own batch weight × quantity
   for (const line of srLines) {
-    const sr = await storage.getSubRecipe(line.subRecipeId);
+    const sr = lookup.subRecipes.get(Number(line.subRecipeId));
     if (!sr) continue;
     const srWeight = await computeBatchWeightGrams(
-      (sr as any).ingredientsJson || "[]",
-      (sr as any).subRecipesJson || "[]"
+      sr.ingredientsJson || "[]",
+      sr.subRecipesJson || "[]",
+      undefined,
+      lookup,
+      depth + 1
     );
     if (srWeight === null) continue;
     // sr yieldAmount: divide total batch weight by yield to get per-unit weight, then × qty used
@@ -170,12 +209,14 @@ async function computeBatchWeightGrams(
   }
   // Nested recipes
   for (const line of rLines) {
-    const r = await storage.getRecipe(line.recipeId);
+    const r = lookup.recipes.get(Number(line.recipeId));
     if (!r) continue;
     const rWeight = await computeBatchWeightGrams(
-      (r as any).ingredientsJson || "[]",
-      (r as any).subRecipesJson || "[]",
-      (r as any).recipesJson || "[]"
+      r.ingredientsJson || "[]",
+      r.subRecipesJson || "[]",
+      r.recipesJson || "[]",
+      lookup,
+      depth + 1
     );
     if (rWeight === null) continue;
     const portions = (r.portionCount && r.portionCount > 0) ? r.portionCount : 1;
@@ -715,6 +756,10 @@ async function computePlatterCosts(
 // ─── In-memory caches ────────────────────────────────────────────────────────
 const flexOrdersCache = new Map<string, { data: any; expiresAt: number }>();
 const FLEX_ORDERS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const FLEX_ORDERS_STALE_MS = 30 * 60 * 1000; // serve stale copy (while refreshing) for up to 30 min past expiry
+const flexOrdersRefreshing = new Set<string>();
+// Deputy roster changes rarely during a shift; cache per date for 5 min
+const deputyRosterCache = new Map<string, { data: any; expiresAt: number }>();
 
 const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
 const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -735,11 +780,11 @@ export function registerRoutes(httpServer: Server, app: Express) {
     for (const sql of migrations) {
       try {
         const resp = await fetch(
-          `${process.env.SUPABASE_URL || 'https://dxtbuiicrdkjxkwdjdwq.supabase.co'}/rest/v1/rpc/exec_sql`,
+          `${process.env.SUPABASE_URL}/rest/v1/rpc/exec_sql`,
           {
             method: 'POST',
             headers: {
-              'apikey': process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR4dGJ1aWljcmRranhrd2RqZHdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4OTM1OTYsImV4cCI6MjA5MzQ2OTU5Nn0.ewyJW3UjkajSVyUKuWJkIGjTs-3lNT45e3S_ZrU_PI8',
+              'apikey': process.env.SUPABASE_ANON_KEY || '',
               'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || ''}`,
               'Content-Type': 'application/json',
             },
@@ -1498,11 +1543,16 @@ Return ONLY the JSON object, no explanation.`;
   // ─── Sub-Recipes ────────────────────────────────────────────────────────────
   app.get("/api/sub-recipes", async (req, res) => {
     try {
-      const srList = await storage.getSubRecipes();
-      const srs = await Promise.all(srList.map(async (sr) => {
+      const lookup = await loadBatchLookup();
+      const srList = Array.from(lookup.subRecipes.values()).sort((a: any, b: any) =>
+        String(a.name ?? "").localeCompare(String(b.name ?? ""))
+      );
+      const srs = await Promise.all(srList.map(async (sr: any) => {
         const batchWeight = await computeBatchWeightGrams(
-          (sr as any).ingredientsJson || "[]",
-          (sr as any).subRecipesJson || "[]"
+          sr.ingredientsJson || "[]",
+          sr.subRecipesJson || "[]",
+          undefined,
+          lookup
         );
         const yield_ = (sr.yieldAmount && sr.yieldAmount > 0) ? sr.yieldAmount : 1;
         const calculatedServingSize = batchWeight !== null ? Math.round(batchWeight / yield_) : null;
@@ -1575,11 +1625,12 @@ Return ONLY the JSON object, no explanation.`;
   });
 
   // ─── Recipes ────────────────────────────────────────────────────────────────
-  function enrichRecipeWithServingSize(r: any) {
-    const batchWeight = computeBatchWeightGrams(
+  async function enrichRecipeWithServingSize(r: any, lookup?: BatchLookup) {
+    const batchWeight = await computeBatchWeightGrams(
       r.ingredientsJson || "[]",
       r.subRecipesJson || "[]",
-      r.recipesJson || "[]"
+      r.recipesJson || "[]",
+      lookup
     );
     const portions = (r.portionCount && r.portionCount > 0) ? r.portionCount : 1;
     const calculatedServingSize = batchWeight !== null ? Math.round(batchWeight / portions) : null;
@@ -1587,8 +1638,11 @@ Return ONLY the JSON object, no explanation.`;
   }
 
   app.get("/api/recipes", async (req, res) => {
-    const all = await storage.getRecipes();
-    const enriched = await Promise.all(all.map(enrichRecipeWithServingSize));
+    const lookup = await loadBatchLookup();
+    const all = Array.from(lookup.recipes.values()).sort((a: any, b: any) =>
+      String(a.name ?? "").localeCompare(String(b.name ?? ""))
+    );
+    const enriched = await Promise.all(all.map((r) => enrichRecipeWithServingSize(r, lookup)));
     res.json(enriched);
   });
   app.get("/api/recipes/:id", async (req, res) => {
@@ -1746,30 +1800,39 @@ Return ONLY the JSON object, no explanation.`;
 
   // ─── Flex Products ─────────────────────────────────────────────────────────────────────────────
 
-  const FLEX_BASE = "https://the-deli.com.au";
-  const FLEX_TOKEN = "d8ecc189f96774038e36112c5ed9f2bc557c3320";
-  const FLEX_HEADERS = {
-    'Authorization': `Bearer ${FLEX_TOKEN}`,
-    'X-API-KEY': FLEX_TOKEN,
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Referer': 'https://the-deli.com.au/',
-    'Origin': 'https://the-deli.com.au',
-  };
+  // Proxy Flex API calls through Supabase Edge Function to bypass Cloudflare block on Railway IPs.
+  // Credentials come from Railway variables — never hard-code them here.
+  const FLEX_PROXY_URL = `${process.env.SUPABASE_URL}/functions/v1/flex-proxy`;
+  const FLEX_PROXY_SECRET = process.env.FLEX_PROXY_SECRET || "";
+  const FLEX_API_TOKEN = process.env.FLEX_API_TOKEN || "";
 
-  // Proxy Flex API calls through Supabase Edge Function to bypass Cloudflare block on Railway IPs
-  const FLEX_PROXY_URL = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
-  const FLEX_PROXY_SECRET = "deli-flex-proxy-2026";
-  async function flexFetch(path: string, options: { method?: string; body?: string } = {}): Promise<Response> {
+  // ── Flex is READ-ONLY by default ──────────────────────────────────────────
+  // The app must not change anything on Flex Catering (products, orders,
+  // customers). Any non-GET request is refused here unless the Railway
+  // variable FLEX_WRITES_ENABLED is set to "true".
+  const flexWritesEnabled = () => process.env.FLEX_WRITES_ENABLED === "true";
+  const FLEX_READ_ONLY_MESSAGE =
+    "Updating Flex Catering from the Deli App is switched off. Make the change directly in Flex instead.";
+
+  async function flexFetch(path: string, options: { method?: string; body?: string; signal?: AbortSignal } = {}): Promise<Response> {
+    const method = (options.method || "GET").toUpperCase();
+    if (method !== "GET" && !flexWritesEnabled()) {
+      console.warn(`[flex] blocked ${method} ${path} — Flex is read-only`);
+      return new Response(JSON.stringify({ error: FLEX_READ_ONLY_MESSAGE, message: FLEX_READ_ONLY_MESSAGE }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const url = `${FLEX_PROXY_URL}?path=${encodeURIComponent(path)}`;
     return fetch(url, {
-      method: options.method || "GET",
+      method,
       headers: {
         "x-proxy-secret": FLEX_PROXY_SECRET,
+        ...(FLEX_API_TOKEN ? { "x-flex-token": FLEX_API_TOKEN } : {}),
         "Content-Type": "application/json",
       },
       body: options.body,
+      signal: options.signal,
     });
   }
 
@@ -1958,6 +2021,9 @@ Return ONLY the JSON object, no explanation.`;
 
   // POST /api/flex-products/:id/push-dietaries — push computed dietaries+allergens to Flex Catering via API
   app.post("/api/flex-products/:id/push-dietaries", async (req, res) => {
+    if (!flexWritesEnabled()) {
+      return res.status(403).json({ error: FLEX_READ_ONLY_MESSAGE });
+    }
     try {
       const productId = Number(req.params.id);
       const product = await storage.getFlexProduct(productId);
@@ -2023,8 +2089,6 @@ Return ONLY the JSON object, no explanation.`;
         .filter(Boolean);
 
       // Fetch current product from Flex to get required fields for the PUT
-      const flexToken = "d8ecc189f96774038e36112c5ed9f2bc557c3320";
-      const flexBase = "https://the-deli.com.au";
       const flexUuid = product.flexUuid;
 
       // ALWAYS fetch live categories from Flex immediately before PUT
@@ -2591,6 +2655,19 @@ Return ONLY the JSON object, no explanation.`;
         const entry = flexOrdersCache.get(cacheKey)!;
         if (Date.now() < entry.expiresAt) {
           return res.json({ ...entry.data, _cached: true });
+        }
+        // Stale-while-revalidate: if the cached copy is less than 30 min old,
+        // answer instantly with it and refresh from Flex in the background,
+        // so staff never wait the ~3s Flex takes to respond.
+        if (Date.now() < entry.expiresAt + FLEX_ORDERS_STALE_MS && !req.query.fullraw) {
+          if (!flexOrdersRefreshing.has(cacheKey)) {
+            flexOrdersRefreshing.add(cacheKey);
+            const port = parseInt(process.env.PORT || "5000", 10);
+            fetch(`http://127.0.0.1:${port}/api/flex-orders?date=${encodeURIComponent(date)}${raw ? "&raw=true" : ""}&refresh=true`)
+              .catch((e) => console.error("[flex-orders] background refresh failed:", e?.message))
+              .finally(() => flexOrdersRefreshing.delete(cacheKey));
+          }
+          return res.json({ ...entry.data, _cached: true, _stale: true });
         }
         flexOrdersCache.delete(cacheKey);
       }
@@ -5443,25 +5520,28 @@ RULES:
   // GET /api/deputy/roster?date=YYYY-MM-DD  — fetch staff on shift for a given date
   app.get("/api/deputy/roster", async (req, res) => {
     try {
-      const deputyToken = await storage.getSetting("deputy_token");
-      const deputySubdomain = await storage.getSetting("deputy_subdomain");
+      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const cached = deputyRosterCache.get(date);
+      if (cached && Date.now() < cached.expiresAt && req.query.refresh !== "true") {
+        return res.json(cached.data);
+      }
+      const [deputyToken, deputySubdomain] = await Promise.all([
+        storage.getSetting("deputy_token"),
+        storage.getSetting("deputy_subdomain"),
+      ]);
       if (!deputyToken || !deputySubdomain) {
         return res.json({ employees: [], source: "no_config" });
       }
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
 
-      // Fetch all active employees
-      const empResp = await fetch(`https://${deputySubdomain}/api/v1/resource/Employee?max=200`, {
-        headers: { Authorization: `Bearer ${deputyToken}` },
-      });
+      // Fetch active employees and roster shifts at the same time
+      // (Deputy's Roster resource returns next 36h / prev 12h)
+      const headers = { Authorization: `Bearer ${deputyToken}` };
+      const [empResp, rosterResp] = await Promise.all([
+        fetch(`https://${deputySubdomain}/api/v1/resource/Employee?max=200`, { headers }),
+        fetch(`https://${deputySubdomain}/api/v1/resource/Roster?max=200`, { headers }),
+      ]);
       const employees: any[] = await empResp.json();
       const activeEmployees = employees.filter((e: any) => e.Active);
-
-      // Fetch published roster shifts for date (Deputy returns next 36h / prev 12h)
-      const rosterResp = await fetch(
-        `https://${deputySubdomain}/api/v1/resource/Roster?max=200`,
-        { headers: { Authorization: `Bearer ${deputyToken}` } }
-      );
       const allRosters: any[] = await rosterResp.json();
 
       // Filter to shifts on the requested date with a real employee assigned
@@ -5482,7 +5562,7 @@ RULES:
         ? activeEmployees.filter((e: any) => uniqueOnShift.includes(e.Id))
         : activeEmployees;
 
-      res.json({
+      const payload = {
         employees: staffList.map((e: any) => ({
           id: e.Id,
           name: `${e.FirstName} ${e.LastName}`.trim(),
@@ -5491,7 +5571,9 @@ RULES:
         })),
         source: uniqueOnShift.length > 0 ? "roster" : "all_active",
         date,
-      });
+      };
+      deputyRosterCache.set(date, { data: payload, expiresAt: Date.now() + 5 * 60 * 1000 });
+      res.json(payload);
     } catch (err: any) {
       console.error("Deputy roster error:", err);
       res.status(500).json({ error: err.message });
@@ -6875,8 +6957,6 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     }
 
     // ── Flex: catering sales (excl. wholesale) ───────────────────────────────
-    const FLEX_PROXY = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
-    const FLEX_SECRET = "deli-flex-proxy-2026";
     const WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
 
     try {
@@ -6890,9 +6970,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
       while (hasMore) {
         const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDate + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toDate + "T23:59:59Z")}`;
-        const flexRes = await fetch(`${FLEX_PROXY}?path=${encodeURIComponent(flexPath)}`, {
-          headers: { "x-proxy-secret": FLEX_SECRET },
-        });
+        const flexRes = await flexFetch(flexPath);
 
         if (!flexRes.ok) {
           const errText = await flexRes.text();
@@ -7030,8 +7108,6 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // ─── Revenue Chart helpers ───────────────────────────────────────────────────
-  const RC_PROXY_URL = "https://dxtbuiicrdkjxkwdjdwq.supabase.co/functions/v1/flex-proxy";
-  const RC_PROXY_SECRET = "deli-flex-proxy-2026";
   const RC_WHOLESALE_GROUP = "13f392c3-fa06-417e-870a-47912a3afc78";
 
   function getMondayOfWeek(d: Date): Date {
@@ -7054,10 +7130,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     let hasMore = true;
     while (hasMore) {
       const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromStr + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toStr + "T23:59:59Z")}`;
-      const flexRes = await fetch(`${RC_PROXY_URL}?path=${encodeURIComponent(flexPath)}`, {
-        headers: { "x-proxy-secret": RC_PROXY_SECRET },
-        signal: AbortSignal.timeout(30000),
-      });
+      const flexRes = await flexFetch(flexPath, { signal: AbortSignal.timeout(30000) });
       if (!flexRes.ok) throw new Error(`Flex API ${flexRes.status}`);
       const flexData: any = await flexRes.json();
       const items: any[] = flexData.items || [];
@@ -7098,10 +7171,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     let hasMore = true;
     while (hasMore) {
       const flexPath = `/api/v1/orders?per_page=200&page=${page}&delivery_datetime_from=${encodeURIComponent(fromStr + "T00:00:00Z")}&delivery_datetime_to=${encodeURIComponent(toStr + "T23:59:59Z")}`;
-      const flexRes = await fetch(`${RC_PROXY_URL}?path=${encodeURIComponent(flexPath)}`, {
-        headers: { "x-proxy-secret": RC_PROXY_SECRET },
-        signal: AbortSignal.timeout(30000),
-      });
+      const flexRes = await flexFetch(flexPath, { signal: AbortSignal.timeout(30000) });
       if (!flexRes.ok) throw new Error(`Flex API ${flexRes.status}`);
       const flexData: any = await flexRes.json();
       const items: any[] = flexData.items || [];
@@ -7313,7 +7383,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     const { year, month, secret } = req.body as { year: number; month: number; secret?: string };
     // Simple bearer check so this can't be called by anyone
     const AUTH = req.headers.authorization;
-    if (AUTH !== `Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320` && secret !== "deli-flex-proxy-2026") {
+    const cronSecret = process.env.APP_CRON_SECRET;
+    if (!cronSecret || (AUTH !== `Bearer ${cronSecret}` && secret !== cronSecret)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     if (typeof year !== "number" || typeof month !== "number" || month < 0 || month > 11) {
@@ -7358,7 +7429,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // Upserts into lightspeed_turnover_cache
   app.post("/api/lightspeed/import-csv", memoryUpload.single("file"), asyncRoute(async (req: any, res: any) => {
     const AUTH = req.headers.authorization;
-    if (AUTH !== `Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320`) {
+    const cronSecret = process.env.APP_CRON_SECRET;
+    if (!cronSecret || AUTH !== `Bearer ${cronSecret}`) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
@@ -7955,36 +8027,49 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     // Flex API returns body.items (not body.orders)
     const fromDt = date + "T00:00:00+08:00";
     const toDt   = date + "T23:59:59+08:00";
-    let orders: any[] = [];
-    let page = 1;
-    let hasMore = true;
-    while (hasMore) {
-      const r = await flexFetch(`/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
-      const data = await r.json();
-      const batch = data.items || [];
-      orders = orders.concat(batch);
-      hasMore = !!data.next_page && batch.length > 0;
-      page++;
-      if (page > 20) break;
-    }
+
+    // Orders: reuse the Prep page's Flex cache when it's fresh, otherwise fetch.
+    const loadOrders = async (): Promise<any[]> => {
+      const cached = flexOrdersCache.get(`${date}:raw`);
+      if (cached && Date.now() < cached.expiresAt) return cached.data.orders || [];
+      let all: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const r = await flexFetch(`/api/v1/orders?per_page=100&page=${page}&delivery_datetime_from=${encodeURIComponent(fromDt)}&delivery_datetime_to=${encodeURIComponent(toDt)}`);
+        const data = await r.json();
+        const batch = data.items || [];
+        all = all.concat(batch);
+        hasMore = !!data.next_page && batch.length > 0;
+        page++;
+        if (page > 20) break;
+      }
+      return all;
+    };
+
+    // Run Flex and all database lookups at the same time instead of one by one
+    const [fetchedOrders, logsRes, wCustsRes, gblRes] = await Promise.all([
+      loadOrders(),
+      supabase.from('delivery_logs').select('*').eq('delivery_date', date),
+      supabase.from('flex_customers').select('uuid').eq('is_wholesale', true),
+      supabase.from('grey_box_log').select('customer_uuid, boxes_out, boxes_in').order('created_at', { ascending: true }),
+    ]);
+
     // Filter cancelled orders
-    orders = orders.filter((o: any) => o.status !== 'cancelled');
+    let orders = fetchedOrders.filter((o: any) => o.status !== 'cancelled');
     // Sort by delivery time
     orders.sort((a: any, b: any) => (a.delivery_datetime || '').localeCompare(b.delivery_datetime || ''));
-    // Get any existing delivery logs for this date
-    const { data: logs } = await supabase.from('delivery_logs').select('*').eq('delivery_date', date);
+    // Existing delivery logs for this date
+    const logs = logsRes.data;
     const logMap = new Map<number, any>();
     for (const l of (logs || [])) logMap.set(l.order_id, l);
-    // Load wholesale customer UUIDs
+    // Wholesale customer UUIDs
     const wholesaleUuids = new Set<string>();
-    try {
-      const { data: wCusts } = await supabase.from('flex_customers').select('uuid').eq('is_wholesale', true);
-      for (const c of (wCusts || [])) wholesaleUuids.add(c.uuid);
-    } catch (_) {}
-    // Load grey box balances from grey_box_log (using boxes_in for returned boxes)
+    for (const c of (wCustsRes.data || [])) wholesaleUuids.add(c.uuid);
+    // Grey box balances from grey_box_log (using boxes_in for returned boxes)
     const greyBoxMap = new Map<string, number>();
     try {
-      const { data: gbl } = await supabase.from('grey_box_log').select('customer_uuid, boxes_out, boxes_in');
+      const gbl = gblRes.data;
       for (const g of (gbl || [])) {
         if (!g.customer_uuid) continue;
         const cur = greyBoxMap.get(g.customer_uuid) || 0;
@@ -10447,8 +10532,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // POST /api/sensorpush/poll — called by the cron, polls SensorPush API and stores readings
   app.post('/api/sensorpush/poll', asyncRoute(async (req: any, res: any) => {
     const authHeader = req.headers['authorization'];
-    if (authHeader !== 'Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320') {
+    const cronSecret = process.env.APP_CRON_SECRET;
+    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const spEmail = process.env.SENSORPUSH_EMAIL;
+    const spPassword = process.env.SENSORPUSH_PASSWORD;
+    if (!spEmail || !spPassword) {
+      return res.status(500).json({ error: 'SENSORPUSH_EMAIL / SENSORPUSH_PASSWORD not configured' });
     }
 
     try {
@@ -10456,7 +10547,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const authRes = await fetch('https://api.sensorpush.com/api/v1/oauth/authorize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'info@the-deli.com.au', password: 'Greenhorns123' }),
+        body: JSON.stringify({ email: spEmail, password: spPassword }),
       });
       const authData = await authRes.json() as any;
       if (!authData.authorization) return res.status(500).json({ error: 'SensorPush auth failed', detail: authData });
@@ -10487,22 +10578,19 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
       let inserted = 0;
       const alerts: any[] = [];
+      const allRows: any[] = [];
 
       for (const sensor of (ourSensors || [])) {
         const samples = sensorSamples[sensor.id] || [];
 
-        // ── Store all samples as history ─────────────────────────────────────
-        if (samples.length > 0) {
-          const rows = samples.map((s: any) => ({
+        // ── Collect samples as history (written in one batch below) ──────────
+        for (const s of samples) {
+          allRows.push({
             sensor_id: sensor.id,
             observed_at: new Date(s.observed).toISOString(),
             temperature: parseFloat(((s.temperature - 32) * 5 / 9).toFixed(2)), // °F → °C
             humidity: s.humidity,
-          }));
-          const { error: insErr } = await supabase
-            .from('sensorpush_readings')
-            .upsert(rows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
-          if (!insErr) inserted += rows.length;
+          });
         }
 
         // ── Latest reading = most recent sample (already live, no lag) ───────
@@ -10526,6 +10614,15 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         }
       }
 
+      // Store all readings in one round trip (previously one per sensor)
+      if (allRows.length > 0) {
+        const { error: insErr } = await supabase
+          .from('sensorpush_readings')
+          .upsert(allRows, { onConflict: 'sensor_id,observed_at', ignoreDuplicates: true });
+        if (insErr) console.error('[sensorpush/poll] insert failed:', insErr.message);
+        else inserted = allRows.length;
+      }
+
       // 4. Return results (alert handling done by cron)
       res.json({ ok: true, inserted, alerts });
     } catch (err: any) {
@@ -10534,8 +10631,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // ── LIGHTSPEED (KOUNTA) INTEGRATION ────────────────────────────────────────
-  const LS_CLIENT_ID     = 'm84SAi9TOkmCErV9';
-  const LS_CLIENT_SECRET = 'iVcSnbqwNDlnILZuM2ahSd9PiHM1HZN6uD8ZAEjh';
+  const LS_CLIENT_ID     = process.env.LIGHTSPEED_CLIENT_ID || '';
+  const LS_CLIENT_SECRET = process.env.LIGHTSPEED_CLIENT_SECRET || '';
   const LS_REDIRECT_URI  = 'https://the-deli.app/api/lightspeed/callback';
   const LS_TOKEN_URL     = 'https://api.kounta.com/v1/token';
   const LS_API_BASE      = 'https://api.kounta.com/v1';

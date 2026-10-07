@@ -896,7 +896,6 @@ export default function BatchManager() {
       const _base = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
       Promise.all(ids.map(id =>
         fetch(`${_base}/api/batches/${encodeURIComponent(id)}`, {
-          headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" }
         }).then(r => r.json()).catch(() => null)
       )).then(results => {
         const valid = results.filter(Boolean) as Batch[];

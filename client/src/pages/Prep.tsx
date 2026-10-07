@@ -1792,18 +1792,23 @@ export default function Prep() {
       const results: FlexOrder[] = [];
       const from = new Date(dateFrom + "T00:00:00");
       const to   = new Date(dateTo   + "T00:00:00");
-      let cursor = new Date(from);
+      const days: string[] = [];
+      const cursor = new Date(from);
       while (cursor <= to) {
-        const d = localDateStr(cursor);
+        days.push(localDateStr(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      // Fetch all days in parallel rather than one after another
+      const perDay = await Promise.all(days.map(async (d) => {
         const resp = await fetch(`${API_BASE}/api/flex-orders?date=${d}&raw=true`);
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
           throw new Error(err.error || `HTTP ${resp.status}`);
         }
         const data = await resp.json();
-        if (data.orders) results.push(...data.orders);
-        cursor.setDate(cursor.getDate() + 1);
-      }
+        return (data.orders || []) as FlexOrder[];
+      }));
+      for (const orders of perDay) results.push(...orders);
 
       if (isAutoRefresh) {
         // Detect new orders

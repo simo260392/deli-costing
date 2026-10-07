@@ -1695,7 +1695,6 @@ function SupplierFields({ log, onRefresh, onComplete, startedBy }: { log: Compli
       const _base = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
       const scanRes = await fetch(`${_base}/api/compliance/scan-invoice?logId=${log.id}`, {
         method: "POST",
-        headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
         body: fd,
       });
       if (!scanRes.ok) {

@@ -816,17 +816,14 @@ function PushToFlexButton({
     <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 space-y-1.5">
       <p className="text-xs font-semibold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
         <AlertTriangle size={12} />
-        Push to Flex — Pending Flex API fix
+        Flex Catering is read-only
       </p>
       <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-        Flex Catering's API currently has a bug where their product update endpoint wipes product categories on every call, regardless of what's sent. We've confirmed this with testing and have paused the push to prevent data loss on your live website.
-      </p>
-      <p className="text-xs text-amber-700 dark:text-amber-400">
-        Please contact Flex Catering support and report that <strong>PUT /api/v1/products/&#123;uuid&#125;</strong> clears <strong>product_categories</strong> and ignores <strong>dietaries_uuid</strong>. Once fixed, the push button will work.
+        The Deli App reads products and orders from Flex but never changes anything there. Update dietaries and allergens directly in Flex Catering.
       </p>
       {hasMismatch && totalCount > 0 && (
         <p className="text-xs font-medium text-amber-800 dark:text-amber-300 pt-0.5">
-          Ready to push: {computedDietaries.length} dietar{computedDietaries.length === 1 ? 'y' : 'ies'} + {computedAllergens.length} allergen{computedAllergens.length === 1 ? '' : 's'}
+          Flex differs from the app's calculation: {computedDietaries.length} dietar{computedDietaries.length === 1 ? 'y' : 'ies'} + {computedAllergens.length} allergen{computedAllergens.length === 1 ? '' : 's'} — update these in Flex.
         </p>
       )}
     </div>

@@ -209,7 +209,6 @@ function LogTempDialog({
       fd.append("photo", file);
       const res = await fetch("/api/upload-photo", {
         method: "POST",
-        headers: { Authorization: "Bearer d8ecc189f96774038e36112c5ed9f2bc557c3320" },
         body: fd,
       });
       const data = await res.json();
