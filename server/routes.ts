@@ -406,6 +406,26 @@ async function computeRecipeCosts(
   return { ingredientCost, subRecipeCost, packagingCost, labourCost, totalCost, foodCostPerServe, costPerServe, targetRrp, wholesaleTargetRrp, marginPercent, wholesaleMarginPercent, nutritionJson: JSON.stringify(nutritionPerServe) };
 }
 
+// ── Halal check for a single ingredient (name/category based) ───────────────
+const PORK_RE = /\b(pork|bacon|ham|hams|prosc?i?utt?o|proscutto|salami|chorizo|pancetta|pepperoni|lard|speck|char ?siu|mortadella|capocoll[oa]|coppa|nduja|guanciale|crackling)\b/i;
+const ALCOHOL_RE = /\b(wine|beer|ale|lager|rum|brandy|vodka|whiske?y|liqueur|sherry|marsala|mirin|cider|kirsch|amaretto|baileys|kahlua|cognac|gin|tequila|port|sake|bourbon|champagne|prosecco)\b/i;
+const GELATINE_RE = /\bgelatine?\b/i;
+const HALAL_MEAT_RE = /\b(chicken|beef|lamb|mutton|halal|egg|eggs|fish|seafood|basa|salmon|tuna|prawns?|shrimp|barramundi|snapper|cod|hake|whiting|crab|squid|calamari|mussels?|oysters?|scallops?|anchov(y|ies))\b/i;
+const MEAT_CATEGORY_RE = /\b(meat|poultry|protein|seafood|fish)\b/i;
+
+function isHalalIngredient(ing: any): boolean {
+  const name = String(ing?.name || "");
+  if (PORK_RE.test(name)) return false;
+  // Vinegars made from wine/cider are generally accepted as halal
+  if (ALCOHOL_RE.test(name) && !/vinegar/i.test(name)) return false;
+  if (GELATINE_RE.test(name) && !/halal|beef|bovine/i.test(name)) return false;
+  let labels: string[] = [];
+  try { labels = JSON.parse(ing?.dietariesJson || "[]"); } catch {}
+  const isMeat = MEAT_CATEGORY_RE.test(String(ing?.category || "")) || labels.includes("Meat");
+  if (isMeat && !HALAL_MEAT_RE.test(name)) return false;
+  return true;
+}
+
 // ── Allergen helpers (module-level so cascadeFlexProductCostings can use them) ──
 const ALLERGEN_LABEL_TO_CODE_MAP: Record<string, string> = {
   'Gluten': 'CG', 'Tree Nuts': 'CN', 'Nuts': 'CN', 'Nut': 'CN',
@@ -552,7 +572,18 @@ async function computeFlexDietaries(components: any[]): Promise<{ allergens: str
   const isV   = !hasActualMeat;
   const isVG  = isV && isDF && isEF && !hasAny('Honey');
 
+  // H = halal. All chicken, beef and lamb is halal-sourced; fish/seafood and
+  // eggs are halal. Not halal if any ingredient is pork, alcohol, gelatine of
+  // unknown source, or meat that isn't chicken/beef/lamb (e.g. "Sausage").
+  let isH = true;
+  for (const ingId of Array.from(new Set(allIngredientIds))) {
+    const ing = await storage.getIngredient(ingId);
+    if (!ing) continue;
+    if (!isHalalIngredient(ing)) { isH = false; break; }
+  }
+
   const dietaryList: string[] = [];
+  if (isH)  dietaryList.push('H');
   if (isV)  dietaryList.push('V');
   if (isVG) dietaryList.push('VG');
   if (isGF) dietaryList.push('GF');
@@ -996,6 +1027,10 @@ export function registerRoutes(httpServer: Server, app: Express) {
       }
     }, 20_000);
   };
+
+  // Refresh stored product dietaries shortly after each start-up so rule
+  // changes (e.g. halal) are reflected without anyone editing an ingredient.
+  if (process.env.NODE_ENV === "production") setTimeout(scheduleProductDietaryRefresh, 60_000);
 
   // PATCH /api/ingredients/:id/allergens  { contains?: string[], confirmed?: boolean }
   app.patch("/api/ingredients/:id/allergens", asyncRoute(async (req: any, res: any) => {
