@@ -517,8 +517,10 @@ async function computeFlexDietaries(components: any[]): Promise<{ allergens: str
   // instead check: if ALL 'Meat'/'Protein' category ingredients are egg-only, still V.
   // Simpler robust approach: category-based meat check EXCLUDING ingredients whose only
   // label is 'Eggs' (i.e. egg is vegetarian). Check if there's a non-egg meat ingredient.
-  let hasActualMeat = false;
+  // Explicit "Meat" tick (allergen matrix) always means not vegetarian
+  let hasActualMeat = hasAny('Meat');
   for (const ingId of allIngredientIds) {
+    if (hasActualMeat) break;
     const ing = await storage.getIngredient(ingId);
     if (!ing) continue;
     const cat = (ing.category || '').toLowerCase();
@@ -962,6 +964,64 @@ export function registerRoutes(httpServer: Server, app: Express) {
       res.status(400).json({ error: e.message });
     }
   });
+
+  // ── Allergen matrix ────────────────────────────────────────────────────
+  // Labels stored in ingredients.dietaries_json ("contains" list). These are
+  // the labels the product allergen/dietary calculations understand.
+  const MATRIX_LABELS = new Set([
+    "Gluten", "Dairy", "Eggs", "Tree Nuts", "Peanuts", "Sesame", "Soy", "Fish",
+    "Crustacea", "Molluscs", "Sulphites", "Lupin", "Meat", "Honey",
+  ]);
+
+  // Refresh the stored allergens/dietaries on product costings after
+  // ingredient allergens change (debounced so a run of ticks = one refresh).
+  let productDietaryTimer: NodeJS.Timeout | null = null;
+  const scheduleProductDietaryRefresh = () => {
+    if (productDietaryTimer) clearTimeout(productDietaryTimer);
+    productDietaryTimer = setTimeout(async () => {
+      productDietaryTimer = null;
+      try {
+        const costings = await storage.getAllFlexProductCostings();
+        for (const c of costings as any[]) {
+          const components = JSON.parse(c.componentsJson || "[]");
+          const { allergens, dietaries } = await computeFlexDietaries(components);
+          await supabase.from("flex_product_costings").update({
+            computed_allergens_json: JSON.stringify(allergens),
+            computed_dietaries_json: JSON.stringify(dietaries),
+          }).eq("id", c.id);
+        }
+        console.log(`[allergens] refreshed dietaries on ${costings.length} product costings`);
+      } catch (e: any) {
+        console.error("[allergens] product dietary refresh failed:", e?.message);
+      }
+    }, 20_000);
+  };
+
+  // PATCH /api/ingredients/:id/allergens  { contains?: string[], confirmed?: boolean }
+  app.patch("/api/ingredients/:id/allergens", asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const { contains, confirmed } = req.body || {};
+    const { data: row, error: readErr } = await supabase.from("ingredients").select("id, dietaries_json").eq("id", id).single();
+    if (readErr || !row) return res.status(404).json({ error: "Ingredient not found" });
+    const update: any = {};
+    if (Array.isArray(contains)) {
+      const wanted = contains.map(String).filter((l) => MATRIX_LABELS.has(l));
+      // Keep any labels the matrix doesn't manage (e.g. legacy "Nuts")
+      let current: string[] = [];
+      try { current = JSON.parse(row.dietaries_json || "[]"); } catch {}
+      const unmanaged = current.filter((l) => !MATRIX_LABELS.has(l));
+      update.dietaries_json = JSON.stringify(Array.from(new Set([...unmanaged, ...wanted])));
+    }
+    if (typeof confirmed === "boolean") {
+      update.allergens_reviewed_at = confirmed ? new Date().toISOString() : null;
+    }
+    if (!Object.keys(update).length) return res.status(400).json({ error: "Nothing to update" });
+    const { data: saved, error } = await supabase.from("ingredients").update(update).eq("id", id)
+      .select("id, dietaries_json, allergens_reviewed_at").single();
+    if (error) return res.status(500).json({ error: error.message });
+    if (update.dietaries_json) scheduleProductDietaryRefresh();
+    res.json({ id: saved.id, dietariesJson: saved.dietaries_json, allergensReviewedAt: saved.allergens_reviewed_at });
+  }));
 
   app.put("/api/ingredients/:id", async (req, res) => {
     const i = await storage.updateIngredient(Number(req.params.id), req.body);

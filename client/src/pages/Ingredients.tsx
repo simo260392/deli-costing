@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { AllergenMatrix } from "@/components/AllergenMatrix";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Pencil, Trash2, Package, Check, RefreshCw, Download, Upload, Sparkles } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -53,6 +54,7 @@ type Ingredient = {
   avgWeightPerUnit?: number | null; notes?: string;
   dietariesJson?: string;
   allergensJson?: string;
+  allergensReviewedAt?: string | null;
   pealLabel?: string;
   barcode?: string;
   shelfLife?: string;
@@ -75,6 +77,7 @@ export default function Ingredients() {
   const [form, setForm] = useState<any>(emptyIng);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("All");
+  const [view, setView] = useState<"list" | "matrix">("list");
   const [convertTarget, setConvertTarget] = useState("");
   const [convertConfirm, setConvertConfirm] = useState(false);
   const [csvUploading, setCsvUploading] = useState(false);
@@ -405,9 +408,23 @@ export default function Ingredients() {
           <SelectTrigger className="w-44" data-testid="select-category-filter"><SelectValue /></SelectTrigger>
           <SelectContent>{cats.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
         </Select>
+        <div className="inline-flex rounded-md border border-border p-0.5 ml-auto">
+          {([["list", "List"], ["matrix", "Allergen matrix"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-3 py-1.5 text-sm rounded ${view === v ? "bg-[#256984] text-white" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid={`button-view-${v}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {isLoading ? (
+      {view === "matrix" && !isLoading ? (
+        <AllergenMatrix ingredients={filtered} />
+      ) : isLoading ? (
         <div className="space-y-2">{[1,2,3,4,5].map((i) => <div key={i} className="skeleton h-12 rounded-md" />)}</div>
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
