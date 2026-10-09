@@ -809,6 +809,7 @@ const deputyRosterCache = new Map<string, { data: any; expiresAt: number }>();
 const wagesDashboardCache = new Map<string, { data: any; expiresAt: number }>();
 const WAGES_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const kpiCache = new Map<string, { data: any; expiresAt: number }>();
+const SENSORPUSH_API = (process.env.SENSORPUSH_API_BASE || 'https://api.sensorpush.com/api/v1').replace(/\/+$/, '');
 // Flex product statuses that are still orderable ("live"). Excludes
 // "inactive" and products that have been removed from Flex ("deleted").
 const LIVE_FLEX_STATUSES = new Set(["active", "active_no_website", "hidden"]);
@@ -4908,7 +4909,7 @@ RULES:
       supabase
         .from('missing_items_log')
         .select('id, item_name, order_id, reason_type, reason_other, reason_ingredient, marked_by, created_at')
-        .eq('date', todayAWST)
+        .eq('order_date', todayAWST)
         .order('created_at', { ascending: false }),
       // 2. Active fridge sensors
       supabase.from('sensorpush_sensors').select('id, name, location, temp_min, temp_max').eq('active', true),
@@ -10996,7 +10997,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
     try {
       // 1. Authenticate with SensorPush
-      const authRes = await fetch('https://api.sensorpush.com/api/v1/oauth/authorize', {
+      const authRes = await fetch(`${SENSORPUSH_API}/oauth/authorize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: spEmail, password: spPassword }),
@@ -11004,7 +11005,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const authData = await authRes.json() as any;
       if (!authData.authorization) return res.status(500).json({ error: 'SensorPush auth failed', detail: authData });
 
-      const tokenRes = await fetch('https://api.sensorpush.com/api/v1/oauth/accesstoken', {
+      const tokenRes = await fetch(`${SENSORPUSH_API}/oauth/accesstoken`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ authorization: authData.authorization }),
@@ -11017,7 +11018,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       //    readings per sensor with 0 minute lag (confirmed by testing).
       //    Using startTime causes the API to query a delayed historical store (~4h lag).
       //    limit: 60 gives ~1 hour of per-minute readings per sensor for history storage.
-      const samplesRes = await fetch('https://api.sensorpush.com/api/v1/samples', {
+      const samplesRes = await fetch(`${SENSORPUSH_API}/samples`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
         body: JSON.stringify({ limit: 300 }), // no startTime — returns live data immediately; 300 covers ~5h backfill if a cron run is missed
@@ -11033,7 +11034,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       try {
         const [{ data: known }, devRes] = await Promise.all([
           supabase.from('sensorpush_sensors').select('id'),
-          fetch('https://api.sensorpush.com/api/v1/devices/sensors', {
+          fetch(`${SENSORPUSH_API}/devices/sensors`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': accessToken },
             body: JSON.stringify({}),
@@ -11110,11 +11111,237 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
         else inserted = allRows.length;
       }
 
-      // 4. Return results (alert handling done by cron)
+      // 4. WhatsApp alerts for fridges that are too warm
+      try {
+        const bySensor = new Map<string, { t: number; temp: number }[]>();
+        for (const r of allRows) {
+          const list = bySensor.get(r.sensor_id) || [];
+          list.push({ t: new Date(r.observed_at).getTime(), temp: r.temperature });
+          bySensor.set(r.sensor_id, list);
+        }
+        await evaluateFridgeAlerts(ourSensors || [], bySensor);
+      } catch (e: any) {
+        console.error('[sensorpush/poll] fridge alert check failed:', e?.message);
+      }
+
       res.json({ ok: true, inserted, alerts });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  }));
+
+  // ── WhatsApp (Green API) → team group ──────────────────────────────────
+  // Credentials live in Railway variables: GREEN_API_INSTANCE, GREEN_API_TOKEN
+  // and optionally GREEN_API_URL. The team group is chosen in Settings
+  // (settings.whatsapp_team_group_id) or WHATSAPP_TEAM_GROUP_ID.
+  const waConfig = () => ({
+    url: (process.env.GREEN_API_URL || "https://api.green-api.com").replace(/\/+$/, ""),
+    instance: process.env.GREEN_API_INSTANCE || "",
+    token: process.env.GREEN_API_TOKEN || "",
+  });
+  let waGroupLookupDone = false;
+  const waTeamGroup = async (): Promise<string> => {
+    const saved = (await storage.getSetting("whatsapp_team_group_id")) || process.env.WHATSAPP_TEAM_GROUP_ID || "";
+    if (saved || waGroupLookupDone) return saved;
+    // First use: find the group by name (WHATSAPP_TEAM_GROUP_NAME) and remember it
+    waGroupLookupDone = true;
+    const wanted = (process.env.WHATSAPP_TEAM_GROUP_NAME || "").trim().toLowerCase();
+    const { url, instance, token } = waConfig();
+    if (!wanted || !instance || !token) return "";
+    try {
+      const r = await fetch(`${url}/waInstance${instance}/getContacts/${token}?group=true`, { signal: AbortSignal.timeout(20000) });
+      if (!r.ok) { waGroupLookupDone = false; return ""; }
+      const list: any[] = await r.json();
+      const match = list.find((c) => String(c.id || "").endsWith("@g.us") &&
+        String(c.name || c.contactName || "").trim().toLowerCase() === wanted);
+      if (match) {
+        await storage.setSetting("whatsapp_team_group_id", match.id);
+        await storage.setSetting("whatsapp_team_group_name", match.name || match.contactName || "");
+        console.log(`[whatsapp] team group found: ${match.name} (${match.id})`);
+        return match.id;
+      }
+      console.warn(`[whatsapp] no group named "${process.env.WHATSAPP_TEAM_GROUP_NAME}" found`);
+    } catch (e: any) { waGroupLookupDone = false; console.error("[whatsapp] group lookup failed:", e?.message); }
+    return "";
+  };
+  let waLastResult: { at: string; ok: boolean; error?: string } | null = null;
+
+  async function sendTeamWhatsApp(message: string): Promise<{ ok: boolean; error?: string }> {
+    const { url, instance, token } = waConfig();
+    const chatId = await waTeamGroup();
+    if (!instance || !token) return { ok: false, error: "Green API is not configured (GREEN_API_INSTANCE / GREEN_API_TOKEN)" };
+    if (!chatId) return { ok: false, error: "No team WhatsApp group chosen in Settings" };
+    try {
+      const r = await fetch(`${url}/waInstance${instance}/sendMessage/${token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId, message }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const text = await r.text();
+      const result = r.ok ? { ok: true } : { ok: false, error: `Green API ${r.status}: ${text.slice(0, 200)}` };
+      waLastResult = { at: new Date().toISOString(), ...result };
+      if (!result.ok) console.error("[whatsapp] send failed:", result.error);
+      return result;
+    } catch (e: any) {
+      waLastResult = { at: new Date().toISOString(), ok: false, error: e?.message };
+      console.error("[whatsapp] send error:", e?.message);
+      return { ok: false, error: e?.message };
+    }
+  }
+
+  // GET /api/whatsapp/status
+  app.get("/api/whatsapp/status", asyncRoute(async (_req: any, res: any) => {
+    const { url, instance, token } = waConfig();
+    let state: string | null = null;
+    if (instance && token) {
+      try {
+        const r = await fetch(`${url}/waInstance${instance}/getStateInstance/${token}`, { signal: AbortSignal.timeout(10000) });
+        state = r.ok ? ((await r.json()) as any).stateInstance ?? null : `error ${r.status}`;
+      } catch (e: any) { state = `error: ${e?.message}`; }
+    }
+    const groupId = await waTeamGroup();
+    const groupName = await storage.getSetting("whatsapp_team_group_name");
+    res.json({ configured: !!(instance && token), instance, state, groupId, groupName: groupName || null, lastResult: waLastResult });
+  }));
+
+  // GET /api/whatsapp/groups — groups this WhatsApp number belongs to
+  app.get("/api/whatsapp/groups", asyncRoute(async (_req: any, res: any) => {
+    const { url, instance, token } = waConfig();
+    if (!instance || !token) return res.status(400).json({ error: "Green API is not configured" });
+    const r = await fetch(`${url}/waInstance${instance}/getContacts/${token}?group=true`, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) return res.status(502).json({ error: `Green API ${r.status}` });
+    const list: any[] = await r.json();
+    res.json(list.filter((c) => c.type === "group" || String(c.id || "").endsWith("@g.us"))
+      .map((c) => ({ id: c.id, name: c.name || c.contactName || c.id })));
+  }));
+
+  // PUT /api/whatsapp/group  { id, name }
+  app.put("/api/whatsapp/group", asyncRoute(async (req: any, res: any) => {
+    const { id, name } = req.body || {};
+    if (!id || !String(id).endsWith("@g.us")) return res.status(400).json({ error: "A WhatsApp group id (…@g.us) is required" });
+    await storage.setSetting("whatsapp_team_group_id", String(id));
+    await storage.setSetting("whatsapp_team_group_name", String(name || ""));
+    waGroupLookupDone = true;
+    res.json({ ok: true });
+  }));
+
+  // POST /api/whatsapp/test
+  app.post("/api/whatsapp/test", asyncRoute(async (_req: any, res: any) => {
+    const r = await sendTeamWhatsApp("✅ The Deli App is connected. Fridge temperature alerts and the nightly missing-items summary will be sent to this group.");
+    res.status(r.ok ? 200 : 502).json(r);
+  }));
+
+  // ── Fridge alerts ───────────────────────────────────────────────────────
+  // Too warm = every reading in the last 20 min is above the unit's maximum
+  // (ignores brief spikes from doors opening). One alert when it starts,
+  // a reminder every 2 h while it continues, and a message when it's back
+  // in range. Freezers colder than their range are fine, so only "too warm"
+  // is alerted.
+  const fmtC = (n: number) => `${Number(n).toFixed(1)}°C`;
+  const perthTime = (iso: string) => new Date(iso).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", timeZone: "Australia/Perth" });
+  const shortName = (n: string) => String(n || "").replace(/\s*-\s*(Osborne Park|CBD)\s*$/i, "");
+
+  async function evaluateFridgeAlerts(sensors: any[], readingsBySensor: Map<string, { t: number; temp: number }[]>) {
+    const now = Date.now();
+    for (const sensor of sensors) {
+      const max = Number(sensor.temp_max);
+      if (!Number.isFinite(max)) continue;
+      const readings = (readingsBySensor.get(sensor.id) || []).sort((a, b) => a.t - b.t);
+      const latest = readings[readings.length - 1];
+      if (!latest || now - latest.t > 3 * 3_600_000) continue; // no recent data (handled by staff checks)
+
+      const recent = readings.filter((r) => r.t >= latest.t - 20 * 60_000);
+      const tooWarm = recent.length >= 3 && recent.every((r) => r.temp > max);
+      const lastTen = readings.filter((r) => r.t >= latest.t - 10 * 60_000);
+      const backInRange = lastTen.length >= 2 && lastTen.every((r) => r.temp <= max);
+
+      const { data: last } = await supabase.from("sensorpush_alerts")
+        .select("alert_type, created_at").eq("sensor_id", sensor.id)
+        .order("created_at", { ascending: false }).limit(1);
+      const lastType = last?.[0]?.alert_type;
+      const lastAt = last?.[0]?.created_at ? new Date(last[0].created_at).getTime() : 0;
+      const open = lastType === "too_warm" || lastType === "too_warm_reminder";
+      const name = shortName(sensor.name);
+      const range = `${fmtC(sensor.temp_min)} to ${fmtC(max)}`;
+
+      let type: string | null = null;
+      let message = "";
+      if (tooWarm && !open) {
+        const since = recent[0];
+        type = "too_warm";
+        message = `🌡️ *Fridge alert — ${name}*\nIt's *${fmtC(latest.temp)}* (should be ${range}) and has been too warm since about ${perthTime(new Date(since.t).toISOString())}.\nPlease check the door and seals, and check the temperature of high-risk food.`;
+      } else if (tooWarm && open && now - lastAt >= 2 * 3_600_000) {
+        type = "too_warm_reminder";
+        message = `🌡️ *Still too warm — ${name}*\nNow *${fmtC(latest.temp)}* (should be ${range}). Food above 5°C for more than 2 hours should be used straight away; over 4 hours, thrown out.`;
+      } else if (open && backInRange) {
+        type = "back_in_range";
+        message = `✅ *${name}* is back in range at ${fmtC(latest.temp)}.`;
+      }
+      if (!type) continue;
+      const sent = await sendTeamWhatsApp(message);
+      await supabase.from("sensorpush_alerts").insert({
+        sensor_id: sensor.id, alert_type: type, temperature: latest.temp,
+        observed_at: new Date(latest.t).toISOString(), notified_whatsapp: sent.ok,
+      });
+    }
+  }
+
+  // ── Nightly missing-items summary (7:30pm Perth) ────────────────────────
+  // Only sent when something was missing that day.
+  async function buildMissingItemsSummary(date: string): Promise<string | null> {
+    const { data: rows } = await supabase.from("missing_items_log")
+      .select("order_id, item_name, qty_missing, total_required, reason_type, reason_ingredient, reason_other, logged_at")
+      .eq("order_date", date).order("logged_at", { ascending: true });
+    if (!rows || rows.length === 0) return null;
+    // The same item can be logged more than once — keep the latest entry
+    const latest = new Map<string, any>();
+    for (const r of rows) latest.set(`${r.order_id}|${r.item_name}`, r);
+    const items = Array.from(latest.values()).filter((r) => (r.qty_missing ?? 1) > 0);
+    if (!items.length) return null;
+    const reason = (r: any) =>
+      r.reason_type === "ingredient" && r.reason_ingredient ? `no ${r.reason_ingredient}` :
+      r.reason_other ? r.reason_other : r.reason_type ? String(r.reason_type).replace(/_/g, " ") : "";
+    const nice = new Date(date + "T00:00:00Z").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+    const lines = items.map((r) => {
+      const qty = r.total_required ? `${r.qty_missing} of ${r.total_required}` : `${r.qty_missing ?? ""}`;
+      const why = reason(r);
+      return `• ${r.item_name} — ${qty} missing (order #${r.order_id})${why ? ` — ${why}` : ""}`;
+    });
+    // Ingredients that caused shortages — what to order
+    const ingredientCounts = new Map<string, number>();
+    for (const r of items) if (r.reason_type === "ingredient" && r.reason_ingredient) {
+      ingredientCounts.set(r.reason_ingredient, (ingredientCounts.get(r.reason_ingredient) || 0) + 1);
+    }
+    const shortages = Array.from(ingredientCounts.keys());
+    return `📋 *Missing items — ${nice}*\n${lines.join("\n")}` +
+      (shortages.length ? `\n\n*Short on:* ${shortages.join(", ")}` : "");
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    setInterval(async () => {
+      try {
+        const now = new Date(Date.now() + 8 * 3_600_000); // Perth
+        const hhmm = now.toISOString().slice(11, 16);
+        const today = now.toISOString().slice(0, 10);
+        if (hhmm < "19:30" || hhmm > "19:59") return;
+        if ((await storage.getSetting("wa_missing_summary_last")) === today) return;
+        await storage.setSetting("wa_missing_summary_last", today); // claim first: never double-send
+        const msg = await buildMissingItemsSummary(today);
+        if (msg) {
+          const r = await sendTeamWhatsApp(msg);
+          console.log(`[whatsapp] missing-items summary for ${today}: ${r.ok ? "sent" : "FAILED " + r.error}`);
+        } else {
+          console.log(`[whatsapp] no missing items on ${today} — nothing sent`);
+        }
+      } catch (e: any) { console.error("[whatsapp] summary error:", e?.message); }
+    }, 60_000);
+  }
+
+  // GET /api/whatsapp/missing-summary-preview?date=YYYY-MM-DD
+  app.get("/api/whatsapp/missing-summary-preview", asyncRoute(async (req: any, res: any) => {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || "")) ? String(req.query.date) : todayPerth();
+    res.json({ date, message: await buildMissingItemsSummary(date) });
   }));
 
   // ── Built-in SensorPush polling ────────────────────────────────────────────

@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
+import { WhatsAppSettingsCard } from "@/components/WhatsAppSettingsCard";
 import {
   Save, Percent, Clock, DollarSign, TrendingUp, AlertTriangle, FolderOpen,
   Lock, Users, ShieldCheck, Plus, Pencil, Trash2, UserX, CheckCircle, XCircle,
@@ -724,6 +725,9 @@ export default function Settings() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* WhatsApp team alerts */}
+              <WhatsAppSettingsCard />
 
               {/* Kitchen KPIs */}
               <Card>
