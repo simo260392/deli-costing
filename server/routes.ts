@@ -11280,10 +11280,11 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       }
       if (!type) continue;
       const sent = await sendTeamWhatsApp(message);
-      await supabase.from("sensorpush_alerts").insert({
+      const { error: alertErr } = await supabase.from("sensorpush_alerts").insert({
         sensor_id: sensor.id, alert_type: type, temperature: latest.temp,
         observed_at: new Date(latest.t).toISOString(), notified_whatsapp: sent.ok,
       });
+      if (alertErr) console.error(`[fridge-alert] couldn't record ${type} for ${name}:`, alertErr.message);
     }
   }
 
