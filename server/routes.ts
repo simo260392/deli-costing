@@ -6724,13 +6724,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       const now = new Date();
       const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
-      await supabase.from("staff_sessions").insert({
+      // Record the session without making the person wait for it
+      supabase.from("staff_sessions").insert({
         staff_id: staffMember.id,
         token,
         created_at: now.toISOString(),
         last_seen_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
-      });
+      }).then(({ error }) => { if (error) console.error("[login] session record failed:", error.message); });
 
       // Store in server-side session
       req.session.staffId = staffMember.id;

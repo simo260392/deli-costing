@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import logoWhite from "/logo-white.png";
 import { Delete } from "lucide-react";
@@ -61,6 +61,24 @@ export default function Login() {
 
   const deleteLast = () => setPin(prev => prev.slice(0, -1));
 
+  // Phones: act the instant a finger touches a key (not on release, and
+  // without the browser's double-tap-to-zoom wait), and close the on-screen
+  // keyboard left open from typing the name so the keypad stops jumping.
+  const lastPointer = useRef(0);
+  const keyHandlers = (action: () => void) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      lastPointer.current = Date.now();
+      const el = document.activeElement as HTMLElement | null;
+      if (el && el.tagName === "INPUT") el.blur();
+      action();
+    },
+    // The browser still sends a click after the touch — ignore that one.
+    // Keyboard users (Tab + Enter/Space) still get theirs.
+    onClick: () => { if (Date.now() - lastPointer.current > 1000) action(); },
+  });
+
   const digits = ["1","2","3","4","5","6","7","8","9","","0","⌫"];
 
   return (
@@ -94,11 +112,16 @@ export default function Login() {
               type="text"
               value={name}
               onChange={(e) => { setName(e.target.value); setError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              enterKeyHint="done"
+              autoCapitalize="words"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="Your name"
               autoComplete="name"
               autoFocus
               data-testid="input-login-name"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:border-transparent transition-shadow"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:border-transparent transition-shadow"
               style={{ "--tw-ring-color": "#256984" } as any}
             />
           </div>
@@ -108,7 +131,7 @@ export default function Login() {
             {[0,1,2,3].map(i => (
               <div
                 key={i}
-                className={`w-4 h-4 rounded-full border-2 transition-all duration-150 ${
+                className={`w-4 h-4 rounded-full border-2 ${
                   pin.length > i
                     ? "border-[#256984] bg-[#256984]"
                     : "border-gray-300 bg-white"
@@ -125,17 +148,21 @@ export default function Login() {
           )}
 
           {/* Keypad */}
-          <div className={`grid grid-cols-3 gap-2 ${shake ? "opacity-50" : ""}`}>
+          <div
+            className={`grid grid-cols-3 gap-2 select-none ${shake ? "opacity-50" : ""}`}
+            style={{ touchAction: "manipulation", WebkitTapHighlightColor: "transparent", WebkitUserSelect: "none" } as any}
+          >
             {digits.map((d, i) => {
               if (d === "") return <div key={i} />;
               if (d === "⌫") return (
                 <button
                   key={i}
                   type="button"
-                  onClick={deleteLast}
+                  {...keyHandlers(deleteLast)}
                   disabled={isLoading}
+                  aria-label="Delete"
                   data-testid="button-pin-delete"
-                  className="flex items-center justify-center h-14 rounded-xl bg-gray-100 text-gray-600 hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-40 text-lg"
+                  className="flex items-center justify-center h-14 rounded-xl bg-gray-100 text-gray-600 [@media(hover:hover)]:hover:bg-gray-200 active:bg-gray-300 disabled:opacity-40 text-lg"
                 >
                   <Delete size={20} />
                 </button>
@@ -144,10 +171,10 @@ export default function Login() {
                 <button
                   key={i}
                   type="button"
-                  onClick={() => pressDigit(d)}
+                  {...keyHandlers(() => pressDigit(d))}
                   disabled={isLoading || pin.length >= 4}
                   data-testid={`button-pin-${d}`}
-                  className="flex items-center justify-center h-14 rounded-xl bg-gray-100 text-gray-900 font-semibold text-xl hover:bg-gray-200 active:scale-95 transition-all disabled:opacity-40"
+                  className="flex items-center justify-center h-14 rounded-xl bg-gray-100 text-gray-900 font-semibold text-xl [@media(hover:hover)]:hover:bg-gray-200 active:bg-gray-300 disabled:opacity-40"
                 >
                   {d}
                 </button>
