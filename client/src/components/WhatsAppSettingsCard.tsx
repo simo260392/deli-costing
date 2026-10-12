@@ -69,7 +69,7 @@ export function WhatsAppSettingsCard() {
           <MessageCircle size={16} className="text-primary" /> WhatsApp team alerts
         </CardTitle>
         <CardDescription>
-          Fridge temperature alerts (when a fridge stays too warm for 20 minutes) and a 7:30pm summary of the day's
+          Fridge alerts (one message if a fridge is above 8°C, or a freezer above −5°C, for 4 hours straight) and a 7:30pm summary of the day's
           missing items — only sent if something was missing.
         </CardDescription>
       </CardHeader>

@@ -11234,53 +11234,62 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   }));
 
   // ── Fridge alerts ───────────────────────────────────────────────────────
-  // Too warm = every reading in the last 20 min is above the unit's maximum
-  // (ignores brief spikes from doors opening). One alert when it starts,
-  // a reminder every 2 h while it continues, and a message when it's back
-  // in range. Freezers colder than their range are fine, so only "too warm"
-  // is alerted.
+  // One WhatsApp message per problem, only for a real failure: a fridge above
+  // 8°C (or a freezer above −5°C) for 4 hours straight. Door openings,
+  // defrost cycles and deliveries never get near that, so the group isn't
+  // flooded. Nothing is sent when it recovers — the episode is just closed
+  // quietly so a later failure alerts again.
+  const ALERT_HOURS = 4;
+  const FRIDGE_ALERT_C = 8;
+  const FREEZER_ALERT_C = -5;
   const fmtC = (n: number) => `${Number(n).toFixed(1)}°C`;
   const perthTime = (iso: string) => new Date(iso).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", timeZone: "Australia/Perth" });
   const shortName = (n: string) => String(n || "").replace(/\s*-\s*(Osborne Park|CBD)\s*$/i, "");
+  const isFreezer = (sensor: any) => Number(sensor.temp_max) < 0 || /freezer/i.test(sensor.name || "");
 
-  async function evaluateFridgeAlerts(sensors: any[], readingsBySensor: Map<string, { t: number; temp: number }[]>) {
+  async function evaluateFridgeAlerts(sensors: any[], _fromPoll?: Map<string, { t: number; temp: number }[]>) {
     const now = Date.now();
+    const windowMs = ALERT_HOURS * 3_600_000;
     for (const sensor of sensors) {
-      const max = Number(sensor.temp_max);
-      if (!Number.isFinite(max)) continue;
-      const readings = (readingsBySensor.get(sensor.id) || []).sort((a, b) => a.t - b.t);
-      const latest = readings[readings.length - 1];
-      if (!latest || now - latest.t > 3 * 3_600_000) continue; // no recent data (handled by staff checks)
+      const freezer = isFreezer(sensor);
+      const limit = freezer ? FREEZER_ALERT_C : FRIDGE_ALERT_C;
 
-      const recent = readings.filter((r) => r.t >= latest.t - 20 * 60_000);
-      const tooWarm = recent.length >= 3 && recent.every((r) => r.temp > max);
-      const lastTen = readings.filter((r) => r.t >= latest.t - 10 * 60_000);
-      const backInRange = lastTen.length >= 2 && lastTen.every((r) => r.temp <= max);
+      // Last 4 h (+ a little) of stored readings for this unit
+      const { data: rows } = await supabase.from("sensorpush_readings")
+        .select("observed_at, temperature").eq("sensor_id", sensor.id)
+        .gte("observed_at", new Date(now - windowMs - 20 * 60_000).toISOString())
+        .order("observed_at", { ascending: true }).limit(2000);
+      const readings = (rows || []).map((r: any) => ({ t: new Date(r.observed_at).getTime(), temp: Number(r.temperature) }))
+        .filter((r) => Number.isFinite(r.temp));
+      const latest = readings[readings.length - 1];
+      if (!latest || now - latest.t > 3_600_000) continue; // no recent data
+
+      const window = readings.filter((r) => r.t >= latest.t - windowMs);
+      // Must have readings covering (nearly) the whole 4 hours, all above the limit
+      const covered = window.length >= 8 && window[0].t <= latest.t - windowMs + 20 * 60_000;
+      const failing = covered && window.every((r) => r.temp > limit);
+      const lastHalfHour = readings.filter((r) => r.t >= latest.t - 30 * 60_000);
+      const recovered = lastHalfHour.length >= 2 && lastHalfHour.every((r) => r.temp <= limit);
 
       const { data: last } = await supabase.from("sensorpush_alerts")
-        .select("alert_type, created_at").eq("sensor_id", sensor.id)
+        .select("alert_type").eq("sensor_id", sensor.id)
         .order("created_at", { ascending: false }).limit(1);
       const lastType = last?.[0]?.alert_type;
-      const lastAt = last?.[0]?.created_at ? new Date(last[0].created_at).getTime() : 0;
       const open = lastType === "too_warm" || lastType === "too_warm_reminder";
       const name = shortName(sensor.name);
-      const range = `${fmtC(sensor.temp_min)} to ${fmtC(max)}`;
 
       let type: string | null = null;
-      let message = "";
-      if (tooWarm && !open) {
-        const since = recent[0];
+      let message: string | null = null;
+      if (failing && !open) {
         type = "too_warm";
-        message = `🌡️ *Fridge alert — ${name}*\nIt's *${fmtC(latest.temp)}* (should be ${range}) and has been too warm since about ${perthTime(new Date(since.t).toISOString())}.\nPlease check the door and seals, and check the temperature of high-risk food.`;
-      } else if (tooWarm && open && now - lastAt >= 2 * 3_600_000) {
-        type = "too_warm_reminder";
-        message = `🌡️ *Still too warm — ${name}*\nNow *${fmtC(latest.temp)}* (should be ${range}). Food above 5°C for more than 2 hours should be used straight away; over 4 hours, thrown out.`;
-      } else if (open && backInRange) {
-        type = "back_in_range";
-        message = `✅ *${name}* is back in range at ${fmtC(latest.temp)}.`;
+        message = freezer
+          ? `🧊 *Freezer alert — ${name}*\nIt has been above ${fmtC(limit)} for over ${ALERT_HOURS} hours (since about ${perthTime(new Date(window[0].t).toISOString())}). It's now *${fmtC(latest.temp)}*.\nPlease check the freezer and whether food has started to thaw.`
+          : `🌡️ *Fridge alert — ${name}*\nIt has been above ${fmtC(limit)} for over ${ALERT_HOURS} hours (since about ${perthTime(new Date(window[0].t).toISOString())}). It's now *${fmtC(latest.temp)}*.\nPlease check the fridge — high-risk food above 5°C for more than 4 hours should be thrown out.`;
+      } else if (open && recovered) {
+        type = "back_in_range"; // closed quietly, no message
       }
       if (!type) continue;
-      const sent = await sendTeamWhatsApp(message);
+      const sent = message ? await sendTeamWhatsApp(message) : { ok: false };
       const { error: alertErr } = await supabase.from("sensorpush_alerts").insert({
         sensor_id: sensor.id, alert_type: type, temperature: latest.temp,
         observed_at: new Date(latest.t).toISOString(), notified_whatsapp: sent.ok,
