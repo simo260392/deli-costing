@@ -45,3 +45,18 @@ update suppliers set collection_method='driver'
 -- Old tables no longer used by the app (safe to drop once happy):
 -- stock_orders, stock_order_items, stock_order_drafts, stock_order_supplier_items,
 -- cbd_stock_order_config, cbd_order_item_ticks, ingredient_par_levels
+
+-- Shopping lists (applied 13 Oct 2026)
+create table if not exists stock_lists (
+  id bigserial primary key,
+  supplier_id integer references suppliers(id) on delete set null,
+  supplier_name text not null,
+  status text not null default 'draft' check (status in ('draft','driver','ordered','completed','cancelled')),
+  method text check (method in ('driver','delivery')),
+  collect_by date,
+  created_by text, created_at timestamptz not null default now(),
+  sent_by text, sent_at timestamptz, sent_to text, sent_via text, email_subject text, email_body text,
+  completed_by text, completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+alter table stock_requests add column if not exists list_id bigint references stock_lists(id) on delete cascade;
