@@ -205,7 +205,8 @@ export function registerXeroRoutes(app: Express) {
 
   // Xero sends the browser back here
   app.get("/api/xero-connection/callback", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
-    const back = (q: string) => res.redirect(`/#/supplier-invoices?${q}`);
+    // Query goes before the # so the page route still matches (the app uses hash routing)
+    const back = (q: string) => res.redirect(`/?${q}#/supplier-invoices`);
     if (req.query.error) return back(`xero=error&message=${encodeURIComponent(String(req.query.error_description || req.query.error))}`);
     if (!req.query.state || req.query.state !== req.session.xeroState) return back("xero=error&message=Sign-in%20expired%2C%20please%20try%20again");
     delete req.session.xeroState;
