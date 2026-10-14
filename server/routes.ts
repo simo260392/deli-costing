@@ -17,7 +17,8 @@ import { registerXeroRoutes } from "./xeroRoutes";
 let anthropic: Anthropic | null = null;
 try {
   if (process.env.ANTHROPIC_API_KEY) {
-    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const ws = process.env.ANTHROPIC_WORKSPACE_ID; // needed when the key isn't tied to a workspace
+    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, ...(ws ? { defaultHeaders: { "anthropic-workspace-id": ws } } : {}) });
   } else {
     console.warn("[AI] ANTHROPIC_API_KEY is not set — AI features will be disabled");
   }

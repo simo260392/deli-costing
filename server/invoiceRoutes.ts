@@ -24,7 +24,10 @@ const asyncRoute = (fn: any) => (req: any, res: any, next: any) =>
   });
 
 function anthropicClient(): Anthropic | null {
-  return process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  // Keys not tied to a workspace must name one on every request (ANTHROPIC_WORKSPACE_ID on Railway).
+  const ws = process.env.ANTHROPIC_WORKSPACE_ID;
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, ...(ws ? { defaultHeaders: { "anthropic-workspace-id": ws } } : {}) });
 }
 const canStoreFiles = () => !!process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -125,7 +128,11 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
       knownSuppliers: (suppliers || []).map((s: any) => s.name),
     });
     const inv = normaliseInvoice(raw);
-    const match = matchSupplier(inv, suppliers || []);
+    let match = matchSupplier(inv, suppliers || []);
+    if (!match.supplierId) {
+      const { data: cur } = await supabase.from("supplier_invoices").select("supplier_id, supplier_match_method").eq("id", id).single();
+      if (cur?.supplier_id) match = { supplierId: cur.supplier_id, method: cur.supplier_match_method || "previous" };
+    }
 
     // Duplicate? Same supplier and invoice number already saved.
     let status = "needs_review";
@@ -133,7 +140,7 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
     if (match.supplierId && inv.invoice_number) {
       const { data: dupes } = await supabase.from("supplier_invoices").select("id, status")
         .eq("supplier_id", match.supplierId).ilike("invoice_number", inv.invoice_number).neq("id", id)
-        .not("status", "in", "(failed,duplicate)");
+        .not("status", "in", "(failed,duplicate,removed)");
       if (dupes && dupes.length) { status = "duplicate"; note = `Already in the app as invoice #${dupes[0].id}.`; }
     }
     if (status !== "duplicate" && inv.document_type === "order_confirmation") { status = "ignored"; note = "This is an order confirmation, not an invoice."; }
@@ -203,20 +210,27 @@ async function loadFile(path: string): Promise<Buffer | null> {
 /** Create an invoice record from a file and read it in the background. Used by uploads and the Xero sync. */
 export async function ingestInvoiceFile(opts: {
   data: Buffer; fileName: string; mime: string; source: "upload" | "xero"; xeroInvoiceId?: string; uploadedBy?: string | null;
+  autoRead?: boolean; // uploads are read straight away; Xero bills wait until Scott presses Read
+  supplierId?: number | null; xero?: { contactName: string | null; number: string | null; date: string | null; total: number | null };
 }): Promise<{ id: number; status: string; note?: string }> {
+  const autoRead = opts.autoRead !== false;
   const sha = crypto.createHash("sha256").update(opts.data).digest("hex");
-  const { data: same } = await supabase.from("supplier_invoices").select("id, status").eq("file_sha256", sha).not("status", "in", "(failed)").limit(1);
+  const { data: same } = await supabase.from("supplier_invoices").select("id, status").eq("file_sha256", sha).not("status", "in", "(failed,removed)").limit(1);
   if (same && same.length) return { id: same[0].id, status: "duplicate", note: `This exact file is already in the app (invoice #${same[0].id}).` };
 
   const { data: row, error } = await supabase.from("supplier_invoices").insert({
     source: opts.source, xero_invoice_id: opts.xeroInvoiceId ?? null, file_name: opts.fileName, file_mime: opts.mime,
-    file_sha256: sha, status: "new", uploaded_by: opts.uploadedBy ?? null,
+    file_sha256: sha, status: autoRead ? "new" : "unread", uploaded_by: opts.uploadedBy ?? null,
+    supplier_id: opts.supplierId ?? null, supplier_match_method: opts.supplierId ? "xero_contact" : null,
+    xero_contact_name: opts.xero?.contactName ?? null, xero_invoice_number: opts.xero?.number ?? null,
+    xero_date: opts.xero?.date ?? null, xero_total: opts.xero?.total ?? null,
   }).select("id").single();
   if (error || !row) throw new Error(error?.message || "Couldn't create the invoice record");
 
   const path = await storeFile(row.id, opts.data, opts.mime, opts.fileName);
   if (path) await supabase.from("supplier_invoices").update({ file_path: path }).eq("id", row.id);
 
+  if (!autoRead) return { id: row.id, status: "unread" };
   // Read in the background so the upload returns straight away.
   processInvoice(row.id, opts.data, opts.mime, opts.fileName).catch(() => {});
   return { id: row.id, status: "reading" };
@@ -228,9 +242,10 @@ export function registerInvoiceRoutes(app: Express) {
   app.get("/api/supplier-invoices", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
     const status = req.query.status ? String(req.query.status).split(",") : null;
     let q = supabase.from("supplier_invoices")
-      .select("id, source, supplier_id, detected_supplier_name, document_type, invoice_number, invoice_date, subtotal_ex_gst, gst, total_inc_gst, status, status_note, totals_check_ok, file_name, created_at, approved_at, suppliers(name)")
-      .order("created_at", { ascending: false }).limit(Math.min(Number(req.query.limit) || 100, 500));
+      .select("id, source, supplier_id, detected_supplier_name, document_type, invoice_number, invoice_date, subtotal_ex_gst, gst, total_inc_gst, status, status_note, totals_check_ok, file_name, file_path, file_mime, created_at, approved_at, xero_contact_name, xero_invoice_number, xero_date, xero_total, suppliers(name)")
+      .order("created_at", { ascending: false }).limit(Math.min(Number(req.query.limit) || 200, 500));
     if (status) q = q.in("status", status);
+    else q = q.neq("status", "removed");
     const { data, error } = await q;
     if (error) throw error;
     res.json(data);
@@ -271,12 +286,13 @@ export function registerInvoiceRoutes(app: Express) {
     res.json({ results, filesStored: canStoreFiles() });
   }));
 
-  // Read again (after a failure, or once the API key is set)
+  // Read (unread Xero bills) or read again (after a failure, or once the API key is set)
   app.post("/api/supplier-invoices/:id/reread", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
     const id = Number(req.params.id);
     const { data: inv } = await supabase.from("supplier_invoices").select("file_path, file_mime, file_name, status").eq("id", id).single();
     if (!inv) return res.status(404).json({ error: "Not found" });
     if (inv.status === "approved") return res.status(400).json({ error: "This invoice is already approved" });
+    if (inv.status === "reading") return res.json({ ok: true, status: "reading" });
     if (!inv.file_path) return res.status(400).json({ error: "No stored file to read. Please upload it again." });
     const buf = await loadFile(inv.file_path);
     if (!buf) return res.status(404).json({ error: "File not found in storage" });
@@ -316,9 +332,43 @@ export function registerInvoiceRoutes(app: Express) {
     res.json({ ok: true });
   }));
 
+  // Remove: clears it off the page and deletes the stored file. The record stays (status
+  // "removed") so the Xero check doesn't pull the same bill back in.
+  app.post("/api/supplier-invoices/:id/remove", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
+    const ids: number[] = (Array.isArray(req.body?.ids) ? req.body.ids : [req.params.id]).map(Number).filter(Boolean);
+    let removed = 0;
+    for (const id of ids) {
+      const { data: inv } = await supabase.from("supplier_invoices").select("status, file_path").eq("id", id).single();
+      if (!inv || inv.status === "approved" || inv.status === "removed") continue;
+      if (inv.file_path) await supabase.storage.from(BUCKET).remove([inv.file_path]);
+      await supabase.from("supplier_invoice_lines").delete().eq("invoice_id", id);
+      await supabase.from("supplier_invoices").update({
+        status: "removed", status_note: `Removed by ${req.staffName || "hand"}`, removed_at: new Date().toISOString(),
+        file_path: null, extraction_json: null, invoice_number: null, updated_at: new Date().toISOString(),
+      }).eq("id", id);
+      removed++;
+    }
+    res.json({ ok: true, removed });
+  }));
+
+  // Read several unread invoices at once
+  app.post("/api/supplier-invoices/read-many", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
+    const ids: number[] = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Boolean).slice(0, 50);
+    let started = 0;
+    for (const id of ids) {
+      const { data: inv } = await supabase.from("supplier_invoices").select("file_path, file_mime, file_name, status").eq("id", id).single();
+      if (!inv?.file_path || ["approved", "reading", "removed"].includes(inv.status)) continue;
+      const buf = await loadFile(inv.file_path);
+      if (!buf) continue;
+      processInvoice(id, buf, inv.file_mime || "application/pdf", inv.file_name).catch(() => {});
+      started++;
+    }
+    res.json({ ok: true, started });
+  }));
+
   // Counts for the menu badge
   app.get("/api/supplier-invoices-summary", requireInvoiceAccess, asyncRoute(async (_req: any, res: any) => {
-    const { data } = await supabase.from("supplier_invoices").select("status").in("status", ["new", "reading", "needs_review", "failed"]);
+    const { data } = await supabase.from("supplier_invoices").select("status").in("status", ["new", "unread", "reading", "needs_review", "failed"]);
     const counts: Record<string, number> = {};
     (data || []).forEach((r: any) => (counts[r.status] = (counts[r.status] || 0) + 1));
     res.json({ counts, readerReady: !!process.env.ANTHROPIC_API_KEY, filesStored: canStoreFiles(), model: INVOICE_READER_MODEL });
