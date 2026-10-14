@@ -81,8 +81,6 @@ export default function Ingredients() {
   const [convertTarget, setConvertTarget] = useState("");
   const [convertConfirm, setConvertConfirm] = useState(false);
   const [csvUploading, setCsvUploading] = useState(false);
-  const [autoFilling, setAutoFilling] = useState(false);
-  const [bulkFilling, setBulkFilling] = useState(false);
   const [autoFillingPeal, setAutoFillingPeal] = useState(false);
   const [autoFillingBrand, setAutoFillingBrand] = useState(false);
   const [bulkFillingPeal, setBulkFillingPeal] = useState(false);
@@ -241,37 +239,6 @@ export default function Ingredients() {
     setForm({ ...form, allergensJson: JSON.stringify(next) });
   };
 
-  const autoFillDietaries = async () => {
-    if (!editing) return;
-    setAutoFilling(true);
-    try {
-      const resp = await apiRequest("POST", `/api/ingredients/${editing.id}/auto-dietaries`);
-      const data = await resp.json();
-      if (data.dietaries) {
-        setForm((f: any) => ({ ...f, dietariesJson: JSON.stringify(data.dietaries) }));
-        toast({ title: "AI Dietaries filled", description: `Found: ${data.dietaries.join(", ") || "None"}` });
-      }
-    } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
-    } finally {
-      setAutoFilling(false);
-    }
-  };
-
-  const bulkAutoFill = async () => {
-    setBulkFilling(true);
-    try {
-      const resp = await apiRequest("POST", "/api/ingredients/auto-dietaries-bulk");
-      const data = await resp.json();
-      queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] });
-      toast({ title: "AI Bulk Fill Complete", description: `Updated ${data.updated} ingredients. Review and adjust manually.` });
-    } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
-    } finally {
-      setBulkFilling(false);
-    }
-  };
-
   const autoFillPeal = async () => {
     if (!editing) return;
     setAutoFillingPeal(true);
@@ -387,9 +354,6 @@ export default function Ingredients() {
             <Upload size={14} className="mr-1" /> {csvUploading ? "Importing…" : "Upload CSV"}
           </Button>
           <input ref={csvRef} type="file" accept=".csv" className="hidden" onChange={handleUploadCsv} />
-          <Button variant="outline" size="sm" onClick={bulkAutoFill} disabled={bulkFilling} data-testid="button-bulk-auto-dietaries">
-            <Sparkles size={14} className="mr-1" /> {bulkFilling ? "AI Filling…" : "AI Fill Dietaries"}
-          </Button>
           <Button variant="outline" size="sm" onClick={bulkAutoFillPeal} disabled={bulkFillingPeal} data-testid="button-bulk-auto-peal">
             <Sparkles size={14} className="mr-1" /> {bulkFillingPeal ? "Generating…" : "AI Fill PEAL Labels"}
           </Button>
@@ -608,11 +572,6 @@ export default function Ingredients() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label className="text-sm font-semibold">Contains</Label>
-                {editing && (
-                  <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={autoFillDietaries} disabled={autoFilling} data-testid="button-ai-fill-dietaries">
-                    <Sparkles size={12} />{autoFilling ? "Filling…" : "AI Fill"}
-                  </Button>
-                )}
               </div>
               <p className="text-xs text-muted-foreground -mt-1">Tick everything this ingredient contains. Dietaries (GF, DF, V, VG, Halal…) are worked out from this for recipes and products.</p>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">

@@ -1174,91 +1174,6 @@ export function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  // Auto-classify dietaries for a single ingredient via LLM
-  app.post("/api/ingredients/:id/auto-dietaries", async (req, res) => {
-    const ing = await storage.getIngredient(Number(req.params.id));
-    if (!ing) return res.status(404).json({ error: "Not found" });
-    const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
-    const brandCtx = (ing as any).brandName ? ` (Brand: "${(ing as any).brandName}")` : "";
-    const prompt = `You are a food allergen expert. Given this ingredient name, brand, and category, return ONLY a JSON array of allergen keys that this ingredient DEFINITELY contains.
-
-Ingredient: "${ing.name}"${brandCtx}
-Category: "${ing.category}"
-
-Allowed keys (only return keys from this list): ${ALLERGENS.join(", ")}
-
-Rules:
-- Be conservative — only include an allergen if it is clearly present in this ingredient
-- Gluten: contains wheat, barley, rye, oats, or their derivatives (bread, pasta, flour, soy sauce, etc.)
-- Tree Nuts: almonds, cashews, walnuts, pecans, pistachios, macadamia, hazelnut, brazil nuts, pine nuts
-- Dairy: milk, cheese, butter, cream, yogurt, whey, lactose, casein
-- Eggs: egg, mayonnaise, aioli (unless explicitly vegan)
-- Peanuts: peanut butter, satay sauce
-- Sesame: tahini, sesame oil, hummus
-- Soy: soy sauce, tofu, tempeh, edamame, miso
-- Fish: any fish species, fish sauce, worcestershire sauce, anchovies
-- Sulphites: wine, vinegar, dried fruit, processed meats, some sauces
-- Crustacea: prawns, crab, lobster, shrimp
-- Molluscs: squid, mussels, oysters, scallops
-
-Return ONLY a JSON array, e.g. ["Gluten","Dairy"] or [] for no allergens.`;
-    try {
-      if (!requireAI(res)) return;
-    const msg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
-        max_tokens: 200,
-        messages: [{ role: "user", content: prompt }],
-      });
-      const text = (msg.content?.[0] as any)?.text?.trim() || "[]";
-      // Extract JSON array from response
-      const match = text.match(/\[.*?\]/s);
-      const allergens: string[] = match ? JSON.parse(match[0]) : [];
-      const valid = allergens.filter((a: string) => ALLERGENS.includes(a));
-      await storage.updateIngredient(Number(req.params.id), { dietariesJson: JSON.stringify(valid) });
-      res.json({ dietaries: valid });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // Bulk auto-classify all ingredients
-  app.post("/api/ingredients/auto-dietaries-bulk", async (req, res) => {
-    const allIngs = (await storage.getIngredients()).filter(i => i.category !== "Packaging");
-    const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
-    // Build one big batch request
-    const lines = allIngs.map((i) => `${i.id}|${i.name}|${i.category}`).join("\n");
-    const prompt = `You are a food allergen expert. For each ingredient below, identify which allergens it DEFINITELY contains.
-
-Ingredient list (id|name|category):
-${lines}
-
-Allowed allergen keys: ${ALLERGENS.join(", ")}
-
-Return a JSON object where each key is the ingredient id (as a string) and the value is an array of allergen keys.
-Be conservative — only include allergens clearly present. Return ONLY valid JSON, no explanation.
-Example: {"1":["Dairy"],"2":["Gluten","Eggs"],"3":[]}`;
-    try {
-      if (!requireAI(res)) return;
-    const msg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
-      });
-      const text = (msg.content?.[0] as any)?.text?.trim() || "{}";
-      const match = text.match(/\{[\s\S]*\}/);
-      const result: Record<string, string[]> = match ? JSON.parse(match[0]) : {};
-      let updated = 0;
-      for (const [idStr, allergens] of Object.entries(result)) {
-        const valid = (allergens as string[]).filter((a) => ALLERGENS.includes(a));
-        await storage.updateIngredient(Number(idStr), { dietariesJson: JSON.stringify(valid) });
-        updated++;
-      }
-      res.json({ ok: true, updated });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
   // ─── PEAL Label Generation ────────────────────────────────────────────────
   // Single ingredient: generate PEAL label via LLM
   app.post("/api/ingredients/:id/auto-peal", async (req, res) => {
@@ -1296,7 +1211,7 @@ Examples:
     try {
       if (!requireAI(res)) return;
     const msg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
+        model: "claude-haiku-4-5",
         max_tokens: 400,
         messages: [{ role: "user", content: prompt }],
       });
@@ -1345,7 +1260,7 @@ Return ONLY valid JSON, no explanation.`;
       try {
         if (!requireAI(res)) return;
     const msg = await anthropic!.messages.create({
-          model: "claude_haiku_4_5",
+          model: "claude-haiku-4-5",
           max_tokens: 2048,
           messages: [{ role: "user", content: prompt }],
         });
@@ -1381,30 +1296,9 @@ Return ONLY valid JSON, no explanation.`;
 
       const ALLERGENS = ["Gluten","Tree Nuts","Dairy","Eggs","Peanuts","Sesame","Soy","Fish","Sulphites","Crustacea","Molluscs"];
 
-      // Step 1 — allergen classification with brand context
-      const allergenPrompt = `You are a food allergen expert for the Australian/NZ market.
-
-Product: "${brandName}" (generic name: "${ing.name}", category: "${ing.category}")
-
-Using your knowledge of this specific branded product as sold in Australia, identify which allergens it DEFINITELY contains.
-Allowed keys: ${ALLERGENS.join(", ")}
-
-Rules:
-- Be precise — use the brand name to identify the specific product formulation
-- BBQ Sauce typically does NOT contain Fish unless it specifically lists Worcestershire sauce or anchovies
-- Only include allergens actually present in this branded product
-- Return ONLY a JSON array, e.g. ["Gluten","Soy"] or []`;
-
-    if (!requireAI(res)) return;
-      const allergenMsg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
-        max_tokens: 200,
-        messages: [{ role: "user", content: allergenPrompt }],
-      });
-      const allergenText = ((allergenMsg.content?.[0] as any)?.text || "").trim();
-      const allergenMatch = allergenText.match(/\[[\s\S]*?\]/);
-      const allergens: string[] = allergenMatch ? (JSON.parse(allergenMatch[0]) as string[]).filter(a => ALLERGENS.includes(a)) : [];
-      await storage.updateIngredient(id, { dietariesJson: JSON.stringify(allergens) });
+      // Dietaries are set manually now (AI dietary auto-fill removed Oct 2026).
+      // PEAL generation below uses the ingredient's existing dietaries.
+      const allergens: string[] = (() => { try { return JSON.parse((ing as any).dietariesJson || "[]"); } catch { return []; } })();
 
       // Step 2 — PEAL label with brand context
       const pealPrompt = `You are a food labelling expert specialising in FSANZ Standard 1.2.3 Plain English Allergen Labelling (PEAL) for Australia and New Zealand.
@@ -1428,7 +1322,7 @@ Examples:
 - Coles Free Range Eggs → "Free Range Eggs"`;
 
       const pealMsg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
+        model: "claude-haiku-4-5",
         max_tokens: 400,
         messages: [{ role: "user", content: pealPrompt }],
       });
@@ -1514,7 +1408,7 @@ Return ONLY the JSON object, no explanation.`;
 
       if (!requireAI(res)) return;
     const msg = await anthropic!.messages.create({
-        model: "claude_haiku_4_5",
+        model: "claude-haiku-4-5",
         max_tokens: 300,
         messages: [{ role: "user", content: prompt }],
       });
@@ -1572,7 +1466,7 @@ Return ONLY the JSON object, no explanation.`;
           const productDesc = brand ? `"${brand}" (known as "${name}")` : `"${name}"`;
           const prompt = `Nutritional values per 100g for Australian food product ${productDesc} (category: ${ing.category}). Return ONLY JSON: {"energy":<kJ>,"protein":<g>,"fatTotal":<g>,"fatSat":<g>,"carbs":<g>,"sugars":<g>,"sodium":<mg>}`;
           if (!requireAI(res)) return;
-    const msg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: prompt }] });
+    const msg = await anthropic!.messages.create({ model: "claude-haiku-4-5", max_tokens: 200, messages: [{ role: "user", content: prompt }] });
           const text = ((msg.content?.[0] as any)?.text || "").trim();
           const match = text.match(/\{[\s\S]*?\}/);
           if (match) {
@@ -3704,7 +3598,7 @@ Return ONLY a JSON object: { "brandName": "...", "found": true/false }
 - If no brand is identifiable, return { "brandName": "", "found": false }
 - Return ONLY JSON`;
               const brandMsg = await anthropic!.messages.create({
-                model: "claude_haiku_4_5",
+                model: "claude-haiku-4-5",
                 max_tokens: 100,
                 messages: [{ role: "user", content: brandExtractPrompt }],
               });
@@ -3734,16 +3628,10 @@ Return ONLY a JSON object: { "brandName": "...", "found": true/false }
             if (newBrand && newBrand !== existingBrand) {
               await storage.updateIngredient(resolvedIngredientId, { brandName: newBrand });
 
-              const allergenPrompt = `You are a food allergen expert for the Australian/NZ market.
-Product: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingForBrand?.category || ""}")\nUsing your knowledge of this specific branded product sold in Australia, identify which allergens it DEFINITELY contains.\nAllowed keys: ${ALLERGENS.join(", ")}\nBe precise — use the brand name. Return ONLY a JSON array, e.g. ["Gluten","Soy"] or []`;
-              const allergenMsg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 200, messages: [{ role: "user", content: allergenPrompt }] });
-              const at = ((allergenMsg.content?.[0] as any)?.text || "").trim();
-              const am = at.match(/\[[\s\S]*?\]/);
-              const allergens: string[] = am ? (JSON.parse(am[0]) as string[]).filter((a: string) => ALLERGENS.includes(a)) : [];
-              await storage.updateIngredient(resolvedIngredientId, { dietariesJson: JSON.stringify(allergens) });
-
+              // AI dietary auto-fill removed (Oct 2026): keep the ingredient's manual dietaries.
+              const allergens: string[] = (() => { try { return JSON.parse((ingForBrand as any)?.dietariesJson || "[]"); } catch { return []; } })();
               const pealPrompt = `You are a food labelling expert for FSANZ PEAL (Australia/NZ).\nProduct: "${newBrand}" (generic: "${ingForBrand?.name || ""}", category: "${ingForBrand?.category || ""}")\nKnown allergens: ${allergens.length > 0 ? allergens.join(", ") : "none"}\nGenerate the full FSANZ ingredient declaration for use inside a composite product's ingredient list. Use square brackets for sub-ingredients. Include additive code numbers. No "Contains:". No full stop. Return ONLY the declaration string.`;
-              const pealMsg = await anthropic!.messages.create({ model: "claude_haiku_4_5", max_tokens: 400, messages: [{ role: "user", content: pealPrompt }] });
+              const pealMsg = await anthropic!.messages.create({ model: "claude-haiku-4-5", max_tokens: 400, messages: [{ role: "user", content: pealPrompt }] });
               const pealLabel = ((pealMsg.content?.[0] as any)?.text || "").trim().replace(/^"|"$/g, "");
               await storage.updateIngredient(resolvedIngredientId, { pealLabel });
             } else if (userProvidedBrand && userProvidedBrand === existingBrand) {
