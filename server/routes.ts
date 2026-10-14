@@ -10,6 +10,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { storage, supabase } from "./storage";
 import { periodFor, weekOf, todayPerth } from "../shared/kpiPeriods";
 import { registerStockRoutes } from "./stockRoutes";
+import { registerInvoiceRoutes } from "./invoiceRoutes";
+import { registerXeroRoutes } from "./xeroRoutes";
 
 // Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
 let anthropic: Anthropic | null = null;
@@ -8546,6 +8548,10 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // ── Stock Ordering (see server/stockRoutes.ts) ───────────────────────────
   registerStockRoutes(app, sendTeamWhatsApp);
+
+  // ── Supplier invoices v2 (see server/invoiceRoutes.ts) ───────────────────
+  registerInvoiceRoutes(app);
+  registerXeroRoutes(app);
 
   // GET /api/suppliers/:id/ordering-info — supplier with all ordering details
   app.get('/api/suppliers/:id/ordering-info', asyncRoute(async (req: any, res: any) => {
