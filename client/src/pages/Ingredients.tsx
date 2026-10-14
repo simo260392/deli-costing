@@ -319,6 +319,21 @@ export default function Ingredients() {
     }
   };
 
+  const [recalculating, setRecalculating] = useState(false);
+  const recalculateAllCosts = async () => {
+    setRecalculating(true);
+    try {
+      const resp = await apiRequest("POST", "/api/cascade-recalculate");
+      const data = await resp.json();
+      queryClient.invalidateQueries();
+      toast({ title: "Costs recalculated", description: `${data.subRecipes} sub-recipes, ${data.recipes} recipes and ${data.platters} platters updated.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message, variant: "destructive" });
+    } finally {
+      setRecalculating(false);
+    }
+  };
+
   const bulkAutoFillPeal = async () => {
     setBulkFillingPeal(true);
     try {
@@ -354,6 +369,9 @@ export default function Ingredients() {
             <Upload size={14} className="mr-1" /> {csvUploading ? "Importing…" : "Upload CSV"}
           </Button>
           <input ref={csvRef} type="file" accept=".csv" className="hidden" onChange={handleUploadCsv} />
+          <Button variant="outline" size="sm" onClick={recalculateAllCosts} disabled={recalculating} data-testid="button-recalculate-costs">
+            <RefreshCw size={14} className={cn("mr-1", recalculating && "animate-spin")} /> {recalculating ? "Recalculating…" : "Recalculate all costs"}
+          </Button>
           <Button variant="outline" size="sm" onClick={bulkAutoFillPeal} disabled={bulkFillingPeal} data-testid="button-bulk-auto-peal">
             <Sparkles size={14} className="mr-1" /> {bulkFillingPeal ? "Generating…" : "AI Fill PEAL Labels"}
           </Button>
