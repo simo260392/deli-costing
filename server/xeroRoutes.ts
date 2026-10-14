@@ -106,7 +106,7 @@ const xeroDate = (s: any): string | null => {
 };
 
 /** Download a bill's first readable attachment and send it to the reader. */
-async function pullInBill(bill: any): Promise<{ invoiceId: number } | { noDocument: true }> {
+async function pullInBill(bill: any, supplierId: number | null): Promise<{ invoiceId: number } | { noDocument: true }> {
   const listResp = await xeroGet(`/Invoices/${bill.InvoiceID}/Attachments`);
   const list: any = await listResp.json().catch(() => ({}));
   const att = (list.Attachments || []).find((a: any) => READABLE.includes(mimeFromName(a.FileName || "", a.MimeType)));
@@ -117,8 +117,10 @@ async function pullInBill(bill: any): Promise<{ invoiceId: number } | { noDocume
   const r = await ingestInvoiceFile({
     data, fileName: att.FileName || `${bill.InvoiceNumber || bill.InvoiceID}.pdf`, mime: mimeFromName(att.FileName || "", att.MimeType),
     source: "xero", xeroInvoiceId: bill.InvoiceID, uploadedBy: "Xero",
+    autoRead: false, // stored unread; Scott previews it and presses Read if it matters
+    supplierId,
+    xero: { contactName: bill.Contact?.Name ?? null, number: bill.InvoiceNumber || null, date: xeroDate(bill.DateString || bill.Date), total: bill.Total ?? null },
   });
-  await supabase.from("supplier_invoices").update({ xero_contact_name: bill.Contact?.Name ?? null, xero_total: bill.Total ?? null }).eq("id", r.id);
   return { invoiceId: r.id };
 }
 
@@ -159,7 +161,7 @@ export async function syncXero(opts: { since?: string } = {}): Promise<SyncResul
           await supabase.from("suppliers").update({ xero_contact_id: bill.Contact.ContactID }).eq("id", supplierId).is("xero_contact_id", null);
         }
         if (!bill.HasAttachments) { result.noDocument.push({ supplier: contact, number: bill.InvoiceNumber || null }); continue; }
-        const r = await pullInBill(bill);
+        const r = await pullInBill(bill, supplierId);
         if ("noDocument" in r) result.noDocument.push({ supplier: contact, number: bill.InvoiceNumber || null });
         else result.pulledIn.push({ xeroInvoiceId: bill.InvoiceID, supplier: contact, number: bill.InvoiceNumber || null, invoiceId: r.invoiceId });
         seen.add(bill.InvoiceID);
@@ -255,7 +257,7 @@ export function registerXeroRoutes(app: Express) {
     const resp = await xeroGet(`/Invoices/${encodeURIComponent(id)}`);
     if (!resp.ok) return res.status(404).json({ error: "Bill not found in Xero" });
     const bill = ((await resp.json()) as any).Invoices?.[0];
-    const r = await pullInBill(bill);
+    const r = await pullInBill(bill, null);
     if ("noDocument" in r) return res.status(400).json({ error: "This bill has no document attached in Xero. Upload it by hand instead." });
     res.json(r);
   }));

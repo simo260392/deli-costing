@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Upload, RefreshCw, Link2, Unlink, FileText, AlertTriangle, CheckCircle2, Loader2, ExternalLink } from "lucide-react";
+import { Upload, RefreshCw, Link2, Unlink, FileText, AlertTriangle, CheckCircle2, Loader2, ExternalLink, Sparkles, Trash2 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
 type InvoiceRow = {
@@ -16,7 +17,8 @@ type InvoiceRow = {
   document_type: string | null; invoice_number: string | null; invoice_date: string | null;
   subtotal_ex_gst: number | null; gst: number | null; total_inc_gst: number | null;
   status: string; status_note: string | null; totals_check_ok: boolean | null; file_name: string | null;
-  created_at: string; suppliers?: { name: string } | null;
+  created_at: string; suppliers?: { name: string } | null; file_path: string | null; file_mime: string | null;
+  xero_contact_name: string | null; xero_invoice_number: string | null; xero_date: string | null; xero_total: number | null;
 };
 type Line = {
   id: number; line_no: number; line_type: string; supplier_code: string | null; description: string; brand: string | null;
@@ -25,7 +27,7 @@ type Line = {
   gst_amount: number | null; base_qty: number | null; unit_cost: number | null; needs_pack_size: boolean; merged_from: number[] | null;
   status: string; notes: string | null;
 };
-type InvoiceDetail = InvoiceRow & { lines: Line[]; reader_notes: string | null; totals_check_note: string | null; file_path: string | null; xero_contact_name: string | null };
+type InvoiceDetail = InvoiceRow & { lines: Line[]; reader_notes: string | null; totals_check_note: string | null };
 type XeroStatus = {
   configured: boolean; tokensStorable: boolean; redirectUri: string; connected: boolean; tenantName: string | null;
   lastSyncAt: string | null; lastSyncNote: string | null; syncFrom: string | null; syncing: boolean;
@@ -39,6 +41,8 @@ const qty = (n: number | null) => (n === null ? "—" : Number.isInteger(n) ? St
 
 const STATUS: Record<string, { label: string; className: string }> = {
   new: { label: "Queued", className: "bg-slate-100 text-slate-700" },
+  unread: { label: "Not read", className: "bg-violet-100 text-violet-800" },
+  removed: { label: "Removed", className: "bg-slate-100 text-slate-400" },
   reading: { label: "Reading…", className: "bg-blue-100 text-blue-800" },
   needs_review: { label: "To review", className: "bg-amber-100 text-amber-900" },
   approved: { label: "Approved", className: "bg-emerald-100 text-emerald-800" },
@@ -63,6 +67,8 @@ export default function SupplierInvoices() {
   const [syncing, setSyncing] = useState(false);
   const [openId, setOpenId] = useState<number | null>(null);
   const [filter, setFilter] = useState<"open" | "all">("open");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const toggle = (id: number) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const { data: invoices = [], refetch } = useQuery<InvoiceRow[]>({ queryKey: ["/api/supplier-invoices"] });
   const { data: summary } = useQuery<Summary>({ queryKey: ["/api/supplier-invoices-summary"] });
@@ -118,7 +124,7 @@ export default function SupplierInvoices() {
     try {
       const resp = await apiRequest("POST", "/api/xero-connection/sync", {});
       const r = await resp.json();
-      toast({ title: "Xero checked", description: `${r.pulledIn.length} new bill${r.pulledIn.length === 1 ? "" : "s"} pulled in${r.noDocument.length ? `, ${r.noDocument.length} without a document` : ""}.` });
+      toast({ title: "Xero checked", description: `${r.pulledIn.length} new bill${r.pulledIn.length === 1 ? "" : "s"} waiting to be read${r.noDocument.length ? `, ${r.noDocument.length} without a document` : ""}. Open one to preview it, then Read or Remove.` });
       refetch(); refetchXero();
     } catch (e: any) {
       toast({ title: "Xero check failed", description: e.message, variant: "destructive" });
@@ -138,7 +144,18 @@ export default function SupplierInvoices() {
     }
   };
 
-  const shown = filter === "open" ? invoices.filter((i) => ["new", "reading", "needs_review", "failed"].includes(i.status)) : invoices;
+  const shown = filter === "open" ? invoices.filter((i) => ["new", "unread", "reading", "needs_review", "failed"].includes(i.status)) : invoices;
+  const selectedIds = Array.from(selected).filter((id) => shown.some((i) => i.id === id));
+  const readMany = async (ids: number[]) => {
+    await action("POST", "/api/supplier-invoices/read-many", { ids }, `Reading ${ids.length} invoice${ids.length === 1 ? "" : "s"}`);
+    setSelected(new Set());
+  };
+  const removeMany = async (ids: number[]) => {
+    if (!confirm(`Remove ${ids.length} invoice${ids.length === 1 ? "" : "s"}? The stored file is deleted and Xero won't pull it in again.`)) return;
+    await action("POST", "/api/supplier-invoices/0/remove", { ids }, `Removed ${ids.length}`);
+    setSelected(new Set());
+    if (openId !== null && ids.includes(openId)) setOpenId(null);
+  };
 
   return (
     <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-5">
@@ -231,10 +248,18 @@ export default function SupplierInvoices() {
       {/* List */}
       <div className="flex items-center justify-between">
         <div className="flex gap-1">
-          <Button size="sm" variant={filter === "open" ? "default" : "ghost"} onClick={() => setFilter("open")}>To do{summary ? ` (${(summary.counts.needs_review || 0) + (summary.counts.failed || 0) + (summary.counts.reading || 0) + (summary.counts.new || 0)})` : ""}</Button>
+          <Button size="sm" variant={filter === "open" ? "default" : "ghost"} onClick={() => setFilter("open")}>To do{summary ? ` (${(summary.counts.needs_review || 0) + (summary.counts.failed || 0) + (summary.counts.reading || 0) + (summary.counts.new || 0) + (summary.counts.unread || 0)})` : ""}</Button>
           <Button size="sm" variant={filter === "all" ? "default" : "ghost"} onClick={() => setFilter("all")}>All</Button>
         </div>
-        {busy && <span className="text-sm text-muted-foreground flex items-center gap-1"><Loader2 size={14} className="animate-spin" />Reading…</span>}
+        <div className="flex items-center gap-2">
+          {busy && <span className="text-sm text-muted-foreground flex items-center gap-1"><Loader2 size={14} className="animate-spin" />Reading…</span>}
+          {selectedIds.length > 0 && (
+            <>
+              <Button size="sm" onClick={() => readMany(selectedIds)} data-testid="button-read-selected"><Sparkles size={14} className="mr-1" />Read {selectedIds.length}</Button>
+              <Button size="sm" variant="outline" onClick={() => removeMany(selectedIds)} data-testid="button-remove-selected"><Trash2 size={14} className="mr-1" />Remove {selectedIds.length}</Button>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="rounded-md border divide-y bg-card">
@@ -242,23 +267,31 @@ export default function SupplierInvoices() {
         {shown.map((inv) => {
           const st = STATUS[inv.status] || { label: inv.status, className: "" };
           return (
-            <button key={inv.id} onClick={() => setOpenId(inv.id)} className="w-full text-left p-3 hover:bg-muted/50 flex items-center gap-3" data-testid={`row-invoice-${inv.id}`}>
-              <FileText size={18} className="text-muted-foreground shrink-0" />
+            <div key={inv.id} onClick={() => setOpenId(inv.id)} className="w-full text-left p-3 hover:bg-muted/50 flex items-center gap-3 cursor-pointer" data-testid={`row-invoice-${inv.id}`}>
+              {inv.status !== "approved" && inv.status !== "removed" ? (
+                <span onClick={(e) => e.stopPropagation()}><Checkbox checked={selected.has(inv.id)} onCheckedChange={() => toggle(inv.id)} aria-label="Select" /></span>
+              ) : <FileText size={18} className="text-muted-foreground shrink-0" />}
               <div className="min-w-0 flex-1">
                 <div className="font-medium truncate">
-                  {inv.suppliers?.name || inv.detected_supplier_name || inv.file_name || "Reading…"}
-                  {inv.invoice_number && <span className="text-muted-foreground font-normal"> · {inv.invoice_number}</span>}
+                  {inv.suppliers?.name || inv.detected_supplier_name || inv.xero_contact_name || inv.file_name || "Reading…"}
+                  {(inv.invoice_number || inv.xero_invoice_number) && <span className="text-muted-foreground font-normal"> · {inv.invoice_number || inv.xero_invoice_number}</span>}
                 </div>
                 <div className="text-xs text-muted-foreground truncate">
-                  {dateLabel(inv.invoice_date)} · {inv.source === "xero" ? "from Xero" : "uploaded"}{inv.status_note ? ` · ${inv.status_note}` : ""}
+                  {dateLabel(inv.invoice_date || inv.xero_date)} · {inv.source === "xero" ? "from Xero" : "uploaded"}{inv.status_note ? ` · ${inv.status_note}` : ""}
                 </div>
               </div>
               <div className="text-right shrink-0">
-                <div className="font-medium tabular-nums">{money(inv.total_inc_gst)}</div>
+                <div className="font-medium tabular-nums">{money(inv.total_inc_gst ?? inv.xero_total)}</div>
                 {inv.totals_check_ok === false && <div className="text-xs text-red-700">totals don't add up</div>}
               </div>
+              {inv.status === "unread" && (
+                <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <Button size="sm" className="h-7" onClick={() => readMany([inv.id])}>Read</Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Remove" onClick={() => removeMany([inv.id])}><Trash2 size={14} /></Button>
+                </div>
+              )}
               <span className={cn("text-xs px-2 py-1 rounded-full shrink-0", st.className)}>{st.label}</span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -269,9 +302,28 @@ export default function SupplierInvoices() {
           {detail && (
             <>
               <SheetHeader>
-                <SheetTitle>{detail.suppliers?.name || detail.detected_supplier_name || "Unknown supplier"}{detail.invoice_number ? ` · ${detail.invoice_number}` : ""}</SheetTitle>
+                <SheetTitle>{detail.suppliers?.name || detail.detected_supplier_name || detail.xero_contact_name || "Unknown supplier"}{(detail.invoice_number || detail.xero_invoice_number) ? ` · ${detail.invoice_number || detail.xero_invoice_number}` : ""}</SheetTitle>
               </SheetHeader>
               <div className="mt-3 space-y-3 text-sm">
+                {detail.status === "unread" && (
+                  <div className="rounded-md border border-violet-200 bg-violet-50 p-3 flex flex-wrap items-center gap-2 justify-between">
+                    <span className="text-violet-900">From Xero, not read yet. {dateLabel(detail.xero_date)} · {money(detail.xero_total)} inc GST. Is it worth pulling the prices from?</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={() => readMany([detail.id])} data-testid="button-read-invoice"><Sparkles size={14} className="mr-1" />Read this invoice</Button>
+                      <Button size="sm" variant="outline" onClick={() => removeMany([detail.id])} data-testid="button-remove-invoice"><Trash2 size={14} className="mr-1" />Remove</Button>
+                    </div>
+                  </div>
+                )}
+                {detail.file_path && (
+                  <div className="rounded-md border bg-muted/30 overflow-hidden">
+                    {detail.file_mime === "application/pdf" ? (
+                      <iframe title="Invoice" src={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} className="w-full h-[60vh] bg-white" />
+                    ) : (
+                      <img alt="Invoice" src={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} className="w-full max-h-[70vh] object-contain bg-white" />
+                    )}
+                  </div>
+                )}
+                {detail.status !== "unread" && (
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
                   <span>{dateLabel(detail.invoice_date)}</span>
                   <span>Ex GST {money(detail.subtotal_ex_gst)}</span>
@@ -279,7 +331,8 @@ export default function SupplierInvoices() {
                   <span>Total {money(detail.total_inc_gst)}</span>
                   {detail.document_type && detail.document_type !== "invoice" && <span>{detail.document_type.replace("_", " ")}</span>}
                 </div>
-                {!detail.supplier_id && detail.status !== "reading" && (
+                )}
+                {!detail.supplier_id && !["reading", "unread"].includes(detail.status) && (
                   <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-amber-900">Supplier not recognised{detail.detected_supplier_name ? ` ("${detail.detected_supplier_name}")` : ""}. Picking the supplier comes with the review screen in the next update.</div>
                 )}
                 {detail.totals_check_ok === true && <div className="flex items-center gap-1 text-emerald-700"><CheckCircle2 size={15} />Lines add up to the invoice total.</div>}
@@ -289,11 +342,11 @@ export default function SupplierInvoices() {
 
                 <div className="flex gap-2 flex-wrap">
                   {detail.file_path && <Button size="sm" variant="outline" asChild><a href={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} target="_blank" rel="noreferrer"><ExternalLink size={14} className="mr-1" />Open original</a></Button>}
-                  {detail.status !== "approved" && detail.file_path && <Button size="sm" variant="outline" onClick={() => action("POST", `/api/supplier-invoices/${detail.id}/reread`, {}, "Reading again")}><RefreshCw size={14} className="mr-1" />Read again</Button>}
-                  {!["approved", "ignored"].includes(detail.status) && <Button size="sm" variant="ghost" onClick={() => action("POST", `/api/supplier-invoices/${detail.id}/ignore`, {}, "Ignored")}>Ignore</Button>}
+                  {!["approved", "unread", "removed"].includes(detail.status) && detail.file_path && <Button size="sm" variant="outline" onClick={() => action("POST", `/api/supplier-invoices/${detail.id}/reread`, {}, "Reading again")}><RefreshCw size={14} className="mr-1" />Read again</Button>}
+                  {!["approved", "unread", "removed"].includes(detail.status) && <Button size="sm" variant="ghost" onClick={() => removeMany([detail.id])}><Trash2 size={14} className="mr-1" />Remove</Button>}
                 </div>
 
-                {detail.status === "reading" ? (
+                {detail.status === "unread" ? null : detail.status === "reading" ? (
                   <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center"><Loader2 size={16} className="animate-spin" />Reading this invoice…</div>
                 ) : (
                   <div className="overflow-x-auto rounded-md border">
