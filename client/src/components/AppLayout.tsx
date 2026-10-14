@@ -66,7 +66,8 @@ const complianceSubItems = [
 
 // Bottom-pinned items
 const bottomNavItems = [
-  { href: "/xero-imports", label: "Invoice Imports", icon: RefreshCw, slug: "xero-imports" },
+  { href: "/supplier-invoices", label: "Supplier Invoices", icon: FileText, slug: "supplier-invoices" },
+  { href: "/xero-imports", label: "Invoice Imports (old)", icon: RefreshCw, slug: "xero-imports" },
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
 ];
 

@@ -57,7 +57,8 @@ const ALL_PAGES = [
   { slug: "recipe-book",      label: "Product Info PDF" },
   { slug: "custom-pricing",   label: "Custom Pricing" },
   { slug: "wholesale",        label: "Wholesale" },
-  { slug: "xero-imports",     label: "Invoice Imports" },
+  { slug: "supplier-invoices", label: "Supplier Invoices" },
+  { slug: "xero-imports",     label: "Invoice Imports (old)" },
   { slug: "settings",         label: "Settings" },
 ];
 
