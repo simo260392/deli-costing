@@ -82,10 +82,10 @@ export default function SupplierInvoices() {
 
   // Message after coming back from Xero sign-in
   useEffect(() => {
-    const q = new URLSearchParams(window.location.hash.split("?")[1] || "");
+    const q = new URLSearchParams(window.location.search);
     if (q.get("xero") === "connected") toast({ title: "Xero connected", description: "Press Check Xero now to pull in recent bills." });
     if (q.get("xero") === "error") toast({ title: "Xero sign-in didn't work", description: q.get("message") || "", variant: "destructive" });
-    if (q.get("xero")) window.history.replaceState(null, "", "#/supplier-invoices");
+    if (q.get("xero")) window.history.replaceState(null, "", `${window.location.pathname}#/supplier-invoices`);
   }, [toast]);
 
   const uploadFiles = async (files: FileList | File[]) => {
