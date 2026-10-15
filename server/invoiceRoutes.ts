@@ -11,7 +11,7 @@ import multer from "multer";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import supabase from "./supabase";
-import { readInvoiceDocument, normaliseInvoice, INVOICE_READER_MODEL, type NormalisedInvoice } from "./invoiceReader";
+import { readInvoiceDocument, normaliseInvoice, friendlyReaderError, INVOICE_READER_MODEL, type NormalisedInvoice } from "./invoiceReader";
 
 const BUCKET = "supplier-invoices";
 const ACCEPTED = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
@@ -188,7 +188,7 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
     if (hErr) throw new Error(`Saving invoice failed: ${hErr.message}`);
   } catch (e: any) {
     console.error(`[invoices] reading #${id} failed:`, e?.message || e);
-    await setStatus(id, "failed", `Couldn't read this document: ${e?.message || e}`);
+    await setStatus(id, "failed", friendlyReaderError(e));
   }
 }
 

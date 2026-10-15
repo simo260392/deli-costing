@@ -176,6 +176,23 @@ Rules:
 - The Deli's own ABNs are 93 695 725 038 and 90 638 051 313; never return these as the supplier ABN.
 - Read photos carefully even if rotated, creased or at an angle. If something is illegible, say so in notes rather than guessing.`;
 
+/** An error with a message that's fine to show Scott as-is. */
+export class ReaderError extends Error {}
+
+/** Turn API and other errors into a plain-English line for the invoice page. */
+export function friendlyReaderError(e: any): string {
+  if (e instanceof ReaderError) return e.message;
+  const status = e?.status ?? e?.statusCode;
+  const msg = String(e?.error?.error?.message || e?.message || e || "");
+  if (status === 401 || /api key|authentication/i.test(msg)) return "The Anthropic API key on Railway isn't working. Check ANTHROPIC_API_KEY.";
+  if (/workspace/i.test(msg)) return "The Anthropic key needs a workspace. Set ANTHROPIC_WORKSPACE_ID on Railway.";
+  if (/credit balance|billing|payment/i.test(msg)) return "The Anthropic account is out of credit. Top it up in the Claude Console, then press Read again.";
+  if (status === 429 || status === 529 || /overloaded|rate limit/i.test(msg)) return "The reader is busy right now. Wait a minute and press Read again.";
+  if (status === 413 || /too large|request size/i.test(msg)) return "This file is too large to read. Try a smaller scan or photo.";
+  if (/password|encrypted/i.test(msg)) return "This PDF is password-protected, so it can't be read.";
+  return `Couldn't read this document (${msg.slice(0, 160)}). Try Read again; if it keeps failing, tell Claude.`;
+}
+
 export interface ReaderInput {
   data: Buffer;
   mediaType: string;          // application/pdf, image/jpeg, image/png, image/webp, image/gif
@@ -198,20 +215,29 @@ export async function readInvoiceDocument(client: Anthropic, input: ReaderInput)
     max_tokens: 16000,
     system: SYSTEM_PROMPT,
     tools: [invoiceTool as any],
-    tool_choice: { type: "tool", name: "record_invoice" },
+    // Newer models don't accept a forced tool choice, so the prompt asks for the tool instead.
+    tool_choice: { type: "auto" },
     messages: [{
       role: "user",
       content: [
         docBlock,
-        { type: "text", text: `Record this document${input.fileName ? ` (file: ${input.fileName})` : ""}.${hint}` },
+        { type: "text", text: `Record this document with the record_invoice tool${input.fileName ? ` (file: ${input.fileName})` : ""}. Call the tool once with everything; don't reply in text.${hint}` },
       ],
     }],
   });
 
-  const toolUse = msg.content.find((b: any) => b.type === "tool_use") as any;
-  if (!toolUse) throw new Error("The reader did not return invoice data");
-  if (msg.stop_reason === "max_tokens") throw new Error("The invoice was too long to read in one go");
-  return { raw: toolUse.input as RawInvoice, usage: msg.usage, model: INVOICE_READER_MODEL };
+  if (msg.stop_reason === "max_tokens") throw new ReaderError("This invoice was too long to read in one go.");
+  if (msg.stop_reason === "refusal") throw new ReaderError("The reader declined to read this document.");
+  const toolUse = msg.content.find((b: any) => b.type === "tool_use" && b.name === "record_invoice") as any;
+  let raw: any = toolUse?.input;
+  if (!raw) {
+    // Fallback: the model answered in text. Accept a JSON object if there is one.
+    const text = msg.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+    const m = text.match(/\{[\s\S]*\}/);
+    try { raw = m ? JSON.parse(m[0]) : null; } catch { raw = null; }
+  }
+  if (!raw || !Array.isArray(raw.lines)) throw new ReaderError("The reader didn't return any invoice lines. Try Read again.");
+  return { raw: raw as RawInvoice, usage: msg.usage, model: INVOICE_READER_MODEL };
 }
 
 // ─── Step 2: normalise (no AI) ───────────────────────────────────────────────
