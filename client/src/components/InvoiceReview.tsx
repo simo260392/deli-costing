@@ -153,8 +153,8 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
   // Work out the price per ingredient unit for a line with the current decision
   // How to work out quantity for a line the invoice gives no size for
   function modeFor(l: ReviewLine, d: Decision): "pack" | "perkg" | "weight" | null {
+    if (d.weightMode) return d.weightMode;   // chosen by hand, including "Change pack size" on any line
     if (!l.needs_pack_size) return null;
-    if (d.weightMode) return d.weightMode;
     const ing = d.ingredientId ? ingById.get(d.ingredientId) : undefined;
     return l.random_weight || /meat|protein/i.test(ing?.category || "") ? "perkg" : "pack";
   }
@@ -325,9 +325,14 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
                     <label className="flex items-center gap-1 text-xs text-muted-foreground">Brand
                       <Input className="h-8 w-40" value={d.brand ?? ""} onChange={(e) => set(l.id, { brand: e.target.value })} placeholder="—" />
                     </label>
+                    {!modeFor(l, d) && !l.priced_by_weight && (
+                      <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs underline underline-offset-2" onClick={() => set(l.id, { weightMode: "pack", packUom: packUomFor(d) })} data-testid="button-change-pack-size">
+                        Change pack size{l.base_qty !== null && l.quantity ? ` (now ${Math.round((l.base_qty / l.quantity) * 1000) / 1000} ${l.unit_size_uom || ""} each)` : ""}
+                      </Button>
+                    )}
                     {modeFor(l, d) && (
                       <div className="flex flex-wrap items-center gap-1 text-xs">
-                        <span className="text-amber-800 font-medium">No weight on the invoice:</span>
+                        <span className={cn("font-medium", l.needs_pack_size ? "text-amber-800" : "text-foreground")}>{l.needs_pack_size ? "No weight on the invoice:" : "Pack size:"}</span>
                         <Select value={modeFor(l, d)!} onValueChange={(v) => set(l.id, { weightMode: v as any })}>
                           <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
                           <SelectContent>
@@ -391,8 +396,10 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
                     )}
                   </div>
                 )}
-                {(l.warnings || []).filter((w) => !w.startsWith("Bought per") || c.needsFactor).map((w, i) => (
-                  <div key={i} className="flex items-start gap-1 text-xs text-amber-800"><AlertTriangle size={13} className="mt-0.5 shrink-0" />{w}</div>
+                {(l.warnings || []).filter((w) => (!w.startsWith("Bought per") || c.needsFactor) && !(w.startsWith("Works out at") && d.weightMode)).map((w, i) => (
+                  w.startsWith("Using your saved")
+                    ? <div key={i} className="text-xs text-muted-foreground">{w}</div>
+                    : <div key={i} className="flex items-start gap-1 text-xs text-amber-800"><AlertTriangle size={13} className="mt-0.5 shrink-0" />{w}</div>
                 ))}
                 {l.notes && <div className="text-xs text-muted-foreground">Reader: {l.notes}</div>}
               </>
