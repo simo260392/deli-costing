@@ -13,6 +13,7 @@ import { registerStockRoutes } from "./stockRoutes";
 import { registerInvoiceRoutes } from "./invoiceRoutes";
 import { registerXeroRoutes } from "./xeroRoutes";
 import { registerInboundEmailRoutes } from "./inboundEmail";
+import { registerMarketRoutes } from "./marketRoutes";
 
 // Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
 let anthropic: Anthropic | null = null;
@@ -6994,6 +6995,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
   // ── Stock Ordering (see server/stockRoutes.ts) ───────────────────────────
   registerStockRoutes(app, sendTeamWhatsApp);
+  registerMarketRoutes(app);
 
   // ── Supplier invoices v2 (see server/invoiceRoutes.ts) ───────────────────
   registerInvoiceRoutes(app, { recalcAllCosts });

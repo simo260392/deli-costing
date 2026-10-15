@@ -8,9 +8,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Search, Truck, Send, Check, X, AlertTriangle, Settings, Trash2, PackageCheck,
-  Mail, ShoppingBag, History, Car, RotateCcw, Pencil, ArrowLeft, Layers, Tag, ChevronDown, ChevronRight,
+  Mail, ShoppingBag, History, Car, RotateCcw, Pencil, ArrowLeft, Layers, Tag, ChevronDown, ChevronRight, Apple,
 } from "lucide-react";
 import { format } from "date-fns";
+import MarketsTab from "@/components/MarketsTab";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 type Method = "driver" | "delivery";
@@ -1007,7 +1008,7 @@ function SupplierSettings({ suppliers, emailConfigured, emailFrom, onClose }: {
 }
 
 // ─── Page ──────────────────────────────────────────────────────────────────────
-type Tab = "lists" | "driver" | "suppliers" | "history";
+type Tab = "lists" | "markets" | "driver" | "suppliers" | "history";
 
 export default function StockOrder() {
   const [tab, setTab] = useState<Tab>("lists");
@@ -1038,12 +1039,14 @@ export default function StockOrder() {
 
   const counts: Record<Tab, number> = {
     lists: lists.filter(l => l.status === "draft").length + unavailable.length,
+    markets: 0,
     driver: lists.filter(l => l.status === "driver").length,
     suppliers: lists.filter(l => l.status === "ordered").length,
     history: 0,
   };
   const tabs: [Tab, string, any][] = [
     ["lists", "Lists", ShoppingBag],
+    ["markets", "Markets", Apple],
     ["driver", "Driver run", Car],
     ["suppliers", "Suppliers", Truck],
     ["history", "History", History],
@@ -1080,7 +1083,7 @@ export default function StockOrder() {
           </Button>
         </div>
 
-        <div className="grid grid-cols-4 gap-1 bg-white border rounded-xl p-1 mb-5">
+        <div className="grid grid-cols-5 gap-1 bg-white border rounded-xl p-1 mb-5">
           {tabs.map(([key, label, Icon]) => (
             <button key={key} onClick={() => setTab(key)}
               className="relative flex flex-col sm:flex-row items-center justify-center gap-1 py-2 rounded-lg text-xs sm:text-sm font-semibold"
@@ -1101,6 +1104,8 @@ export default function StockOrder() {
           <p className="text-center text-sm text-muted-foreground py-12">Loading…</p>
         ) : tab === "lists" ? (
           <ListsTab lists={lists} unavailable={unavailable} onNew={() => setNewList({ step: "scope" })} />
+        ) : tab === "markets" ? (
+          <MarketsTab />
         ) : tab === "driver" ? (
           <DriverTab lists={lists} />
         ) : tab === "suppliers" ? (
