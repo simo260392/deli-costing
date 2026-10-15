@@ -53,7 +53,7 @@ async function loadSetup() {
     supabase.from("suppliers").select("id, name, is_market").eq("is_market", true).order("name"),
     supabase.from("market_reps").select("*").order("name"),
     supabase.from("market_rep_items").select("*"),
-    supabase.from("ingredients").select("id, name, unit, category, market_item, market_order_unit").eq("market_item", true).order("name"),
+    supabase.from("ingredients").select("id, name, unit, category, market_item, market_order_unit, market_name").eq("market_item", true).order("name"),
   ]);
   // Latest price each market supplier charged for each produce item (from approved invoices)
   const ids = (produce || []).map((p: any) => p.id);
@@ -96,6 +96,7 @@ export function registerMarketRoutes(app: Express) {
     const update: any = {};
     if (typeof req.body?.marketItem === "boolean") update.market_item = req.body.marketItem;
     if (req.body?.orderUnit !== undefined) update.market_order_unit = String(req.body.orderUnit || "").trim() || null;
+    if (req.body?.marketName !== undefined) update.market_name = String(req.body.marketName || "").trim() || null;
     const { error } = await supabase.from("ingredients").update(update).eq("id", Number(req.params.id));
     if (error) throw error;
     res.json({ ok: true });
