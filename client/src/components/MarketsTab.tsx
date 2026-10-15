@@ -43,13 +43,16 @@ const money = (n: number) => (n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`);
 const firstName = (n: string) => n.split(" ")[0];
 const smsHref = (phone: string, body: string) => `sms:${phone}?&body=${encodeURIComponent(body)}`;
 
+// Short on purpose: buyer code, when, where, the items.
+const BUYER_CODE = "GR2";
+const BAY = "34/4";
 function buildMessage(rep: Rep, items: OrderItem[], collectBy: string, followUp: boolean) {
+  const d = dayText(collectBy);
+  const when = d === "Tomorrow" || d === "Today" ? d.toLowerCase() : d;
   return [
-    `Hi ${firstName(rep.name)}, ${followUp ? "one more for" : "order from"} The Deli by Greenhorns for ${dayText(collectBy) === "Tomorrow" || dayText(collectBy) === "Today" ? dayText(collectBy).toLowerCase() : dayText(collectBy)}:`,
-    "",
+    `Hi ${firstName(rep.name)}, ${BUYER_CODE} ${followUp ? "add on" : "order"} for ${when}, bay ${BAY}:`,
     ...items.map((i) => `${qtyText(i.qty, i.unit)} ${i.item_name}${i.notes ? ` (${i.notes})` : ""}`),
-    "",
-    "Thanks!",
+    "Thanks",
   ].join("\n");
 }
 
