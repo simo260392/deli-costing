@@ -69,7 +69,8 @@ function buildMessage(rep: Rep, items: OrderItem[], collectBy: string, followUp:
   const when = d === "Tomorrow" || d === "Today" ? d.toLowerCase() : d;
   return [
     `Hi ${firstName(rep.name)}, ${BUYER_CODE} ${followUp ? "add on" : "order"} for ${when}, bay ${BAY}:`,
-    ...items.map((i) => `${qtyText(i.qty, i.unit)} ${i.item_name}${i.notes ? ` (${i.notes})` : ""}`),
+    // e.g. "1 x broccoli iced (box)"
+    ...items.map((i) => `${qtyText(i.qty, null)} x ${i.item_name.toLowerCase()}${i.unit ? ` (${i.unit})` : ""}${i.notes ? `, ${i.notes}` : ""}`),
     "Thanks",
   ].join("\n");
 }
