@@ -892,6 +892,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
         min_order_amount: b.min_order_amount !== '' && b.min_order_amount != null ? Number(b.min_order_amount) : null,
         delivery_days: b.delivery_days || null,
         parent_supplier_id: b.parent_supplier_id || null,
+        is_market: !!b.is_market,
       };
       const { data, error } = await supabase.from('suppliers').insert(insert).select().single();
       if (error) { console.error('[suppliers POST error]', error); return res.status(500).json({ error: error.message }); }
@@ -919,6 +920,7 @@ export function registerRoutes(httpServer: Server, app: Express) {
       if (b.min_order_amount !== undefined) updates.min_order_amount = b.min_order_amount !== '' ? Number(b.min_order_amount) : null;
       if (b.delivery_days !== undefined) updates.delivery_days = b.delivery_days;
       if (b.parent_supplier_id !== undefined) updates.parent_supplier_id = b.parent_supplier_id || null;
+      if (typeof b.is_market === "boolean") updates.is_market = b.is_market;
       const { data, error } = await supabase.from('suppliers').update(updates).eq('id', id).select().single();
       if (error) { console.error('[suppliers PUT error]', error); return res.status(500).json({ error: error.message }); }
       res.json(data);
