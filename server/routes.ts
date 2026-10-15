@@ -2990,35 +2990,40 @@ Return ONLY the JSON object, no explanation.`;
 
   // ─── Cascade Recalculate ─────────────────────────────────────────────────────
   // Re-computes costs for all sub-recipes, recipes, and platters in dependency order.
+  // Recalculate every sub-recipe, recipe and platter cost from current ingredient prices.
+  // Used by the Recalculate all costs button and after a supplier invoice is approved.
+  async function recalcAllCosts() {
+    const markup = await getMarkup();
+    const wholesaleMarkup = await getWholesaleMarkup();
+    const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
+
+    // Pass ALL sub-recipe ids — cascadeFromSubRecipes uses topological sort
+    const allSRIds = new Set((await storage.getSubRecipes()).map((s) => s.id));
+    await cascadeFromSubRecipes(allSRIds, markup, wholesaleMarkup, hourlyRate);
+
+    // Also recalculate any recipes/platters that don’t use sub-recipes
+    const allRecipes = await storage.getRecipes();
+    for (const r of allRecipes) {
+      const costs = await computeRecipeCosts(
+        r.ingredientsJson, r.subRecipesJson, r.packagingJson,
+        r.labourMinutes || 0, markup, hourlyRate, r.portionCount || 1, r.rrp, wholesaleMarkup, r.wholesaleRrp
+      );
+      await storage.updateRecipe(r.id, costs);
+    }
+    const allPlatters = await storage.getPlatters();
+    for (const p of allPlatters) {
+      const costs = await computePlatterCosts(
+        p.itemsJson, p.packagingJson, (p as any).labourMinutes || 0, markup, wholesaleMarkup, p.wholesaleRrp, hourlyRate
+      );
+      const marginPercent = p.rrp && costs.totalCost > 0 ? ((p.rrp - costs.totalCost) / p.rrp) * 100 : 0;
+      await storage.updatePlatter(p.id, { ...costs, marginPercent });
+    }
+    return { subRecipes: allSRIds.size, recipes: allRecipes.length, platters: allPlatters.length };
+  }
+
   app.post("/api/cascade-recalculate", async (req, res) => {
     try {
-      const markup = await getMarkup();
-      const wholesaleMarkup = await getWholesaleMarkup();
-      const hourlyRate = parseFloat(await storage.getSetting("labour_rate_per_hour") || "35");
-
-      // Pass ALL sub-recipe ids — cascadeFromSubRecipes uses topological sort
-      const allSRIds = new Set((await storage.getSubRecipes()).map((s) => s.id));
-      await cascadeFromSubRecipes(allSRIds, markup, wholesaleMarkup, hourlyRate);
-
-      // Also recalculate any recipes/platters that don’t use sub-recipes
-      const allRecipes = await storage.getRecipes();
-      for (const r of allRecipes) {
-        const costs = await computeRecipeCosts(
-          r.ingredientsJson, r.subRecipesJson, r.packagingJson,
-          r.labourMinutes || 0, markup, hourlyRate, r.portionCount || 1, r.rrp, wholesaleMarkup, r.wholesaleRrp
-        );
-        await storage.updateRecipe(r.id, costs);
-      }
-      const allPlatters = await storage.getPlatters();
-      for (const p of allPlatters) {
-        const costs = await computePlatterCosts(
-          p.itemsJson, p.packagingJson, (p as any).labourMinutes || 0, markup, wholesaleMarkup, p.wholesaleRrp, hourlyRate
-        );
-        const marginPercent = p.rrp && costs.totalCost > 0 ? ((p.rrp - costs.totalCost) / p.rrp) * 100 : 0;
-        await storage.updatePlatter(p.id, { ...costs, marginPercent });
-      }
-
-      res.json({ ok: true, subRecipes: allSRIds.size, recipes: allRecipes.length, platters: allPlatters.length });
+      res.json({ ok: true, ...(await recalcAllCosts()) });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -8551,7 +8556,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   registerStockRoutes(app, sendTeamWhatsApp);
 
   // ── Supplier invoices v2 (see server/invoiceRoutes.ts) ───────────────────
-  registerInvoiceRoutes(app);
+  registerInvoiceRoutes(app, { recalcAllCosts });
   registerXeroRoutes(app);
 
   // GET /api/suppliers/:id/ordering-info — supplier with all ordering details

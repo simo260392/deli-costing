@@ -12,6 +12,7 @@ import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import supabase from "./supabase";
 import { readInvoiceDocument, normaliseInvoice, friendlyReaderError, INVOICE_READER_MODEL, type NormalisedInvoice } from "./invoiceReader";
+import { matchLines, unitFactor, type Ingredient, type SupplierProduct } from "./invoiceMatching";
 
 const BUCKET = "supplier-invoices";
 const ACCEPTED = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
@@ -179,6 +180,7 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
         unit_price_ex_gst: l.unit_price_ex_gst, discount_ex_gst: l.discount_ex_gst, line_total_ex_gst: l.line_total_ex_gst,
         gst_amount: l.gst_amount, gst_applies: l.gst_applies, base_qty: l.base_qty, unit_cost: l.unit_cost,
         needs_pack_size: l.needs_pack_size, merged_from: l.merged_from, notes: l.notes,
+        generic_name: l.generic_name, item_type: l.item_type,
         status: l.line_type === "personal" ? "skipped" : "pending",
       }));
       const { error } = await supabase.from("supplier_invoice_lines").insert(rows);
@@ -186,6 +188,7 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
     }
     const { error: hErr } = await supabase.from("supplier_invoices").update({ ...header, status, status_note: note, updated_at: new Date().toISOString() }).eq("id", id);
     if (hErr) throw new Error(`Saving invoice failed: ${hErr.message}`);
+    if (status === "needs_review") await runMatching(id);
   } catch (e: any) {
     console.error(`[invoices] reading #${id} failed:`, e?.message || e);
     await setStatus(id, "failed", friendlyReaderError(e));
@@ -236,8 +239,228 @@ export async function ingestInvoiceFile(opts: {
   return { id: row.id, status: "reading" };
 }
 
+// ─── Matching lines to products and ingredients ─────────────────────────────
+async function loadMatchingData() {
+  const [{ data: ingredients }, { data: products }, { data: xeroHist }, { data: memory }] = await Promise.all([
+    supabase.from("ingredients").select("id, name, unit, category, avg_weight_per_unit, best_cost_per_unit"),
+    supabase.from("supplier_products").select("*").eq("active", true),
+    supabase.from("xero_line_items").select("description, ingredient_id").not("ingredient_id", "is", null).in("status", ["matched", "added"]),
+    supabase.from("invoice_memory").select("line_item_description, ingredient_id").not("ingredient_id", "is", null),
+  ]);
+  const history = [
+    ...(xeroHist || []).map((h: any) => ({ description: h.description, ingredient_id: h.ingredient_id })),
+    ...(memory || []).map((m: any) => ({ description: m.line_item_description, ingredient_id: m.ingredient_id })),
+  ].filter((h) => h.description);
+  return { ingredients: (ingredients || []) as Ingredient[], products: (products || []) as SupplierProduct[], history };
+}
+
+/** Work out suggestions for every pending line on an invoice. Safe to re-run (e.g. after picking the supplier). */
+export async function runMatching(invoiceId: number) {
+  const { data: inv } = await supabase.from("supplier_invoices").select("supplier_id").eq("id", invoiceId).single();
+  const { data: lines } = await supabase.from("supplier_invoice_lines").select("*").eq("invoice_id", invoiceId).eq("status", "pending");
+  if (!lines?.length) return;
+  const data = await loadMatchingData();
+  const toNum = (v: any) => (v === null || v === undefined ? null : Number(v));
+  const results = matchLines({
+    supplierId: inv?.supplier_id ?? null, ...data,
+    lines: lines.map((l: any) => ({
+      id: l.id, line_type: l.line_type, supplier_code: l.supplier_code, description: l.description, generic_name: l.generic_name, brand: l.brand,
+      quantity: toNum(l.quantity), priced_by_weight: !!l.priced_by_weight, unit_size_uom: l.unit_size_uom, base_qty: toNum(l.base_qty),
+      unit_cost: toNum(l.unit_cost), line_total_ex_gst: toNum(l.line_total_ex_gst), needs_pack_size: !!l.needs_pack_size, item_type: l.item_type,
+    })),
+  });
+  for (const l of lines) {
+    const m = results.get(l.id);
+    if (!m) continue;
+    await supabase.from("supplier_invoice_lines").update({
+      supplier_product_id: m.supplier_product_id, ingredient_id: m.ingredient_id, match_method: m.match_method, match_confidence: m.match_confidence,
+      suggestions: m.suggestions, warnings: m.warnings, price_change_pct: m.price_change_pct, base_qty: m.base_qty, unit_cost: m.unit_cost,
+      needs_pack_size: m.needs_pack_size, item_type: m.item_type, ingredient_units_per_base: m.ingredient_units_per_base,
+      ingredient_unit_cost: m.unit_cost !== null && m.ingredient_units_per_base ? Math.round((m.unit_cost / m.ingredient_units_per_base) * 10000) / 10000 : null,
+    }).eq("id", l.id);
+  }
+}
+
+// ─── Approval ────────────────────────────────────────────────────────────────
+export type LineDecision = {
+  lineId: number;
+  action: "match" | "new" | "skip" | "personal";
+  ingredientId?: number;
+  newIngredient?: { name: string; unit: "kg" | "L" | "each"; category: string };
+  itemType?: "ingredient" | "packaging" | "cleaning" | "other";
+  brand?: string | null;
+  basePerPurchase?: number | null;       // pack size: kg / L / each in ONE purchase unit, when the invoice doesn't say
+  packUom?: "kg" | "L" | "each" | null;   // the unit basePerPurchase is in
+  ingredientUnitsPerBase?: number | null; // e.g. 10 when a loaf is bought but recipes use slices
+};
+
+const r4 = (n: number) => Math.round(n * 10000) / 10000;
+const normD = (s: any) => String(s || "").toLowerCase().replace(/\s+/g, " ").replace(/\b(eac|each|ea)\b/g, "").trim();
+
+export async function approveInvoice(invoiceId: number, decisions: LineDecision[], approvedBy: string | null) {
+  const { data: inv } = await supabase.from("supplier_invoices").select("*").eq("id", invoiceId).single();
+  if (!inv) throw Object.assign(new Error("Invoice not found"), { status: 404 });
+  if (inv.status === "approved") throw Object.assign(new Error("Already approved"), { status: 400 });
+  if (!inv.supplier_id) throw Object.assign(new Error("Pick the supplier first"), { status: 400 });
+  const { data: lines } = await supabase.from("supplier_invoice_lines").select("*").eq("invoice_id", invoiceId).order("line_no");
+  const byId = new Map((lines || []).map((l: any) => [l.id, l]));
+  const pending = (lines || []).filter((l: any) => l.line_type === "product" && l.status === "pending");
+  const decided = new Map(decisions.map((d) => [d.lineId, d]));
+  const missing = pending.filter((l: any) => !decided.has(l.id));
+  if (missing.length) throw Object.assign(new Error(`${missing.length} line${missing.length === 1 ? "" : "s"} still need a decision`), { status: 400 });
+
+  const invoiceDate = inv.invoice_date || new Date().toISOString().slice(0, 10);
+  const { data: ingRows } = await supabase.from("ingredients").select("id, name, unit, category, avg_weight_per_unit, best_cost_per_unit");
+  const ings = new Map((ingRows || []).map((i: any) => [i.id, i as Ingredient]));
+  const summary = { updated: 0, created: 0, skipped: 0, priceChanges: [] as { name: string; from: number | null; to: number; unit: string }[] };
+
+  // Validate everything first so nothing is half-saved
+  type Plan = { line: any; d: LineDecision; baseQty: number; unitCost: number; factor: number; ingCost: number };
+  const plans: Plan[] = [];
+  for (const d of decisions) {
+    const line = byId.get(d.lineId);
+    if (!line || line.invoice_id !== invoiceId) throw Object.assign(new Error(`Line ${d.lineId} isn't on this invoice`), { status: 400 });
+    if (d.action === "skip" || d.action === "personal") continue;
+    const total = Number(line.line_total_ex_gst);
+    if (!Number.isFinite(total)) throw Object.assign(new Error(`"${line.description}" has no price`), { status: 400 });
+    let baseQty = line.base_qty !== null ? Number(line.base_qty) : null;
+    if (d.basePerPurchase && d.basePerPurchase > 0 && line.quantity) baseQty = Number(line.quantity) * d.basePerPurchase;
+    if (!baseQty || baseQty <= 0) throw Object.assign(new Error(`"${line.description}" needs a pack size`), { status: 400 });
+    const unitCost = total / baseQty;
+    let factor = d.ingredientUnitsPerBase && d.ingredientUnitsPerBase > 0 ? d.ingredientUnitsPerBase : null;
+    if (!factor) {
+      const ing = d.action === "match" ? ings.get(d.ingredientId!) : ({ unit: d.newIngredient?.unit, avg_weight_per_unit: null } as any);
+      if (d.action === "match" && !ing) throw Object.assign(new Error(`Pick an ingredient for "${line.description}"`), { status: 400 });
+      const lineUom = d.packUom || (line.priced_by_weight ? "kg" : (line.unit_size_uom || d.newIngredient?.unit || null));
+      factor = (!d.packUom && line.ingredient_units_per_base && d.action === "match" && line.ingredient_id === d.ingredientId) ? Number(line.ingredient_units_per_base) : unitFactor(lineUom, ing);
+      if (!factor && d.action === "new") factor = 1;
+    }
+    if (!factor) throw Object.assign(new Error(`"${line.description}": set how many ${ings.get(d.ingredientId!)?.unit || "units"} are in one ${line.priced_by_weight ? "kg" : line.unit_size_uom || "unit"}`), { status: 400 });
+    if (d.action === "new" && !d.newIngredient?.name?.trim()) throw Object.assign(new Error(`Give the new ingredient for "${line.description}" a name`), { status: 400 });
+    plans.push({ line, d, baseQty, unitCost, factor, ingCost: unitCost / factor });
+  }
+
+  const { data: products } = await supabase.from("supplier_products").select("*").eq("supplier_id", inv.supplier_id);
+  const now = new Date().toISOString();
+
+  for (const p of plans) {
+    const { line, d } = p;
+    // 1. Ingredient (create if new)
+    let ingredientId = d.ingredientId ?? null;
+    if (d.action === "new") {
+      const { data: created, error } = await supabase.from("ingredients").insert({
+        name: d.newIngredient!.name.trim(), unit: d.newIngredient!.unit, category: d.newIngredient!.category || "General",
+        best_cost_per_unit: r4(p.ingCost), best_supplier_id: inv.supplier_id, dietaries_json: "[]",
+      }).select("id, name, unit, category, avg_weight_per_unit, best_cost_per_unit").single();
+      if (error || !created) throw new Error(`Couldn't create ingredient "${d.newIngredient!.name}": ${error?.message}`);
+      ingredientId = created.id; ings.set(created.id, created as any); summary.created++;
+    }
+    const ing = ings.get(ingredientId!)!;
+
+    // 2. Supplier product: by id, then code, then wording, then an old migrated row for this ingredient
+    let sp: any = (products || []).find((x: any) => x.id === line.supplier_product_id)
+      || (line.supplier_code ? (products || []).find((x: any) => x.supplier_code && x.supplier_code.toLowerCase() === String(line.supplier_code).toLowerCase()) : null)
+      || (products || []).find((x: any) => normD(x.supplier_description) === normD(line.description))
+      || (products || []).find((x: any) => x.ingredient_id === ingredientId && !x.supplier_code && x.legacy_supplier_ingredient_id);
+    const qty = Number(line.quantity) || null;
+    const perPurchase = line.priced_by_weight ? 1 : (qty ? r4(p.baseQty / qty) : null);
+    const productFields: any = {
+      supplier_id: inv.supplier_id, ingredient_id: ingredientId, item_type: d.itemType || line.item_type || (ing.category === "Packaging" ? "packaging" : "ingredient"),
+      supplier_code: line.supplier_code || sp?.supplier_code || null, supplier_description: line.description,
+      brand: d.brand !== undefined ? (d.brand || null) : (line.brand || sp?.brand || null),
+      purchase_unit: line.purchase_unit, units_per_purchase: line.units_per_purchase, unit_size: line.unit_size,
+      unit_size_uom: line.priced_by_weight ? "kg" : (d.packUom || line.unit_size_uom || sp?.unit_size_uom || null), priced_by_weight: !!line.priced_by_weight,
+      base_qty_per_purchase: perPurchase, pack_size_confirmed: !!(d.basePerPurchase || sp?.pack_size_confirmed || !line.needs_pack_size),
+      gst_applicable: line.gst_applies, last_price_ex_gst: line.unit_price_ex_gst, last_unit_cost: r4(p.ingCost),
+      last_invoice_id: invoiceId, last_invoice_date: invoiceDate, ingredient_units_per_base: p.factor, active: true, updated_at: now,
+    };
+    let productId: number;
+    const previousCost = sp?.last_unit_cost !== undefined && sp?.last_unit_cost !== null ? Number(sp.last_unit_cost) : null;
+    const newerThanStored = !sp?.last_invoice_date || sp.last_invoice_date <= invoiceDate;
+    if (sp) {
+      if (!newerThanStored) { // an older invoice: keep the latest price, still learn the code and wording
+        delete productFields.last_price_ex_gst; delete productFields.last_unit_cost; delete productFields.last_invoice_id; delete productFields.last_invoice_date;
+      }
+      const { error } = await supabase.from("supplier_products").update(productFields).eq("id", sp.id);
+      if (error) throw new Error(`Saving "${line.description}" failed: ${error.message}`);
+      productId = sp.id;
+    } else {
+      const { data: created, error } = await supabase.from("supplier_products").insert(productFields).select("id").single();
+      if (error || !created) throw new Error(`Saving "${line.description}" failed: ${error?.message}`);
+      productId = created.id; (products || []).push({ id: productId, ...productFields });
+    }
+    // First product for an ingredient becomes the preferred one (what drivers buy)
+    const { data: pref } = await supabase.from("supplier_products").select("id").eq("ingredient_id", ingredientId).eq("is_preferred", true).limit(1);
+    if (!pref?.length) await supabase.from("supplier_products").update({ is_preferred: true }).eq("id", productId);
+
+    // 3. Price history
+    await supabase.from("supplier_price_history").insert({
+      supplier_product_id: productId, invoice_id: invoiceId, invoice_line_id: line.id, invoice_date: invoiceDate,
+      quantity: line.quantity, price_ex_gst: line.unit_price_ex_gst, unit_cost: r4(p.ingCost),
+    });
+
+    // 4. Ingredient cost = latest price paid (ignore older invoices than one already applied)
+    const { data: newer } = await supabase.from("supplier_products").select("id").eq("ingredient_id", ingredientId).neq("id", productId).gt("last_invoice_date", invoiceDate).limit(1);
+    if (!newer?.length) {
+      const before = ing.best_cost_per_unit !== null ? Number(ing.best_cost_per_unit) : null;
+      await supabase.from("ingredients").update({ best_cost_per_unit: r4(p.ingCost), best_supplier_id: inv.supplier_id }).eq("id", ingredientId);
+      if (before === null || Math.abs(before - p.ingCost) > 0.0001) summary.priceChanges.push({ name: ing.name, from: before, to: r4(p.ingCost), unit: ing.unit });
+    }
+
+    await supabase.from("supplier_invoice_lines").update({
+      status: "approved", ingredient_id: ingredientId, supplier_product_id: productId, base_qty: r4(p.baseQty), unit_cost: r4(p.unitCost),
+      ingredient_units_per_base: p.factor, ingredient_unit_cost: r4(p.ingCost), item_type: productFields.item_type, brand: productFields.brand,
+      match_method: line.match_method || (d.action === "new" ? "new" : "manual"),
+      price_change_pct: previousCost ? Math.round(((p.ingCost - previousCost) / previousCost) * 1000) / 10 : null,
+    }).eq("id", line.id);
+    summary.updated++;
+  }
+
+  for (const d of decisions.filter((x) => x.action === "skip" || x.action === "personal")) {
+    await supabase.from("supplier_invoice_lines").update({ status: "skipped", ...(d.action === "personal" ? { line_type: "personal" } : {}) }).eq("id", d.lineId);
+    summary.skipped++;
+  }
+  await supabase.from("supplier_invoices").update({ status: "approved", approved_at: now, status_note: `Approved by ${approvedBy || "hand"}`, updated_at: now }).eq("id", invoiceId);
+  return summary;
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
-export function registerInvoiceRoutes(app: Express) {
+export function registerInvoiceRoutes(app: Express, deps: { recalcAllCosts: () => Promise<any> }) {
+  // Re-run matching (e.g. after the supplier is picked)
+  app.post("/api/supplier-invoices/:id/match", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
+    await runMatching(Number(req.params.id));
+    res.json({ ok: true });
+  }));
+
+  // Approve: save products, prices and ingredient costs, then refresh recipe costs
+  app.post("/api/supplier-invoices/:id/approve", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
+    const decisions: LineDecision[] = Array.isArray(req.body?.decisions) ? req.body.decisions : [];
+    try {
+      const summary = await approveInvoice(Number(req.params.id), decisions, req.staffName || null);
+      deps.recalcAllCosts().catch((e) => console.error("[invoices] recalculating costs failed:", e?.message || e));
+      res.json({ ok: true, ...summary });
+    } catch (e: any) {
+      res.status(e?.status || 500).json({ error: e?.message || String(e) });
+    }
+  }));
+
+  // Add a new supplier from an invoice (uses the ABN and account number the reader found)
+  app.post("/api/supplier-invoices/:id/new-supplier", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
+    const id = Number(req.params.id);
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ error: "Supplier name is required" });
+    const { data: inv } = await supabase.from("supplier_invoices").select("detected_abn, extraction_json, status").eq("id", id).single();
+    if (!inv) return res.status(404).json({ error: "Not found" });
+    const acct = inv.extraction_json?.raw?.our_account_number || null;
+    const { data: sup, error } = await supabase.from("suppliers").insert({
+      name, abn: inv.detected_abn && !OWN_ABNS.includes(inv.detected_abn) ? inv.detected_abn : null, our_account_number: acct,
+      collection_method: req.body?.collectionMethod === "driver" ? "driver" : "delivery",
+    }).select("id").single();
+    if (error || !sup) throw new Error(error?.message || "Couldn't add the supplier");
+    await supabase.from("supplier_invoices").update({ supplier_id: sup.id, supplier_match_method: "new", updated_at: new Date().toISOString() }).eq("id", id);
+    await runMatching(id);
+    res.json({ ok: true, supplierId: sup.id });
+  }));
   // List (newest first)
   app.get("/api/supplier-invoices", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
     const status = req.query.status ? String(req.query.status).split(",") : null;
@@ -320,6 +543,7 @@ export function registerInvoiceRoutes(app: Express) {
       }
       if (Object.keys(update).length) await supabase.from("suppliers").update(update).eq("id", supplierId);
     }
+    await runMatching(id);
     res.json({ ok: true });
   }));
 
