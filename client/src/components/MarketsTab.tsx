@@ -33,7 +33,25 @@ type OrderItem = {
 type Order = { id: number; collect_by: string; status: string; created_by: string | null; created_at: string; items: OrderItem[] };
 type MarketsData = { suppliers: Supplier[]; reps: Rep[]; repItems: RepItem[]; produce: Produce[]; prices: Price[]; order: Order | null; recent: any[] };
 
-const UNITS = ["box", "tray", "kg", "each", "bag", "bunch", "punnet", "dozen", "case"];
+const UNITS = ["box", "small crate", "84L crate", "bag", "kg", "each", "bunch", "tray", "punnet", "dozen"];
+
+/** Unit picker that works on iPhone/iPad (a real dropdown, not a suggestion list). "Other…" lets you type one. */
+function UnitSelect({ value, onChange, className, placeholder }: { value: string; onChange: (v: string) => void; className?: string; placeholder?: string }) {
+  const options = value && !UNITS.includes(value) ? [value, ...UNITS] : UNITS;
+  return (
+    <select className={`rounded-md border bg-white px-2 ${className || ""}`} value={value || ""}
+      onChange={(e) => {
+        if (e.target.value === "__other") {
+          const v = window.prompt("Unit (e.g. half crate, 10kg bag)", value || "");
+          if (v && v.trim()) onChange(v.trim());
+        } else onChange(e.target.value);
+      }}>
+      {!value && <option value="">{placeholder || "unit"}</option>}
+      {options.map((u) => <option key={u} value={u}>{u}</option>)}
+      <option value="__other">Other…</option>
+    </select>
+  );
+}
 const json = (method: string, url: string, body?: unknown) => apiRequest(method, url, body).then((r) => r.json());
 const errText = (e: any) => String(e?.message || e).replace(/^\d+: /, "").replace(/^\{"error":"(.*)"\}$/, "$1");
 const perthYmd = (offset = 0) => new Date(Date.now() + 8 * 3600000 + offset * 86400000).toISOString().slice(0, 10);
@@ -98,12 +116,12 @@ function QtyRow({ p, line, data, lk, orderId, onSaved }: {
   const reps = lk.repsFor(p.id);
   const rep = line?.rep_id ? lk.repById.get(line.rep_id) : reps[0]?.rep;
 
-  const save = async (patch?: { repId?: number | null }) => {
+  const save = async (patch?: { repId?: number | null }, unitNow: string = unit) => {
     const q = Number(qty) || 0;
     if (!line && q <= 0) return;
-    if (line && q === Number(line.qty) && unit === line.unit && patch === undefined) return;
+    if (line && q === Number(line.qty) && unitNow === line.unit && patch === undefined) return;
     try {
-      const o = await json("PUT", `/api/markets/orders/${orderId}/items`, { items: [{ ingredientId: p.id, itemName: p.name, qty: q, unit, ...(patch || {}) }] });
+      const o = await json("PUT", `/api/markets/orders/${orderId}/items`, { items: [{ ingredientId: p.id, itemName: p.name, qty: q, unit: unitNow, ...(patch || {}) }] });
       onSaved(o);
     } catch (e) { toast({ description: errText(e), variant: "destructive" }); }
   };
@@ -115,7 +133,7 @@ function QtyRow({ p, line, data, lk, orderId, onSaved }: {
         <Input className="w-16 h-9 text-center" inputMode="decimal" value={qty} placeholder="0"
           onChange={(e) => setQty(e.target.value)} onBlur={() => save()} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
           data-testid={`input-market-qty-${p.id}`} />
-        <Input className="w-20 h-9" value={unit} list="market-units" onChange={(e) => setUnit(e.target.value)} onBlur={() => line && save()} />
+        <UnitSelect className="w-28 h-9 text-sm" value={unit} onChange={(v) => { setUnit(v); if (line) save(undefined, v); }} />
       </div>
       {line && (
         <div className="mt-1.5 flex items-center gap-2 text-xs">
@@ -310,7 +328,6 @@ function OrderView({ order, data, onSetup }: { order: Order; data: MarketsData; 
 
   return (
     <div className="space-y-3">
-      <datalist id="market-units">{UNITS.map((u) => <option key={u} value={u} />)}</datalist>
       <div className="rounded-2xl border bg-white px-4 py-3 flex items-center gap-3">
         <div className="flex-1 min-w-0">
           <p className="font-bold" style={{ color: NAVY }}>Markets order</p>
@@ -562,8 +579,8 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
                 <div key={p.id} className="px-3 py-2.5 border-b last:border-b-0">
                   <div className="flex items-center gap-2">
                     <p className="flex-1 font-semibold text-sm">{p.name}</p>
-                    <Input className="w-20 h-8 text-xs" placeholder={p.unit} list="market-units-setup" defaultValue={p.market_order_unit || ""}
-                      title="Usual order unit" onBlur={(e) => e.target.value !== (p.market_order_unit || "") && act(() => json("PATCH", `/api/markets/produce/${p.id}`, { orderUnit: e.target.value }))} />
+                    <UnitSelect className="w-28 h-8 text-xs" placeholder="order unit" value={p.market_order_unit || ""}
+                      onChange={(v) => v !== (p.market_order_unit || "") && act(() => json("PATCH", `/api/markets/produce/${p.id}`, { orderUnit: v }))} />
                     <button title="Take off the markets list" className="p-1 text-muted-foreground" onClick={() => act(() => json("PATCH", `/api/markets/produce/${p.id}`, { marketItem: false }))}><X size={15} /></button>
                   </div>
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -584,7 +601,6 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
               );
             })}
           </div>
-          <datalist id="market-units-setup">{UNITS.map((u) => <option key={u} value={u} />)}</datalist>
           {!adding ? (
             <Button variant="outline" className="w-full bg-white" onClick={() => setAdding(true)}><Plus size={16} className="mr-1" />Add produce</Button>
           ) : (
@@ -595,7 +611,7 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
                   <p className="text-sm font-semibold">New: {candSearch.trim()}</p>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span>Ordered by</span>
-                    <Input className="h-8 w-28" list="market-units-setup" value={newUnit} onChange={(e) => setNewUnit(e.target.value)} />
+                    <UnitSelect className="h-8 w-28" value={newUnit} onChange={setNewUnit} />
                     <span>recipes use</span>
                     <select className="h-8 rounded-md border bg-white px-2" value={newRecipeUnit} onChange={(e) => setNewRecipeUnit(e.target.value as any)}>
                       <option value="kg">kg</option><option value="each">each</option>
