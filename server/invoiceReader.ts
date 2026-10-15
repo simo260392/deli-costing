@@ -38,6 +38,8 @@ export interface RawInvoiceLine {
   applies_to_code: string | null;     // for a separate discount line: the item code it belongs to
   pack_size_from_description: boolean;
   notes: string | null;
+  generic_name: string | null;        // plain name for matching ("Short cut bacon")
+  item_type: "ingredient" | "packaging" | "cleaning" | "other" | null;
 }
 
 export interface RawInvoice {
@@ -78,6 +80,8 @@ export interface NormalisedLine {
   needs_pack_size: boolean;           // the document doesn't say how much is in the pack
   merged_from: number[];              // original line numbers combined into this one
   notes: string | null;
+  generic_name: string | null;
+  item_type: "ingredient" | "packaging" | "cleaning" | "other" | null;
 }
 
 export interface NormalisedInvoice extends Omit<RawInvoice, "lines"> {
@@ -100,7 +104,7 @@ const lineSchema = {
         "product = anything bought for the business (food, packaging, cleaning, equipment). " +
         "freight/fee/deposit = delivery charges, surcharges, card fees, crate or keg deposits. " +
         "discount = a discount you could NOT attach to a specific item. credit = a returned or credited item. " +
-        "personal = clearly a household item, e.g. pet food. Do not guess personal for anything a cafe could use.",
+        "personal = clearly a household item: pet food (cat/dog food, e.g. Dine, Whiskas, Fancy Feast, Pedigree, Kirkland cat food), toys, clothing. Do not guess personal for anything a cafe could use.",
     },
     supplier_code: { type: ["string", "null"], description: "Supplier's product code / item number / SKU, exactly as printed. Null if none." },
     description: { type: "string", description: "Product description exactly as printed, including size text (e.g. 'MAYONNAISE WHOLE EGG FREE RANGE 10kg')." },
@@ -123,11 +127,13 @@ const lineSchema = {
     applies_to_code: { type: ["string", "null"], description: "Only for a separate discount line you could not fold in: the item code it refers to, if printed." },
     pack_size_from_description: { type: "boolean", description: "True if the pack size came from the description text rather than a pack column." },
     notes: { type: ["string", "null"], description: "Anything odd about this line (zero price, random weight with no kg shown, illegible)." },
+    generic_name: { type: ["string", "null"], description: "Plain generic name a kitchen would use, without brand, pack size or supplier abbreviations: 'DRSGNA S/CUT BACON' -> 'Short cut bacon', 'NATURAL SWISS CHSE' -> 'Swiss cheese', 'Paper BioBowl Kraft 16oz/500ml' -> '500ml kraft bowl'. Null for freight/fees." },
+    item_type: { type: ["string", "null"], enum: ["ingredient", "packaging", "cleaning", "other", null], description: "ingredient = food or drink; packaging = containers, cups, lids, bags, foil, cling film, napkins, cutlery, gloves; cleaning = chemicals, sponges, paper towel; other = anything else." },
   },
   required: [
     "line_no", "line_type", "supplier_code", "description", "brand", "quantity", "purchase_unit",
     "units_per_purchase", "unit_size", "unit_size_uom", "priced_by_weight", "unit_price", "discount",
-    "line_total", "gst_applies", "applies_to_code", "pack_size_from_description", "notes",
+    "line_total", "gst_applies", "applies_to_code", "pack_size_from_description", "notes", "generic_name", "item_type",
   ],
 } as const;
 
@@ -316,6 +322,8 @@ export function normaliseInvoice(raw: RawInvoice): NormalisedInvoice {
         needs_pack_size: l.line_type === "product" && base === null,
         merged_from: [l.line_no],
         notes: l.notes || null,
+        generic_name: l.generic_name || null,
+        item_type: l.item_type || null,
       };
     });
 

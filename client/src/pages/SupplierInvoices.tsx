@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Upload, RefreshCw, Link2, Unlink, FileText, AlertTriangle, CheckCircle2, Loader2, ExternalLink, Sparkles, Trash2 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import InvoiceReview from "@/components/InvoiceReview";
 import { cn } from "@/lib/utils";
 
 type InvoiceRow = {
@@ -332,9 +333,7 @@ export default function SupplierInvoices() {
                   {detail.document_type && detail.document_type !== "invoice" && <span>{detail.document_type.replace("_", " ")}</span>}
                 </div>
                 )}
-                {!detail.supplier_id && !["reading", "unread"].includes(detail.status) && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-amber-900">Supplier not recognised{detail.detected_supplier_name ? ` ("${detail.detected_supplier_name}")` : ""}. Picking the supplier comes with the review screen in the next update.</div>
-                )}
+
                 {detail.totals_check_ok === true && <div className="flex items-center gap-1 text-emerald-700"><CheckCircle2 size={15} />Lines add up to the invoice total.</div>}
                 {detail.totals_check_ok === false && <div className="flex items-center gap-1 text-red-700"><AlertTriangle size={15} />{detail.totals_check_note}</div>}
                 {detail.status_note && detail.totals_check_ok !== false && <div className="text-muted-foreground">{detail.status_note}</div>}
@@ -346,7 +345,13 @@ export default function SupplierInvoices() {
                   {!["approved", "unread", "removed"].includes(detail.status) && <Button size="sm" variant="ghost" onClick={() => removeMany([detail.id])}><Trash2 size={14} className="mr-1" />Remove</Button>}
                 </div>
 
-                {detail.status === "unread" ? null : detail.status === "reading" ? (
+                {detail.status === "needs_review" ? (
+                  <InvoiceReview
+                    invoice={detail}
+                    lines={detail.lines as any}
+                    onChanged={() => { refetch(); queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices", String(detail.id)] }); queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices-summary"] }); queryClient.invalidateQueries({ queryKey: ["/api/ingredients"] }); }}
+                  />
+                ) : detail.status === "unread" ? null : detail.status === "reading" ? (
                   <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center"><Loader2 size={16} className="animate-spin" />Reading this invoice…</div>
                 ) : (
                   <div className="overflow-x-auto rounded-md border">
