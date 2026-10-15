@@ -23,7 +23,7 @@ export type ReviewLine = {
   base_qty: number | null; unit_cost: number | null; needs_pack_size: boolean; merged_from: number[] | null;
   status: string; notes: string | null; ingredient_id: number | null; supplier_product_id: number | null;
   match_method: string | null; match_confidence: number | null; suggestions: Suggestion[] | null; warnings: string[] | null;
-  price_change_pct: number | null; ingredient_units_per_base: number | null;
+  price_change_pct: number | null; ingredient_units_per_base: number | null; random_weight?: boolean | null;
 };
 type Ingredient = { id: number; name: string; unit: string; category: string; bestCostPerUnit: number | null; avgWeightPerUnit: number | null };
 type Supplier = { id: number; name: string };
@@ -35,6 +35,8 @@ type Decision = {
   itemType?: string;
   brand?: string | null;
   packSize?: string; packUom?: Uom;      // only when the invoice doesn't give the pack size
+  weightMode?: "pack" | "perkg" | "weight"; // random-weight meat: use the label's price per kg or weight
+  pricePerKg?: string; weightKg?: string;
   factor?: string;                       // ingredient units in one base unit, when units differ
 };
 
@@ -149,12 +151,35 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
   const set = (id: number, patch: Partial<Decision>) => setDecisions((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
 
   // Work out the price per ingredient unit for a line with the current decision
+  // How to work out quantity for a line the invoice gives no size for
+  function modeFor(l: ReviewLine, d: Decision): "pack" | "perkg" | "weight" | null {
+    if (!l.needs_pack_size) return null;
+    if (d.weightMode) return d.weightMode;
+    const ing = d.ingredientId ? ingById.get(d.ingredientId) : undefined;
+    return l.random_weight || /meat|protein/i.test(ing?.category || "") ? "perkg" : "pack";
+  }
+  function packUomFor(d: Decision): Uom {
+    if (d.packUom) return d.packUom;
+    const unit = d.action === "new" ? d.newUnit : d.ingredientId ? ingById.get(d.ingredientId)?.unit : undefined;
+    return unit === "L" ? "L" : unit === "each" ? "each" : "kg";
+  }
+  /** Total kg on a random-weight line from the label's price per kg, or the weight entered. */
+  function weightFor(l: ReviewLine, d: Decision): number | null {
+    const mode = modeFor(l, d);
+    if (mode === "weight") return num(d.weightKg);
+    // The label's price per kg is before any discount, so use the line total before the discount
+    if (mode === "perkg") { const ppk = num(d.pricePerKg); return ppk && l.line_total_ex_gst ? (l.line_total_ex_gst + (Number(l.discount_ex_gst) || 0)) / ppk : null; }
+    return null;
+  }
+
   function costFor(l: ReviewLine, d: Decision) {
-    const pack = num(d.packSize);
-    const baseQty = pack && l.quantity ? l.quantity * pack : l.base_qty;
-    const lineUom = d.packUom || (l.priced_by_weight ? "kg" : l.unit_size_uom);
+    const mode = modeFor(l, d);
+    const pack = mode === "pack" ? num(d.packSize) : null;
+    const kg = mode === "perkg" || mode === "weight" ? weightFor(l, d) : null;
+    const baseQty = kg ?? (pack && l.quantity ? l.quantity * pack : mode ? null : l.base_qty);
+    const lineUom = kg !== null || mode === "perkg" || mode === "weight" ? "kg" : pack ? packUomFor(d) : (l.priced_by_weight ? "kg" : l.unit_size_uom);
     const ing = d.action === "match" && d.ingredientId ? ingById.get(d.ingredientId) : d.action === "new" ? { unit: d.newUnit || (lineUom as Uom) || "each", avgWeightPerUnit: null, bestCostPerUnit: null, name: d.newName || "" } : undefined;
-    const fromMatcher = !d.packUom && l.ingredient_units_per_base && d.ingredientId === l.ingredient_id ? Number(l.ingredient_units_per_base) : null;
+    const fromMatcher = !mode && l.ingredient_units_per_base && d.ingredientId === l.ingredient_id ? Number(l.ingredient_units_per_base) : null;
     const factor = num(d.factor) ?? fromMatcher ?? (ing ? defaultFactor(lineUom, ing as any) : null) ?? (d.action === "new" ? 1 : null);
     const unitCost = baseQty && l.line_total_ex_gst !== null ? l.line_total_ex_gst / baseQty : null;
     const ingCost = unitCost !== null && factor ? unitCost / factor : null;
@@ -168,7 +193,7 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
     if (d.action === "match" && !d.ingredientId) return "choose an ingredient";
     if (d.action === "new" && !d.newName?.trim()) return "name the new ingredient";
     const c = costFor(l, d);
-    if (c.needsPack) return "enter the pack size";
+    if (c.needsPack) return modeFor(l, d) === "perkg" ? "enter the price per kg from the label" : modeFor(l, d) === "weight" ? "enter the weight" : "enter the pack size";
     if (c.needsFactor) return "set the unit conversion";
     return null;
   });
@@ -198,7 +223,9 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
           ingredientId: d.action === "match" ? d.ingredientId : undefined,
           newIngredient: d.action === "new" ? { name: d.newName!.trim(), unit: d.newUnit || (costFor(l, d).lineUom as Uom) || "each", category: d.newCategory || "General" } : undefined,
           itemType: d.itemType, brand: d.brand,
-          basePerPurchase: num(d.packSize), packUom: num(d.packSize) ? (d.packUom || "each") : undefined,
+          basePerPurchase: modeFor(l, d) === "pack" ? num(d.packSize) : undefined,
+          packUom: modeFor(l, d) === "pack" && num(d.packSize) ? packUomFor(d) : undefined,
+          weightKg: modeFor(l, d) === "perkg" || modeFor(l, d) === "weight" ? weightFor(l, d) : undefined,
           ingredientUnitsPerBase: num(d.factor),
         };
       });
@@ -298,16 +325,44 @@ export default function InvoiceReview({ invoice, lines, onChanged }: {
                     <label className="flex items-center gap-1 text-xs text-muted-foreground">Brand
                       <Input className="h-8 w-40" value={d.brand ?? ""} onChange={(e) => set(l.id, { brand: e.target.value })} placeholder="—" />
                     </label>
-                    {(l.needs_pack_size || d.packSize !== undefined) && (
-                      <label className="flex items-center gap-1 text-xs">
-                        <span className="text-amber-800 font-medium">Each {l.purchase_unit && l.purchase_unit !== "EA" ? l.purchase_unit.toLowerCase() : "pack"} is</span>
-                        <Input className="h-8 w-20" inputMode="decimal" value={d.packSize ?? ""} onChange={(e) => set(l.id, { packSize: e.target.value })} placeholder="1" data-testid="input-pack-size" />
-                        <Select value={d.packUom || (ingNow?.unit === "L" ? "L" : ingNow?.unit === "each" ? "each" : "kg")} onValueChange={(v) => set(l.id, { packUom: v as Uom })}>
-                          <SelectTrigger className="h-8 w-20"><SelectValue /></SelectTrigger>
-                          <SelectContent><SelectItem value="kg">kg</SelectItem><SelectItem value="L">L</SelectItem><SelectItem value="each">each</SelectItem></SelectContent>
+                    {modeFor(l, d) && (
+                      <div className="flex flex-wrap items-center gap-1 text-xs">
+                        <span className="text-amber-800 font-medium">No weight on the invoice:</span>
+                        <Select value={modeFor(l, d)!} onValueChange={(v) => set(l.id, { weightMode: v as any })}>
+                          <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="perkg">Price per kg</SelectItem>
+                            <SelectItem value="weight">Weight on label</SelectItem>
+                            <SelectItem value="pack">Fixed pack size</SelectItem>
+                          </SelectContent>
                         </Select>
-                        <span className="text-muted-foreground">(remembered for next time)</span>
-                      </label>
+                        {modeFor(l, d) === "perkg" && (
+                          <>
+                            <span>$</span>
+                            <Input className="h-8 w-24" inputMode="decimal" value={d.pricePerKg ?? ""} onChange={(e) => set(l.id, { pricePerKg: e.target.value })} placeholder="e.g. 12.99" data-testid="input-price-per-kg" />
+                            <span>per kg</span>
+                            {weightFor(l, d) !== null && <span className="text-muted-foreground">({(Math.round(weightFor(l, d)! * 1000) / 1000)} kg total)</span>}
+                          </>
+                        )}
+                        {modeFor(l, d) === "weight" && (
+                          <>
+                            <Input className="h-8 w-24" inputMode="decimal" value={d.weightKg ?? ""} onChange={(e) => set(l.id, { weightKg: e.target.value })} placeholder="e.g. 2.45" data-testid="input-weight-kg" />
+                            <span>kg in total{l.quantity && l.quantity > 1 ? ` (all ${l.quantity})` : ""}</span>
+                          </>
+                        )}
+                        {modeFor(l, d) === "pack" && (
+                          <>
+                            <span>each {l.purchase_unit && l.purchase_unit !== "EA" ? l.purchase_unit.toLowerCase() : "pack"} is</span>
+                            <Input className="h-8 w-20" inputMode="decimal" value={d.packSize ?? ""} onChange={(e) => set(l.id, { packSize: e.target.value })} placeholder="1" data-testid="input-pack-size" />
+                            <Select value={packUomFor(d)} onValueChange={(v) => set(l.id, { packUom: v as Uom })}>
+                              <SelectTrigger className="h-8 w-20"><SelectValue /></SelectTrigger>
+                              <SelectContent><SelectItem value="kg">kg</SelectItem><SelectItem value="L">L</SelectItem><SelectItem value="each">each</SelectItem></SelectContent>
+                            </Select>
+                            <span className="text-muted-foreground">(remembered next time)</span>
+                          </>
+                        )}
+                        {(modeFor(l, d) === "perkg" || modeFor(l, d) === "weight") && <span className="text-muted-foreground">(asked each time, as weights vary)</span>}
+                      </div>
                     )}
                     {c.ing && c.lineUom && (c.needsFactor || d.factor !== undefined || (c.factor !== 1 && c.factor !== null) || (l.warnings || []).some((w) => w.startsWith("Works out at"))) && (
                       <label className="flex items-center gap-1 text-xs">
