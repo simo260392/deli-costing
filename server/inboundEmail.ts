@@ -99,6 +99,23 @@ export async function handleReceivedEmail(emailId: string, hint: { from?: string
   return results;
 }
 
+/** Process one received email and record the outcome; failures are retried by the timer below. */
+async function processLogged(emailId: string, hint: { from?: string; subject?: string }) {
+  const { data: row } = await supabase.from("inbound_emails").select("attempts, status").eq("email_id", emailId).maybeSingle();
+  if (row?.status === "done") return;
+  const attempts = (row?.attempts || 0) + 1;
+  await supabase.from("inbound_emails").upsert({ email_id: emailId, email_from: hint.from ?? null, subject: hint.subject ?? null, status: "pending", attempts });
+  try {
+    const r = await handleReceivedEmail(emailId, hint);
+    await supabase.from("inbound_emails").update({ status: "done", items_saved: r.length, last_error: null, processed_at: new Date().toISOString() }).eq("email_id", emailId);
+    console.log(`[email] ${emailId}: ${r.length} item(s) saved`);
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    await supabase.from("inbound_emails").update({ status: attempts >= 30 ? "gave_up" : "failed", last_error: msg }).eq("email_id", emailId);
+    console.error(`[email] ${emailId} failed (attempt ${attempts}):`, msg);
+  }
+}
+
 export function registerInboundEmailRoutes(app: Express) {
   app.post("/api/inbound-email/resend", async (req: any, res: any) => {
     const secret = process.env.RESEND_WEBHOOK_SECRET || "";
@@ -110,11 +127,16 @@ export function registerInboundEmailRoutes(app: Express) {
     if (event.type !== "email.received") return;
     const emailId = event.data?.email_id || event.data?.id;
     if (!emailId) return;
-    try {
-      const r = await handleReceivedEmail(emailId, { from: event.data?.from, subject: event.data?.subject });
-      console.log(`[email] ${emailId}: ${r.length} item(s) saved`);
-    } catch (e: any) {
-      console.error(`[email] ${emailId} failed:`, e?.message || e);
-    }
+    await processLogged(emailId, { from: event.data?.from, subject: event.data?.subject });
   });
+
+  // Retry emails that failed (e.g. Resend unreachable, or the API key was wrong) every 10 minutes
+  const retry = async () => {
+    if (!process.env.RESEND_API_KEY) return;
+    const { data: failed } = await supabase.from("inbound_emails").select("email_id, email_from, subject").in("status", ["failed", "pending"])
+      .lt("received_at", new Date(Date.now() - 2 * 60_000).toISOString()).order("received_at").limit(20);
+    for (const f of failed || []) await processLogged(f.email_id, { from: f.email_from || undefined, subject: f.subject || undefined });
+  };
+  setTimeout(() => retry().catch(() => {}), 60_000);
+  setInterval(() => retry().catch((e) => console.error("[email] retry failed:", e?.message || e)), 10 * 60_000);
 }
