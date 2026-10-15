@@ -58,7 +58,7 @@ export function mimeFromName(name: string, given?: string): string {
 
 /** Photos: turn upright (phone EXIF), shrink to a size Claude reads well, convert to JPEG. PDFs pass through. */
 export async function prepareForReader(data: Buffer, mime: string): Promise<{ data: Buffer; mediaType: string }> {
-  if (mime === "application/pdf") return { data, mediaType: mime };
+  if (mime === "application/pdf" || mime.startsWith("text/")) return { data, mediaType: mime };
   const sharp = (await import("sharp")).default;
   try {
     const out = await sharp(data, { failOn: "none" })
@@ -212,9 +212,11 @@ async function loadFile(path: string): Promise<Buffer | null> {
 
 /** Create an invoice record from a file and read it in the background. Used by uploads and the Xero sync. */
 export async function ingestInvoiceFile(opts: {
-  data: Buffer; fileName: string; mime: string; source: "upload" | "xero"; xeroInvoiceId?: string; uploadedBy?: string | null;
-  autoRead?: boolean; // uploads are read straight away; Xero bills wait until Scott presses Read
-  supplierId?: number | null; xero?: { contactName: string | null; number: string | null; date: string | null; total: number | null };
+  data: Buffer; fileName: string; mime: string; source: "upload" | "xero" | "email"; xeroInvoiceId?: string; uploadedBy?: string | null;
+  autoRead?: boolean; // uploads are read straight away; Xero bills and emails wait until Scott presses Read
+  supplierId?: number | null; supplierMatchMethod?: string; xero?: { contactName: string | null; number: string | null; date: string | null; total: number | null };
+  email?: { from: string | null; subject: string | null; id: string | null };
+  setAside?: { status: "ignored"; documentType: "statement" | "other"; note: string }; // e.g. statements: kept but never read
 }): Promise<{ id: number; status: string; note?: string }> {
   const autoRead = opts.autoRead !== false;
   const sha = crypto.createHash("sha256").update(opts.data).digest("hex");
@@ -223,8 +225,10 @@ export async function ingestInvoiceFile(opts: {
 
   const { data: row, error } = await supabase.from("supplier_invoices").insert({
     source: opts.source, xero_invoice_id: opts.xeroInvoiceId ?? null, file_name: opts.fileName, file_mime: opts.mime,
-    file_sha256: sha, status: autoRead ? "new" : "unread", uploaded_by: opts.uploadedBy ?? null,
-    supplier_id: opts.supplierId ?? null, supplier_match_method: opts.supplierId ? "xero_contact" : null,
+    file_sha256: sha, status: opts.setAside ? opts.setAside.status : autoRead ? "new" : "unread", uploaded_by: opts.uploadedBy ?? null,
+    status_note: opts.setAside?.note ?? null, document_type: opts.setAside?.documentType ?? "invoice",
+    supplier_id: opts.supplierId ?? null, supplier_match_method: opts.supplierId ? (opts.supplierMatchMethod || "xero_contact") : null,
+    email_from: opts.email?.from ?? null, email_subject: opts.email?.subject ?? null, email_id: opts.email?.id ?? null,
     xero_contact_name: opts.xero?.contactName ?? null, xero_invoice_number: opts.xero?.number ?? null,
     xero_date: opts.xero?.date ?? null, xero_total: opts.xero?.total ?? null,
   }).select("id").single();
@@ -233,6 +237,7 @@ export async function ingestInvoiceFile(opts: {
   const path = await storeFile(row.id, opts.data, opts.mime, opts.fileName);
   if (path) await supabase.from("supplier_invoices").update({ file_path: path }).eq("id", row.id);
 
+  if (opts.setAside) return { id: row.id, status: opts.setAside.status };
   if (!autoRead) return { id: row.id, status: "unread" };
   // Read in the background so the upload returns straight away.
   processInvoice(row.id, opts.data, opts.mime, opts.fileName).catch(() => {});
@@ -468,7 +473,7 @@ export function registerInvoiceRoutes(app: Express, deps: { recalcAllCosts: () =
   app.get("/api/supplier-invoices", requireInvoiceAccess, asyncRoute(async (req: any, res: any) => {
     const status = req.query.status ? String(req.query.status).split(",") : null;
     let q = supabase.from("supplier_invoices")
-      .select("id, source, supplier_id, detected_supplier_name, document_type, invoice_number, invoice_date, subtotal_ex_gst, gst, total_inc_gst, status, status_note, totals_check_ok, file_name, file_path, file_mime, created_at, approved_at, xero_contact_name, xero_invoice_number, xero_date, xero_total, suppliers(name)")
+      .select("id, source, supplier_id, detected_supplier_name, document_type, invoice_number, invoice_date, subtotal_ex_gst, gst, total_inc_gst, status, status_note, totals_check_ok, file_name, file_path, file_mime, created_at, approved_at, xero_contact_name, xero_invoice_number, xero_date, xero_total, email_from, email_subject, suppliers(name)")
       .order("created_at", { ascending: false }).limit(Math.min(Number(req.query.limit) || 200, 500));
     if (status) q = q.in("status", status);
     else q = q.neq("status", "removed");
@@ -493,7 +498,9 @@ export function registerInvoiceRoutes(app: Express, deps: { recalcAllCosts: () =
     if (!inv?.file_path) return res.status(404).json({ error: "No file stored for this invoice" });
     const buf = await loadFile(inv.file_path);
     if (!buf) return res.status(404).json({ error: "File not found in storage" });
-    res.setHeader("Content-Type", inv.file_mime || "application/octet-stream");
+    res.setHeader("Content-Type", (inv.file_mime || "application/octet-stream") + (String(inv.file_mime).startsWith("text/") ? "; charset=utf-8" : ""));
+    // Email bodies are untrusted HTML: show them with scripts, forms and same-origin access switched off
+    if (String(inv.file_mime).startsWith("text/")) res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src * data:; style-src 'unsafe-inline'");
     res.setHeader("Content-Disposition", `inline; filename="${(inv.file_name || "invoice").replace(/"/g, "")}"`);
     res.send(buf);
   }));

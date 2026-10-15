@@ -14,7 +14,7 @@ import InvoiceReview from "@/components/InvoiceReview";
 import { cn } from "@/lib/utils";
 
 type InvoiceRow = {
-  id: number; source: "xero" | "upload"; supplier_id: number | null; detected_supplier_name: string | null;
+  id: number; source: "xero" | "upload" | "email"; email_from?: string | null; email_subject?: string | null; supplier_id: number | null; detected_supplier_name: string | null;
   document_type: string | null; invoice_number: string | null; invoice_date: string | null;
   subtotal_ex_gst: number | null; gst: number | null; total_inc_gst: number | null;
   status: string; status_note: string | null; totals_check_ok: boolean | null; file_name: string | null;
@@ -274,11 +274,11 @@ export default function SupplierInvoices() {
               ) : <FileText size={18} className="text-muted-foreground shrink-0" />}
               <div className="min-w-0 flex-1">
                 <div className="font-medium truncate">
-                  {inv.suppliers?.name || inv.detected_supplier_name || inv.xero_contact_name || inv.file_name || "Reading…"}
+                  {inv.suppliers?.name || inv.detected_supplier_name || inv.xero_contact_name || (inv.email_from ? inv.email_from.replace(/<[^>]+>/, "").replace(/"/g, "").trim() : null) || inv.file_name || "Reading…"}
                   {(inv.invoice_number || inv.xero_invoice_number) && <span className="text-muted-foreground font-normal"> · {inv.invoice_number || inv.xero_invoice_number}</span>}
                 </div>
                 <div className="text-xs text-muted-foreground truncate">
-                  {dateLabel(inv.invoice_date || inv.xero_date)} · {inv.source === "xero" ? "from Xero" : "uploaded"}{inv.status_note ? ` · ${inv.status_note}` : ""}
+                  {inv.source === "email" ? <>{inv.invoice_date ? `${dateLabel(inv.invoice_date)} · ` : `${dateLabel(inv.created_at)} · `}by email{inv.email_subject ? `: ${inv.email_subject}` : ""}</> : <>{dateLabel(inv.invoice_date || inv.xero_date)} · {inv.source === "xero" ? "from Xero" : "uploaded"}</>}{inv.status_note ? ` · ${inv.status_note}` : ""}
                 </div>
               </div>
               <div className="text-right shrink-0">
@@ -308,7 +308,9 @@ export default function SupplierInvoices() {
               <div className="mt-3 space-y-3 text-sm">
                 {detail.status === "unread" && (
                   <div className="rounded-md border border-violet-200 bg-violet-50 p-3 flex flex-wrap items-center gap-2 justify-between">
-                    <span className="text-violet-900">From Xero, not read yet. {dateLabel(detail.xero_date)} · {money(detail.xero_total)} inc GST. Is it worth pulling the prices from?</span>
+                    <span className="text-violet-900">
+                      {detail.source === "email" ? `By email${detail.email_subject ? `: "${detail.email_subject}"` : ""}, not read yet.` : `From Xero, not read yet. ${dateLabel(detail.xero_date)} · ${money(detail.xero_total)} inc GST.`} Is it worth pulling the prices from?
+                    </span>
                     <div className="flex gap-2">
                       <Button size="sm" onClick={() => readMany([detail.id])} data-testid="button-read-invoice"><Sparkles size={14} className="mr-1" />Read this invoice</Button>
                       <Button size="sm" variant="outline" onClick={() => removeMany([detail.id])} data-testid="button-remove-invoice"><Trash2 size={14} className="mr-1" />Remove</Button>
@@ -319,6 +321,8 @@ export default function SupplierInvoices() {
                   <div className="rounded-md border bg-muted/30 overflow-hidden">
                     {detail.file_mime === "application/pdf" ? (
                       <iframe title="Invoice" src={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} className="w-full h-[60vh] bg-white" />
+                    ) : String(detail.file_mime).startsWith("text/") ? (
+                      <iframe title="Email" sandbox="" src={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} className="w-full h-[60vh] bg-white" />
                     ) : (
                       <img alt="Invoice" src={assetUrl(`/api/supplier-invoices/${detail.id}/file`)} className="w-full max-h-[70vh] object-contain bg-white" />
                     )}
