@@ -17,6 +17,7 @@ type Supplier = {
   how_to_order?: string; order_contact?: string; order_cutoff?: string;
   min_order_amount?: number; delivery_days?: string;
   parent_supplier_id?: number | null;
+  is_market?: boolean;
   // how_to_order and delivery_days stored as JSON arrays in DB
 };
 
@@ -32,7 +33,7 @@ type CheapestItem = {
 const ORDER_METHODS = ["Email","Online","Phone","Text","Ordermentum","App"];
 const WEEK_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 
-const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: [] as string[], order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: [] as string[], parent_supplier_id: null as number | null };
+const empty = { name: "", contactName: "", email: "", phone: "", notes: "", how_to_order: [] as string[], order_contact: "", order_cutoff: "", min_order_amount: "" as any, delivery_days: [] as string[], is_market: false };
 
 export default function Suppliers() {
   const { toast } = useToast();
@@ -65,7 +66,7 @@ export default function Suppliers() {
 
   const upsert = useMutation({
     mutationFn: (data: typeof form) => {
-      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify(Array.isArray(data.delivery_days) ? data.delivery_days : []), how_to_order: JSON.stringify(Array.isArray(data.how_to_order) ? data.how_to_order : []), parent_supplier_id: data.parent_supplier_id || null };
+      const payload = { ...data, min_order_amount: data.min_order_amount ? Number(data.min_order_amount) : null, delivery_days: JSON.stringify(Array.isArray(data.delivery_days) ? data.delivery_days : []), how_to_order: JSON.stringify(Array.isArray(data.how_to_order) ? data.how_to_order : []), is_market: !!data.is_market };
       return editing
         ? apiRequest("PUT", `/api/suppliers/${editing.id}`, payload).then((r) => r.json())
         : apiRequest("POST", "/api/suppliers", payload).then((r) => r.json());
@@ -93,7 +94,7 @@ export default function Suppliers() {
   const parsedDelivery = (() => { try { const d = JSON.parse(s.delivery_days || '[]'); return Array.isArray(d) ? d : []; } catch { return []; } })();
   const parsedMethods = (() => { try { const m = JSON.parse(s.how_to_order || '[]'); return Array.isArray(m) ? m : (s.how_to_order ? [s.how_to_order] : []); } catch { return s.how_to_order ? [s.how_to_order] : []; } })();
   setEditing(s);
-  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods, parent_supplier_id: s.parent_supplier_id ?? null } as any);
+  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods, is_market: !!s.is_market } as any);
   setOpen(true);
 };
 
@@ -156,7 +157,7 @@ export default function Suppliers() {
                             <CardTitle className="text-base">{s.name}</CardTitle>
                             <div className="flex items-center gap-2 mt-1">
                               <Badge variant="outline" className="text-xs">{ingCount(s.id)} ingredient price{ingCount(s.id) !== 1 ? "s" : ""}</Badge>
-                              {children.length > 0 && <Badge variant="secondary" className="text-xs">{children.length} sub-supplier{children.length !== 1 ? "s" : ""}</Badge>}
+                              {s.is_market && <Badge variant="secondary" className="text-xs">Markets</Badge>}
                             </div>
                           </div>
                         </div>
@@ -230,12 +231,7 @@ export default function Suppliers() {
               );
             };
 
-            return parentSuppliers.map(parent => (
-              <div key={parent.id} className="flex flex-col gap-2">
-                {renderCard(parent, false)}
-                {getChildren(parent.id).map(child => renderCard(child, true))}
-              </div>
-            ));
+            return suppliers.map(s => renderCard(s, false));
           })()}
         </div>
       )}
@@ -268,20 +264,10 @@ export default function Suppliers() {
               <Label>Notes</Label>
               <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Order terms, minimums, etc." rows={2} />
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Parent Supplier (optional)</Label>
-              <select
-                value={form.parent_supplier_id ?? ""}
-                onChange={e => setForm({ ...form, parent_supplier_id: e.target.value ? Number(e.target.value) : null } as any)}
-                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#256984]"
-              >
-                <option value="">— None (top-level supplier) —</option>
-                {(suppliers ?? []).filter((s: Supplier) => !s.parent_supplier_id && s.id !== editing?.id).map((s: Supplier) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-              <p className="text-xs text-muted-foreground">Assign this supplier under a parent (e.g. "Markets")</p>
-            </div>
+            <label className="flex items-start gap-2 text-sm cursor-pointer select-none rounded-md border p-3">
+              <input type="checkbox" className="mt-0.5" checked={!!form.is_market} onChange={(e) => setForm({ ...form, is_market: e.target.checked } as any)} data-testid="checkbox-market-supplier" />
+              <span><span className="font-medium">Market supplier</span><br /><span className="text-xs text-muted-foreground">Shows in Stock Ordering → Markets so you can add its reps.</span></span>
+            </label>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mt-1">Ordering Details</p>
 
             {/* How to order — multi-select checkboxes */}

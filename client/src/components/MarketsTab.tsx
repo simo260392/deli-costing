@@ -539,6 +539,10 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
                 <div className="px-4 py-2.5 border-b flex items-center gap-2" style={{ background: "#F8FAFB" }}>
                   <Store size={15} style={{ color: NAVY }} />
                   <p className="font-bold text-sm flex-1">{s.name}</p>
+                  <button title="Rename" className="p-1 text-muted-foreground" onClick={() => {
+                    const name = window.prompt("Supplier name (contact details are on Food → Suppliers)", s.name);
+                    if (name && name.trim() && name.trim() !== s.name) act(() => json("PATCH", `/api/markets/suppliers/${s.id}`, { name: name.trim() }));
+                  }}><Pencil size={13} /></button>
                   {reps.length === 0 && (
                     <button className="text-xs underline text-muted-foreground" onClick={() => act(() => json("PATCH", `/api/markets/suppliers/${s.id}`, { isMarket: false }))}>Not a market supplier</button>
                   )}
