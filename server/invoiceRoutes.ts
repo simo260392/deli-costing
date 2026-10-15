@@ -275,7 +275,7 @@ export async function runMatching(invoiceId: number) {
     await supabase.from("supplier_invoice_lines").update({
       supplier_product_id: m.supplier_product_id, ingredient_id: m.ingredient_id, match_method: m.match_method, match_confidence: m.match_confidence,
       suggestions: m.suggestions, warnings: m.warnings, price_change_pct: m.price_change_pct, base_qty: m.base_qty, unit_cost: m.unit_cost,
-      needs_pack_size: m.needs_pack_size, item_type: m.item_type, ingredient_units_per_base: m.ingredient_units_per_base,
+      needs_pack_size: m.needs_pack_size, item_type: m.item_type, ingredient_units_per_base: m.ingredient_units_per_base, random_weight: m.random_weight,
       ingredient_unit_cost: m.unit_cost !== null && m.ingredient_units_per_base ? Math.round((m.unit_cost / m.ingredient_units_per_base) * 10000) / 10000 : null,
     }).eq("id", l.id);
   }
@@ -291,6 +291,7 @@ export type LineDecision = {
   brand?: string | null;
   basePerPurchase?: number | null;       // pack size: kg / L / each in ONE purchase unit, when the invoice doesn't say
   packUom?: "kg" | "L" | "each" | null;   // the unit basePerPurchase is in
+  weightKg?: number | null;               // random-weight meat: total kg on this line (from the label weight or price per kg)
   ingredientUnitsPerBase?: number | null; // e.g. 10 when a loaf is bought but recipes use slices
 };
 
@@ -325,14 +326,15 @@ export async function approveInvoice(invoiceId: number, decisions: LineDecision[
     if (!Number.isFinite(total)) throw Object.assign(new Error(`"${line.description}" has no price`), { status: 400 });
     let baseQty = line.base_qty !== null ? Number(line.base_qty) : null;
     if (d.basePerPurchase && d.basePerPurchase > 0 && line.quantity) baseQty = Number(line.quantity) * d.basePerPurchase;
+    if (d.weightKg && d.weightKg > 0) baseQty = d.weightKg;
     if (!baseQty || baseQty <= 0) throw Object.assign(new Error(`"${line.description}" needs a pack size`), { status: 400 });
     const unitCost = total / baseQty;
     let factor = d.ingredientUnitsPerBase && d.ingredientUnitsPerBase > 0 ? d.ingredientUnitsPerBase : null;
     if (!factor) {
       const ing = d.action === "match" ? ings.get(d.ingredientId!) : ({ unit: d.newIngredient?.unit, avg_weight_per_unit: null } as any);
       if (d.action === "match" && !ing) throw Object.assign(new Error(`Pick an ingredient for "${line.description}"`), { status: 400 });
-      const lineUom = d.packUom || (line.priced_by_weight ? "kg" : (line.unit_size_uom || d.newIngredient?.unit || null));
-      factor = (!d.packUom && line.ingredient_units_per_base && d.action === "match" && line.ingredient_id === d.ingredientId) ? Number(line.ingredient_units_per_base) : unitFactor(lineUom, ing);
+      const lineUom = d.weightKg ? "kg" : d.packUom || (line.priced_by_weight ? "kg" : (line.unit_size_uom || d.newIngredient?.unit || null));
+      factor = (!d.packUom && !d.weightKg && line.ingredient_units_per_base && d.action === "match" && line.ingredient_id === d.ingredientId) ? Number(line.ingredient_units_per_base) : unitFactor(lineUom, ing);
       if (!factor && d.action === "new") factor = 1;
     }
     if (!factor) throw Object.assign(new Error(`"${line.description}": set how many ${ings.get(d.ingredientId!)?.unit || "units"} are in one ${line.priced_by_weight ? "kg" : line.unit_size_uom || "unit"}`), { status: 400 });
@@ -363,14 +365,15 @@ export async function approveInvoice(invoiceId: number, decisions: LineDecision[
       || (products || []).find((x: any) => normD(x.supplier_description) === normD(line.description))
       || (products || []).find((x: any) => x.ingredient_id === ingredientId && !x.supplier_code && x.legacy_supplier_ingredient_id);
     const qty = Number(line.quantity) || null;
-    const perPurchase = line.priced_by_weight ? 1 : (qty ? r4(p.baseQty / qty) : null);
+    const randomWeight = !!(d.weightKg && d.weightKg > 0);
+    const perPurchase = line.priced_by_weight || randomWeight ? (randomWeight ? null : 1) : (qty ? r4(p.baseQty / qty) : null);
     const productFields: any = {
       supplier_id: inv.supplier_id, ingredient_id: ingredientId, item_type: d.itemType || line.item_type || (ing.category === "Packaging" ? "packaging" : "ingredient"),
       supplier_code: line.supplier_code || sp?.supplier_code || null, supplier_description: line.description,
       brand: d.brand !== undefined ? (d.brand || null) : (line.brand || sp?.brand || null),
       purchase_unit: line.purchase_unit, units_per_purchase: line.units_per_purchase, unit_size: line.unit_size,
-      unit_size_uom: line.priced_by_weight ? "kg" : (d.packUom || line.unit_size_uom || sp?.unit_size_uom || null), priced_by_weight: !!line.priced_by_weight,
-      base_qty_per_purchase: perPurchase, pack_size_confirmed: !!(d.basePerPurchase || sp?.pack_size_confirmed || !line.needs_pack_size),
+      unit_size_uom: line.priced_by_weight || randomWeight ? "kg" : (d.packUom || line.unit_size_uom || sp?.unit_size_uom || null), priced_by_weight: !!line.priced_by_weight || randomWeight,
+      base_qty_per_purchase: perPurchase, pack_size_confirmed: randomWeight ? false : !!(d.basePerPurchase || sp?.pack_size_confirmed || !line.needs_pack_size),
       gst_applicable: line.gst_applies, last_price_ex_gst: line.unit_price_ex_gst, last_unit_cost: r4(p.ingCost),
       last_invoice_id: invoiceId, last_invoice_date: invoiceDate, ingredient_units_per_base: p.factor, active: true, updated_at: now,
     };

@@ -29,6 +29,7 @@ export type LineMatch = {
   suggestions: Suggestion[]; warnings: string[]; price_change_pct: number | null;
   base_qty: number | null; unit_cost: number | null; needs_pack_size: boolean; item_type: string | null;
   ingredient_units_per_base: number | null; // conversion from the line's base unit to the ingredient's unit, when known
+  random_weight: boolean;                    // priced per kg but the invoice has no weight: ask for price/kg or weight each time
 };
 
 // ─── Text similarity ─────────────────────────────────────────────────────────
@@ -117,7 +118,7 @@ export function matchLines(opts: {
     const m: LineMatch = {
       supplier_product_id: null, ingredient_id: null, match_method: null, match_confidence: null, suggestions: [], warnings: [],
       price_change_pct: null, base_qty: l.base_qty, unit_cost: l.unit_cost, needs_pack_size: l.needs_pack_size, item_type: l.item_type,
-      ingredient_units_per_base: null,
+      ingredient_units_per_base: null, random_weight: false,
     };
     if (l.line_type !== "product") { result.set(l.id, m); continue; }
 
@@ -133,7 +134,8 @@ export function matchLines(opts: {
       m.ingredient_id = sp.ingredient_id;
       if (sp.item_type) m.item_type = sp.item_type;
       // Remembered pack size (e.g. Spud Shed bacon = 1kg) when the invoice doesn't say
-      if (m.needs_pack_size && sp.base_qty_per_purchase && l.quantity) {
+      if (m.needs_pack_size && sp.priced_by_weight) m.random_weight = true;
+      else if (m.needs_pack_size && sp.base_qty_per_purchase && l.quantity) {
         m.base_qty = Math.round(l.quantity * sp.base_qty_per_purchase * 10000) / 10000;
         m.unit_cost = l.line_total_ex_gst !== null ? Math.round((l.line_total_ex_gst / m.base_qty) * 10000) / 10000 : null;
         m.needs_pack_size = false;
