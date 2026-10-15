@@ -100,6 +100,24 @@ export function registerMarketRoutes(app: Express) {
     if (error) throw error;
     res.json({ ok: true });
   }));
+  // Create a brand-new produce item straight onto the markets list. { name, orderUnit, unit }
+  app.post("/api/markets/produce", requireStockAccess, asyncRoute(async (req: any, res: any) => {
+    const name = String(req.body?.name || "").trim();
+    if (!name) throw fail(400, "Enter the produce name");
+    const unit = ["kg", "each", "L"].includes(req.body?.unit) ? req.body.unit : "kg";
+    const orderUnit = String(req.body?.orderUnit || "").trim() || null;
+    const { data: existing } = await supabase.from("ingredients").select("id").ilike("name", name).maybeSingle();
+    if (existing) {
+      await supabase.from("ingredients").update({ market_item: true, ...(orderUnit ? { market_order_unit: orderUnit } : {}) }).eq("id", existing.id);
+      return res.json({ id: existing.id, existed: true });
+    }
+    const { data, error } = await supabase.from("ingredients").insert({
+      name, unit, category: "Fruit & Veg", market_item: true, market_order_unit: orderUnit, dietaries_json: "[]",
+    }).select("id").single();
+    if (error) throw error;
+    res.json({ id: data.id });
+  }));
+
   // Ingredients not on the market list yet (to add)
   app.get("/api/markets/produce-candidates", requireStockAccess, asyncRoute(async (_req: any, res: any) => {
     const { data } = await supabase.from("ingredients").select("id, name, unit, category").eq("market_item", false).not("category", "in", "(Packaging)").order("name");

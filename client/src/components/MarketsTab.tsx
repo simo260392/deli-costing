@@ -485,6 +485,14 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
   const [newSupplier, setNewSupplier] = useState("");
   const { data: candidates = [] } = useQuery<Produce[]>({ queryKey: ["/api/markets/produce-candidates"], queryFn: () => json("GET", "/api/markets/produce-candidates"), enabled: adding });
   const [candSearch, setCandSearch] = useState("");
+  const [newUnit, setNewUnit] = useState("small crate");
+  const [newRecipeUnit, setNewRecipeUnit] = useState<"kg" | "each">("kg");
+  const createProduce = (name: string) => act(async () => {
+    const r = await json("POST", "/api/markets/produce", { name, orderUnit: newUnit, unit: newRecipeUnit });
+    toast({ description: r.existed ? `${name} was already an ingredient, now on the markets list` : `${name} added` });
+    setCandSearch("");
+    qc.invalidateQueries({ queryKey: ["/api/markets/produce-candidates"] });
+  });
   const refresh = () => qc.invalidateQueries({ queryKey: ["/api/markets"] });
   const act = async (fn: () => Promise<any>) => { try { await fn(); refresh(); } catch (e) { toast({ description: errText(e), variant: "destructive" }); } };
   const activeReps = data.reps.filter((r) => r.active);
@@ -578,10 +586,24 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
           </div>
           <datalist id="market-units-setup">{UNITS.map((u) => <option key={u} value={u} />)}</datalist>
           {!adding ? (
-            <Button variant="outline" className="w-full bg-white" onClick={() => setAdding(true)}><Plus size={16} className="mr-1" />Add produce to the markets list</Button>
+            <Button variant="outline" className="w-full bg-white" onClick={() => setAdding(true)}><Plus size={16} className="mr-1" />Add produce</Button>
           ) : (
             <div className="rounded-2xl border bg-white p-3 space-y-2">
-              <Input placeholder="Search ingredients" value={candSearch} onChange={(e) => setCandSearch(e.target.value)} autoFocus />
+              <Input placeholder="Search, or type a new item's name" value={candSearch} onChange={(e) => setCandSearch(e.target.value)} autoFocus />
+              {candSearch.trim() && !candidates.some((c) => c.name.toLowerCase() === candSearch.trim().toLowerCase()) && !data.produce.some((p) => p.name.toLowerCase() === candSearch.trim().toLowerCase()) && (
+                <div className="rounded-xl border p-2.5 space-y-2" style={{ background: "#F8FAFB" }}>
+                  <p className="text-sm font-semibold">New: {candSearch.trim()}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span>Ordered by</span>
+                    <Input className="h-8 w-28" list="market-units-setup" value={newUnit} onChange={(e) => setNewUnit(e.target.value)} />
+                    <span>recipes use</span>
+                    <select className="h-8 rounded-md border bg-white px-2" value={newRecipeUnit} onChange={(e) => setNewRecipeUnit(e.target.value as any)}>
+                      <option value="kg">kg</option><option value="each">each</option>
+                    </select>
+                  </div>
+                  <Button size="sm" style={{ background: NAVY }} onClick={() => createProduce(candSearch.trim())} data-testid="button-create-produce"><Plus size={14} className="mr-1" />Add {candSearch.trim()}</Button>
+                </div>
+              )}
               <div className="max-h-60 overflow-y-auto divide-y">
                 {candidates.filter((c) => !candSearch || c.name.toLowerCase().includes(candSearch.toLowerCase())).slice(0, 60).map((c) => (
                   <button key={c.id} className="w-full text-left px-2 py-2 text-sm flex items-center gap-2 hover:bg-muted/40"
