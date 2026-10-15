@@ -67,7 +67,6 @@ const complianceSubItems = [
 // Bottom-pinned items
 const bottomNavItems = [
   { href: "/supplier-invoices", label: "Supplier Invoices", icon: FileText, slug: "supplier-invoices" },
-  { href: "/xero-imports", label: "Invoice Imports (old)", icon: RefreshCw, slug: "xero-imports" },
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
 ];
 
@@ -112,12 +111,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const onCompliancePage = location === "/compliance" || location.startsWith("/compliance/");
   const [complianceOpen, setComplianceOpen] = useState(onCompliancePage);
 
-  const { data: xeroCountData } = useQuery({
-    queryKey: ["/api/xero/imports/pending-count"],
-    queryFn: () => apiRequest("GET", "/api/xero/imports/pending-count").then((r) => r.json()),
+  // Badge: supplier invoices waiting to be read or reviewed (only answers for people with access)
+  const { data: invoiceSummary } = useQuery<{ counts: Record<string, number> }>({
+    queryKey: ["/api/supplier-invoices-summary"],
+    queryFn: () => apiRequest("GET", "/api/supplier-invoices-summary").then((r) => r.json()),
     refetchInterval: 60000,
+    retry: false,
   });
-  const xeroCount: number = xeroCountData?.count ?? 0;
+  const xeroCount: number = (invoiceSummary?.counts?.unread ?? 0) + (invoiceSummary?.counts?.needs_review ?? 0);
 
   // Exact-match-only hrefs: these are parent nav items whose sub-pages have their own nav entries
   const exactMatchOnly = new Set(["/compliance"]);
@@ -143,7 +144,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       >
         <Icon size={15} strokeWidth={isActive(href) ? 2.5 : 2} />
         <span className="flex-1">{label}</span>
-        {label === "Invoice Imports" && xeroCount > 0 && (
+        {label === "Supplier Invoices" && xeroCount > 0 && (
           <span className={cn(
             "ml-auto text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[20px] text-center leading-none",
             isActive(href) ? "bg-white/20 text-white" : "bg-amber-500 text-white"

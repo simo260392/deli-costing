@@ -422,7 +422,8 @@ export const storage: IStorage = {
     return toCamel(data) as XeroImport;
   },
   getXeroPendingCount: async () => {
-    const { count } = await supabase.from("xero_imports").select("*", { count: "exact", head: true }).eq("status", "pending");
+    // Invoices waiting on Scott in Supplier Invoices (old xero_imports page removed Oct 2026)
+    const { count } = await supabase.from("supplier_invoices").select("*", { count: "exact", head: true }).in("status", ["unread", "needs_review"]);
     return count ?? 0;
   },
   upsertXeroImport: async (data) => {
