@@ -58,6 +58,7 @@ const ALL_PAGES = [
   { slug: "custom-pricing",   label: "Custom Pricing" },
   { slug: "wholesale",        label: "Wholesale" },
   { slug: "supplier-invoices", label: "Supplier Invoices" },
+  { slug: "reports",          label: "Reports (markets prices)" },
   { slug: "settings",         label: "Settings" },
 ];
 

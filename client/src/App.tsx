@@ -18,6 +18,7 @@ import SupplierInvoices from "@/pages/SupplierInvoices";
 import Settings from "@/pages/Settings";
 import CustomPricing from "@/pages/CustomPricing";
 import RecipeBook from "@/pages/RecipeBook";
+import Reports from "@/pages/Reports";
 import Prep from "@/pages/Prep";
 import PrepReports from "@/pages/PrepReports";
 import MissingItemsReport from "@/pages/MissingItemsReport";
@@ -50,6 +51,7 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "sub-recipes", path: "/sub-recipes" },
   { slug: "recipes", path: "/recipes" },
   { slug: "supplier-invoices", path: "/supplier-invoices" },
+  { slug: "reports", path: "/reports" },
   { slug: "custom-pricing", path: "/custom-pricing" },
   { slug: "settings", path: "/settings" },
   { slug: "wholesale", path: "/wholesale" },
@@ -92,7 +94,9 @@ function AuthenticatedApp() {
   const allowedPages = staff.accessLevel.pagesJson;
   const isAdmin = staff.accessLevel.name === "Admin";
 
-  if (!isAdmin && !allowedPages.includes(currentSlug) && currentSlug !== "") {
+  // Reports holds Product Info PDF and KPIs too, so those pages' access also opens it
+  const reportsAllowed = currentSlug === "reports" && ["reports", "recipe-book", "wages"].some((s) => allowedPages.includes(s));
+  if (!isAdmin && !reportsAllowed && !allowedPages.includes(currentSlug) && currentSlug !== "") {
     // Redirect to first allowed page, respecting the order defined in the user's pagesJson
     const firstSlug = allowedPages.find((slug: string) => PAGE_SLUGS.some(p => p.slug === slug));
     const firstAllowed = PAGE_SLUGS.find(p => p.slug === firstSlug);
@@ -118,6 +122,8 @@ function AuthenticatedApp() {
         <Route path="/prep-reports" component={PrepReports} />
         <Route path="/missing-items-report" component={MissingItemsReport} />
         <Route path="/recipe-book" component={RecipeBook} />
+        <Route path="/reports" component={Reports} />
+        <Route path="/reports/:tab" component={Reports} />
         <Route path="/wholesale" component={WholesalePackaging} />
         <Route path="/wages" component={WagesDashboard} />
         <Route path="/deliveries" component={Deliveries} />
