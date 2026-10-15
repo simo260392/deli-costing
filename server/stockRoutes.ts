@@ -130,7 +130,7 @@ async function driversGroupId(): Promise<string> {
   }
 }
 
-async function sendDriversWhatsApp(message: string): Promise<{ ok: boolean; error?: string }> {
+export async function sendDriversWhatsApp(message: string): Promise<{ ok: boolean; error?: string }> {
   const url = (process.env.GREEN_API_URL || "https://api.green-api.com").replace(/\/+$/, "");
   const instance = process.env.GREEN_API_INSTANCE || "";
   const token = process.env.GREEN_API_TOKEN || "";
