@@ -171,6 +171,16 @@ export function matchLines(opts: {
     if (!m.ingredient_id && m.suggestions[0] && m.suggestions[0].score >= 0.8 && (!m.suggestions[1] || m.suggestions[0].score - m.suggestions[1].score >= 0.1)) {
       m.ingredient_id = m.suggestions[0].ingredientId; m.match_method = "suggested"; m.match_confidence = m.suggestions[0].score;
     }
+    // The old imports page made some wrong matches. If its pick is clearly worse than the
+    // closest name (e.g. "Croissant Chocolate Large" -> Hazelnut Choc instead of Chocolate Croissant),
+    // go with the closest name.
+    if (m.match_method === "suggested" && m.match_confidence === 0.85 && m.suggestions[0]) {
+      const histIng = ingById.get(m.ingredient_id!);
+      const histScore = histIng ? Math.max(similarity(l.generic_name, histIng.name), similarity(l.description, histIng.name) * 0.95) : 0; // same scale as suggestions
+      if (m.suggestions[0].ingredientId !== m.ingredient_id && m.suggestions[0].score >= 0.8 && m.suggestions[0].score - histScore >= 0.2) {
+        m.ingredient_id = m.suggestions[0].ingredientId; m.match_confidence = m.suggestions[0].score;
+      }
+    }
 
     // Units, price change and brand warnings once we know the ingredient
     const ing = m.ingredient_id ? ingById.get(m.ingredient_id) : undefined;
