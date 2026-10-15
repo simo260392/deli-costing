@@ -27,7 +27,7 @@ export interface KpiPeriod {
 const DAY = 86_400_000;
 const toDate = (s: string) => new Date(s + "T00:00:00Z");
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
-const addDays = (s: string, n: number) => fmt(new Date(toDate(s).getTime() + n * DAY));
+export const addDays = (s: string, n: number) => fmt(new Date(toDate(s).getTime() + n * DAY));
 
 /** Monday on or before 1 July of the given calendar year. */
 export function fyStart(year: number): string {

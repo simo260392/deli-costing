@@ -47,7 +47,6 @@ const foodSubItems = [
   { href: "/recipes",       label: "Recipes",        icon: UtensilsCrossed,slug: "recipes" },
   { href: "/sub-recipes",   label: "Sub-Recipes",    icon: BookOpen,       slug: "sub-recipes" },
   { href: "/suppliers",     label: "Suppliers",      icon: Truck,          slug: "suppliers" },
-  { href: "/recipe-book",   label: "Product Info PDF",icon: BookMarked,     slug: "recipe-book" },
   { href: "/custom-pricing",label: "Custom Pricing", icon: Calculator,     slug: "custom-pricing" },
 ];
 
@@ -68,6 +67,8 @@ const complianceSubItems = [
 const bottomNavItems = [
   { href: "/supplier-invoices", label: "Supplier Invoices", icon: FileText, slug: "supplier-invoices" },
   { href: "/settings", label: "Settings", icon: Settings, slug: "settings" },
+  // Reports: KPIs, markets prices and Product Info PDF (shown if any of them is allowed)
+  { href: "/reports", label: "Reports", icon: BarChart3, slug: "reports" },
 ];
 
 function Logo() {
@@ -358,7 +359,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </li>
 
           {/* 8. Settings (bottom-pinned) */}
-          {bottomNavItems.filter(({ slug }) => hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
+          {bottomNavItems.filter(({ slug }) => slug === "reports" ? ["reports", "recipe-book", "wages"].some(hasAccess) : hasAccess(slug)).map(({ href, label, icon: Icon, slug }) =>
             navLink(href, label, Icon, slug)
           )}
 

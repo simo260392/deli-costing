@@ -8,12 +8,13 @@ import os from "os";
 import PDFDocument from "pdfkit";
 import Anthropic from "@anthropic-ai/sdk";
 import { storage, supabase } from "./storage";
-import { periodFor, weekOf, todayPerth } from "../shared/kpiPeriods";
+import { periodFor, weekOf, todayPerth, addDays as addDaysYmd } from "../shared/kpiPeriods";
 import { registerStockRoutes } from "./stockRoutes";
 import { registerInvoiceRoutes } from "./invoiceRoutes";
 import { registerXeroRoutes } from "./xeroRoutes";
 import { registerInboundEmailRoutes } from "./inboundEmail";
 import { registerMarketRoutes } from "./marketRoutes";
+import { registerReportRoutes } from "./reportRoutes";
 
 // Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
 let anthropic: Anthropic | null = null;
@@ -867,7 +868,11 @@ export function registerRoutes(httpServer: Server, app: Express) {
       const { key, value } = req.body;
       if (!key || value === undefined) return res.status(400).json({ error: "key and value required" });
       await storage.setSetting(key, String(value));
-      if (String(key).startsWith("kpi_")) kpiCache.clear();
+      if (String(key).startsWith("kpi_")) {
+        kpiCache.clear();
+        // Targets / excluded staff changed: saved periods are recalculated next time they're opened
+        await supabase.from("kpi_period_snapshots").delete().gte("period_start", "2000-01-01");
+      }
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -5725,15 +5730,31 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   //   • production wages — Deputy timesheets incl. super, excluding the Drivers
   //     and Events areas and anyone in the `kpi_excluded_staff` setting
   //   • delivery fees ex GST (Flex) vs Drivers-area wages incl. super
+  //
+  // Finished periods are saved to kpi_period_snapshots once all their timesheets are
+  // approved, so looking back (Reports → KPIs) doesn't re-pull Flex and Deputy each time.
+  // ?refresh=true always recalculates (and re-saves).
   app.get("/api/kpi/period", asyncRoute(async (req, res) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || "")) ? String(req.query.date) : todayPerth();
+    res.json(await computeKpiPeriod(date, req.query.refresh === "true"));
+  }));
+
+  async function computeKpiPeriod(date: string, refresh: boolean): Promise<any> {
     const p = periodFor(date);
     const today = todayPerth();
     const isCurrent = today >= p.start && today <= p.end;
+    if (p.start > today) return { fyLabel: p.fyLabel, period: p.period, start: p.start, end: p.end, future: true };
     const cacheKey = `kpi2:${p.start}`;
     const cached = kpiCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt && req.query.refresh !== "true") {
-      return res.json({ ...cached.data, _cached: true });
+    if (!refresh && cached && Date.now() < cached.expiresAt) {
+      return { ...cached.data, _cached: true };
+    }
+    if (!refresh && !isCurrent) {
+      const { data: snap } = await supabase.from("kpi_period_snapshots").select("data").eq("period_start", p.start).maybeSingle();
+      if (snap?.data) {
+        kpiCache.set(cacheKey, { data: snap.data, expiresAt: Date.now() + 6 * 3_600_000 });
+        return { ...snap.data, _saved: true };
+      }
     }
 
     const errors: string[] = [];
@@ -5937,8 +5958,14 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     };
     // Don't cache failures; current period refreshes every 10 min, past periods every 6 h
     if (!errors.length) kpiCache.set(cacheKey, { data, expiresAt: Date.now() + (isCurrent ? 10 * 60_000 : 6 * 3_600_000) });
-    res.json(data);
-  }));
+    // Save finished periods once every timesheet is approved (wait 2 days for late approvals)
+    const settled = !isCurrent && !errors.length && data.totals.pendingWages === 0 && addDaysYmd(p.end, 2) < today;
+    if (settled) {
+      const { error } = await supabase.from("kpi_period_snapshots").upsert({ period_start: p.start, data, saved_at: new Date().toISOString() });
+      if (error) console.error("[kpi] snapshot save failed:", error.message);
+    }
+    return data;
+  }
 
   app.get("/api/wages-dashboard/xero", asyncRoute(async (req, res) => {
     const { from, to } = req.query as { from?: string; to?: string };
@@ -6998,6 +7025,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // ── Stock Ordering (see server/stockRoutes.ts) ───────────────────────────
   registerStockRoutes(app, sendTeamWhatsApp);
   registerMarketRoutes(app);
+  registerReportRoutes(app);
 
   // ── Supplier invoices v2 (see server/invoiceRoutes.ts) ───────────────────
   registerInvoiceRoutes(app, { recalcAllCosts });
