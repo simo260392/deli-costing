@@ -58,7 +58,6 @@ const ALL_PAGES = [
   { slug: "custom-pricing",   label: "Custom Pricing" },
   { slug: "wholesale",        label: "Wholesale" },
   { slug: "supplier-invoices", label: "Supplier Invoices" },
-  { slug: "xero-imports",     label: "Invoice Imports (old)" },
   { slug: "settings",         label: "Settings" },
 ];
 

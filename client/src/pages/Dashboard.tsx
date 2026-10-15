@@ -245,14 +245,14 @@ export default function Dashboard() {
       </div>
 
       {/* ── Invoice imports pending ──────────────────────────────────────── */}
-      {(hasAccess("xero-imports") || isAdmin) && xeroCount > 0 && (
-        <Link href="/xero-imports">
+      {(hasAccess("supplier-invoices") || isAdmin) && xeroCount > 0 && (
+        <Link href="/supplier-invoices">
           <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 cursor-pointer hover:bg-amber-100 transition-colors group">
             <div className="flex items-center gap-3">
               <FileText size={16} className="text-amber-600" />
               <div>
-                <p className="text-sm font-semibold text-amber-900">{xeroCount} invoice{xeroCount !== 1 ? "s" : ""} pending review</p>
-                <p className="text-xs text-amber-700">Tap to open Invoice Imports</p>
+                <p className="text-sm font-semibold text-amber-900">{xeroCount} supplier invoice{xeroCount !== 1 ? "s" : ""} to read or review</p>
+                <p className="text-xs text-amber-700">Tap to open Supplier Invoices</p>
               </div>
             </div>
             <ChevronRight size={16} className="text-amber-400 group-hover:text-amber-600 transition-colors" />

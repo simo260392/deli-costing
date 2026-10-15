@@ -63,10 +63,6 @@ async function buildAll() {
 }
 
 async function copyAssets() {
-  // parse_invoice.py must live alongside dist/index.cjs at runtime
-  // because routes.ts uses path.join(__dirname, 'parse_invoice.py')
-  await copyFile("server/parse_invoice.py", "dist/parse_invoice.py");
-  console.log("copied parse_invoice.py → dist/");
 }
 
 buildAll()

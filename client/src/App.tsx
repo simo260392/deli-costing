@@ -14,7 +14,6 @@ import Suppliers from "@/pages/Suppliers";
 import SubRecipes from "@/pages/SubRecipes";
 import Recipes from "@/pages/Recipes";
 import Products from "@/pages/Products";
-import XeroImports from "@/pages/XeroImports";
 import SupplierInvoices from "@/pages/SupplierInvoices";
 import Settings from "@/pages/Settings";
 import CustomPricing from "@/pages/CustomPricing";
@@ -50,7 +49,6 @@ const PAGE_SLUGS: Array<{ slug: string; path: string }> = [
   { slug: "suppliers", path: "/suppliers" },
   { slug: "sub-recipes", path: "/sub-recipes" },
   { slug: "recipes", path: "/recipes" },
-  { slug: "xero-imports", path: "/xero-imports" },
   { slug: "supplier-invoices", path: "/supplier-invoices" },
   { slug: "custom-pricing", path: "/custom-pricing" },
   { slug: "settings", path: "/settings" },
@@ -113,7 +111,6 @@ function AuthenticatedApp() {
         <Route path="/sub-recipes" component={SubRecipes} />
         <Route path="/recipes" component={Recipes} />
         <Route path="/products" component={Products} />
-        <Route path="/xero-imports" component={XeroImports} />
         <Route path="/supplier-invoices" component={SupplierInvoices} />
         <Route path="/settings" component={Settings} />
         <Route path="/custom-pricing" component={CustomPricing} />
