@@ -24,7 +24,9 @@ const YELLOW = "#FBF2CE";
 type Supplier = { id: number; name: string };
 type Rep = { id: number; supplier_id: number; name: string; phone: string | null; notes: string | null; active: boolean };
 type RepItem = { id: number; rep_id: number; ingredient_id: number; is_preferred: boolean };
-type Produce = { id: number; name: string; unit: string; category: string | null; market_order_unit: string | null };
+type Produce = { id: number; name: string; unit: string; category: string | null; market_order_unit: string | null; market_name?: string | null };
+/** Name used on the markets list and in texts (falls back to the ingredient name). */
+const mName = (p: Produce) => p.market_name || p.name;
 type Price = { supplier_id: number; ingredient_id: number; last_unit_cost: number; last_invoice_date: string | null };
 type OrderItem = {
   id: number; order_id: number; ingredient_id: number | null; item_name: string; qty: number; unit: string | null; rep_id: number | null;
@@ -69,8 +71,8 @@ function buildMessage(rep: Rep, items: OrderItem[], collectBy: string, followUp:
   const when = d === "Tomorrow" || d === "Today" ? d.toLowerCase() : d;
   return [
     `Hi ${firstName(rep.name)}, ${BUYER_CODE} ${followUp ? "add on" : "order"} for ${when}, bay ${BAY}:`,
-    // e.g. "1 x broccoli iced (box)"
-    ...items.map((i) => `${qtyText(i.qty, null)} x ${i.item_name.toLowerCase()}${i.unit ? ` (${i.unit})` : ""}${i.notes ? `, ${i.notes}` : ""}`),
+    // e.g. "1 x Broccoli (box)"
+    ...items.map((i) => `${qtyText(i.qty, null)} x ${i.item_name}${i.unit ? ` (${i.unit})` : ""}${i.notes ? `, ${i.notes}` : ""}`),
     "Thanks",
   ].join("\n");
 }
@@ -107,54 +109,51 @@ function RepLabel({ rep, supplierName, price, unit }: { rep: Rep; supplierName?:
 }
 
 // ─── Order: quantities ─────────────────────────────────────────────────────────
-function QtyRow({ p, line, data, lk, orderId, onSaved }: {
+function QtyRow({ p, line, lk, orderId, onSaved }: {
   p: Produce; line?: OrderItem; data: MarketsData; lk: ReturnType<typeof useLookups>; orderId: number; onSaved: (o: Order) => void;
 }) {
   const { toast } = useToast();
+  const reps = lk.repsFor(p.id);
   const [qty, setQty] = useState(line ? String(Number(line.qty)) : "");
   const [unit, setUnit] = useState(line?.unit || p.market_order_unit || p.unit);
-  useEffect(() => { setQty(line ? String(Number(line.qty)) : ""); if (line?.unit) setUnit(line.unit); }, [line?.id, line?.qty, line?.unit]);
-  const reps = lk.repsFor(p.id);
-  const rep = line?.rep_id ? lk.repById.get(line.rep_id) : reps[0]?.rep;
+  const [repId, setRepId] = useState<number | null>(line?.rep_id ?? reps[0]?.rep.id ?? null);
+  useEffect(() => {
+    setQty(line ? String(Number(line.qty)) : "");
+    if (line?.unit) setUnit(line.unit);
+    if (line) setRepId(line.rep_id);
+  }, [line?.id, line?.qty, line?.unit, line?.rep_id]);
 
-  const save = async (patch?: { repId?: number | null }, unitNow: string = unit) => {
+  const save = async (over: { unit?: string; repId?: number | null } = {}) => {
     const q = Number(qty) || 0;
-    if (!line && q <= 0) return;
-    if (line && q === Number(line.qty) && unitNow === line.unit && patch === undefined) return;
+    const u = over.unit ?? unit;
+    const r = over.repId !== undefined ? over.repId : repId;
+    if (!line && q <= 0) return; // nothing to save yet; choices are kept for when a quantity goes in
+    if (line && q === Number(line.qty) && u === line.unit && r === line.rep_id) return;
     try {
-      const o = await json("PUT", `/api/markets/orders/${orderId}/items`, { items: [{ ingredientId: p.id, itemName: p.name, qty: q, unit: unitNow, ...(patch || {}) }] });
+      const o = await json("PUT", `/api/markets/orders/${orderId}/items`, { items: [{ ingredientId: p.id, itemName: mName(p), qty: q, unit: u, repId: r }] });
       onSaved(o);
     } catch (e) { toast({ description: errText(e), variant: "destructive" }); }
   };
 
   return (
-    <div className="px-3 py-2.5 border-b last:border-b-0">
-      <div className="flex items-center gap-2">
-        <p className="flex-1 min-w-0 font-semibold truncate">{p.name}</p>
-        <Input className="w-16 h-9 text-center" inputMode="decimal" value={qty} placeholder="0"
-          onChange={(e) => setQty(e.target.value)} onBlur={() => save()} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-          data-testid={`input-market-qty-${p.id}`} />
-        <UnitSelect className="w-28 h-9 text-sm" value={unit} onChange={(v) => { setUnit(v); if (line) save(undefined, v); }} />
-      </div>
-      {line && (
-        <div className="mt-1.5 flex items-center gap-2 text-xs">
-          {reps.length === 0 ? (
-            <span className="flex items-center gap-1" style={{ color: "#7A5B00" }}><AlertTriangle size={12} />No rep sells this yet. Add one in Reps &amp; produce.</span>
-          ) : (
-            <>
-              <span className="text-muted-foreground">from</span>
-              <select className="flex-1 min-w-0 h-8 rounded-md border bg-white px-2" value={line.rep_id ?? ""}
-                onChange={(e) => save({ repId: e.target.value ? Number(e.target.value) : null })}>
-                {!line.rep_id && <option value="">Choose a rep…</option>}
-                {reps.map(({ rep: r, preferred }) => {
-                  const pr = lk.priceFor(r.supplier_id, p.id);
-                  return <option key={r.id} value={r.id}>{preferred ? "★ " : ""}{r.name} · {lk.supplierById.get(r.supplier_id)?.name ?? "?"}{pr ? ` · ${money(Number(pr.last_unit_cost))}/${p.unit}` : ""}</option>;
-                })}
-              </select>
-            </>
-          )}
-          {rep && !reps.some((x) => x.rep.id === rep.id) && <span className="text-muted-foreground">({rep.name})</span>}
-        </div>
+    <div className={`px-3 py-2 border-b last:border-b-0 flex items-center gap-2 ${line ? "bg-[#F3FAF7]" : ""}`}>
+      <p className="flex-1 min-w-0 font-semibold text-sm leading-tight">{mName(p)}</p>
+      <Input className="w-14 h-9 text-center px-1" inputMode="decimal" value={qty} placeholder="0"
+        onChange={(e) => setQty(e.target.value)} onBlur={() => save()} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        data-testid={`input-market-qty-${p.id}`} />
+      <UnitSelect className="w-24 sm:w-28 h-9 text-xs sm:text-sm" value={unit} onChange={(v) => { setUnit(v); save({ unit: v }); }} />
+      {reps.length === 0 ? (
+        <span className="w-28 sm:w-40 text-[11px] leading-tight flex items-center gap-1" style={{ color: "#7A5B00" }}><AlertTriangle size={12} className="shrink-0" />No rep yet</span>
+      ) : (
+        <select className="w-28 sm:w-40 h-9 rounded-md border bg-white px-1.5 text-xs sm:text-sm" value={repId ?? ""} title="Who to order from"
+          onChange={(e) => { const r = e.target.value ? Number(e.target.value) : null; setRepId(r); save({ repId: r }); }} data-testid={`select-market-rep-${p.id}`}>
+          {repId === null && <option value="">Rep…</option>}
+          {reps.map(({ rep: r, preferred }) => {
+            const pr = lk.priceFor(r.supplier_id, p.id);
+            const sup = (lk.supplierById.get(r.supplier_id)?.name ?? "?").replace(/ - Markets$/i, "");
+            return <option key={r.id} value={r.id}>{preferred ? "★ " : ""}{r.name} · {sup}{pr ? ` · ${money(Number(pr.last_unit_cost))}/${p.unit}` : ""}</option>;
+          })}
+        </select>
       )}
     </div>
   );
@@ -301,7 +300,8 @@ function OrderView({ order, data, onSetup }: { order: Order; data: MarketsData; 
 
   const lineFor = (p: Produce) => order.items.find((i) => i.ingredient_id === p.id && i.status === "pending")
     || order.items.find((i) => i.ingredient_id === p.id && i.status === "texted");
-  const shown = data.produce.filter((p) => (!search || p.name.toLowerCase().includes(search.toLowerCase())) && (!onlyOrdered || lineFor(p)));
+  const shown = data.produce.slice().sort((a, b) => mName(a).localeCompare(mName(b)))
+    .filter((p) => (!search || mName(p).toLowerCase().includes(search.toLowerCase()) || p.name.toLowerCase().includes(search.toLowerCase())) && (!onlyOrdered || lineFor(p)));
   const texted = order.items.filter((i) => i.status === "texted").length;
   const pending = order.items.filter((i) => i.status === "pending").length;
 
@@ -365,7 +365,7 @@ function OrderView({ order, data, onSetup }: { order: Order; data: MarketsData; 
               const line = lineFor(p);
               return line && line.status === "texted" ? (
                 <div key={p.id} className="px-3 py-2.5 border-b last:border-b-0 flex items-center gap-2 text-sm">
-                  <p className="flex-1 font-semibold">{p.name}</p>
+                  <p className="flex-1 font-semibold">{mName(p)}</p>
                   <span style={{ color: NAVY }}>{qtyText(line.qty, line.unit)}</span>
                   <span className="text-xs flex items-center gap-1" style={{ color: DEEP_GREEN }}><Check size={13} />texted to {line.rep_id ? firstName(lk.repById.get(line.rep_id)?.name || "") : "?"}</span>
                 </div>
@@ -447,7 +447,7 @@ function RepDialog({ rep, data, onClose }: { rep: Rep | "new"; data: MarketsData
     onClose();
   };
   const toggle = (id: number) => setItems((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const list = data.produce.filter((p) => !search || p.name.toLowerCase().includes(search.toLowerCase()));
+  const list = data.produce.slice().sort((a, b) => mName(a).localeCompare(mName(b))).filter((p) => !search || mName(p).toLowerCase().includes(search.toLowerCase()));
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -477,7 +477,7 @@ function RepDialog({ rep, data, onClose }: { rep: Rep | "new"; data: MarketsData
               {list.map((p) => (
                 <label key={p.id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer">
                   <input type="checkbox" checked={items.has(p.id)} onChange={() => toggle(p.id)} />
-                  <span className="flex-1">{p.name}</span>
+                  <span className="flex-1">{mName(p)}</span>
                   {invoiced.has(p.id) && <span className="text-[11px] text-muted-foreground">invoiced</span>}
                 </label>
               ))}
@@ -573,7 +573,7 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
         <>
           {noRep.length > 0 && (
             <div className="rounded-2xl border p-3 text-xs" style={{ background: YELLOW, borderColor: "#E8D9A0" }}>
-              <b>{noRep.length} item{noRep.length > 1 ? "s have" : " has"} no rep yet:</b> {noRep.map((p) => p.name).join(", ")}
+              <b>{noRep.length} item{noRep.length > 1 ? "s have" : " has"} no rep yet:</b> {noRep.map((p) => mName(p)).join(", ")}
             </div>
           )}
           <p className="text-xs text-muted-foreground px-1">Tap a rep to make them the preferred one (★) for that item. New orders use the preferred rep.</p>
@@ -583,7 +583,15 @@ function SetupView({ data, onBack }: { data: MarketsData; onBack: () => void }) 
               return (
                 <div key={p.id} className="px-3 py-2.5 border-b last:border-b-0">
                   <div className="flex items-center gap-2">
-                    <p className="flex-1 font-semibold text-sm">{p.name}</p>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm flex items-center gap-1">{mName(p)}
+                        <button title="Rename for markets orders and texts" className="p-0.5 text-muted-foreground" onClick={() => {
+                          const v = window.prompt("Name on markets orders and texts", mName(p));
+                          if (v !== null && v.trim() !== mName(p)) act(() => json("PATCH", `/api/markets/produce/${p.id}`, { marketName: v.trim() === p.name ? "" : v.trim() }));
+                        }}><Pencil size={12} /></button>
+                      </p>
+                      {p.market_name && p.market_name !== p.name && <p className="text-[11px] text-muted-foreground">ingredient: {p.name}</p>}
+                    </div>
                     <UnitSelect className="w-28 h-8 text-xs" placeholder="order unit" value={p.market_order_unit || ""}
                       onChange={(v) => v !== (p.market_order_unit || "") && act(() => json("PATCH", `/api/markets/produce/${p.id}`, { orderUnit: v }))} />
                     <button title="Take off the markets list" className="p-1 text-muted-foreground" onClick={() => act(() => json("PATCH", `/api/markets/produce/${p.id}`, { marketItem: false }))}><X size={15} /></button>
