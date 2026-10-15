@@ -199,6 +199,17 @@ export function friendlyReaderError(e: any): string {
   return `Couldn't read this document (${msg.slice(0, 160)}). Try Read again; if it keeps failing, tell Claude.`;
 }
 
+/** Rough HTML to text that keeps table rows on their own lines. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<\/(tr|p|div|h\d|li)>|<br\s*\/?>/gi, "\n")
+    .replace(/<\/(td|th)>/gi, " | ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#39;|&rsquo;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+}
+
 export interface ReaderInput {
   data: Buffer;
   mediaType: string;          // application/pdf, image/jpeg, image/png, image/webp, image/gif
@@ -208,9 +219,13 @@ export interface ReaderInput {
 
 export async function readInvoiceDocument(client: Anthropic, input: ReaderInput): Promise<{ raw: RawInvoice; usage: any; model: string }> {
   const isPdf = input.mediaType === "application/pdf";
+  const isText = input.mediaType.startsWith("text/");
   const docBlock: any = isPdf
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: input.data.toString("base64") } }
-    : { type: "image", source: { type: "base64", media_type: input.mediaType, data: input.data.toString("base64") } };
+    : isText
+      // Invoice written in the body of an email (some market sellers do this)
+      ? { type: "text", text: `Email body:\n\n${htmlToText(input.data.toString("utf8")).slice(0, 60000)}` }
+      : { type: "image", source: { type: "base64", media_type: input.mediaType, data: input.data.toString("base64") } };
 
   const hint = input.knownSuppliers?.length
     ? `\nSuppliers The Deli already uses (for recognising logos; the document may be from someone else): ${input.knownSuppliers.join(", ")}.`

@@ -1,0 +1,120 @@
+// ─── Supplier invoices by email (markets inbox) ──────────────────────────────
+// The markets inbox forwards everything to the app's Resend address. Resend posts an
+// "email.received" webhook here; we check its signature, fetch the attachments and drop
+// each PDF/photo into Supplier Invoices as "unread" (nothing is read, so nothing is charged,
+// until Scott presses Read). Statements are kept but set aside. Emails whose invoice is
+// written in the body are kept as the email itself.
+//
+// Railway variables: RESEND_API_KEY, RESEND_WEBHOOK_SECRET (the webhook's signing secret)
+import type { Express } from "express";
+import crypto from "crypto";
+import supabase from "./supabase";
+import { ingestInvoiceFile, matchSupplier, mimeFromName } from "./invoiceRoutes";
+
+const API = "https://api.resend.com";
+const READABLE = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
+const STATEMENT = /\bstatement\b|\bstmt\b|account summary|remittance/i;
+
+/** Svix-style signature check used by Resend webhooks. */
+export function verifyResendSignature(rawBody: Buffer | string, headers: Record<string, any>, secret: string): boolean {
+  const id = headers["svix-id"], ts = headers["svix-timestamp"], sigHeader = headers["svix-signature"];
+  if (!id || !ts || !sigHeader || !secret) return false;
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > 5 * 60) return false; // reject replays older than 5 minutes
+  const key = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
+  const expected = crypto.createHmac("sha256", key).update(`${id}.${ts}.${rawBody.toString()}`).digest("base64");
+  return String(sigHeader).split(" ").some((part) => {
+    const sig = part.split(",")[1];
+    return sig && sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  });
+}
+
+async function resendGet(path: string) {
+  const resp = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` } });
+  if (!resp.ok) throw new Error(`Resend ${path} returned ${resp.status}`);
+  return resp.json() as Promise<any>;
+}
+
+const emailAddress = (s: any) => String(Array.isArray(s) ? s[0] : s || "").match(/<([^>]+)>/)?.[1] || String(Array.isArray(s) ? s[0] : s || "").trim();
+const displayName = (s: any) => String(Array.isArray(s) ? s[0] : s || "").replace(/<[^>]+>/, "").replace(/"/g, "").trim();
+
+/** Work out which supplier sent it: their email address/domain, then the sender's name. */
+async function supplierForSender(from: string): Promise<number | null> {
+  const addr = emailAddress(from).toLowerCase();
+  const domain = addr.split("@")[1] || "";
+  const { data: suppliers } = await supabase.from("suppliers").select("id, name, email, order_contact, abn, our_account_number, name_aliases");
+  const generic = ["gmail.com", "outlook.com", "hotmail.com", "bigpond.com", "yahoo.com", "icloud.com", "live.com"];
+  for (const s of suppliers || []) {
+    const emails = `${s.email || ""} ${s.order_contact || ""}`.toLowerCase();
+    if (addr && emails.includes(addr)) return s.id;
+    if (domain && !generic.includes(domain) && emails.includes(`@${domain}`)) return s.id;
+  }
+  return matchSupplier({ supplier_name: displayName(from), supplier_abn: null, our_account_number: null }, suppliers || []).supplierId;
+}
+
+export async function handleReceivedEmail(emailId: string, hint: { from?: string; subject?: string }) {
+  const email = await resendGet(`/emails/receiving/${emailId}`).catch(() => null);
+  const from = email?.from || hint.from || "";
+  const subject = email?.subject || hint.subject || "";
+  const supplierId = await supplierForSender(from);
+  const meta = { from, subject, id: emailId };
+  const subjectIsStatement = STATEMENT.test(subject);
+
+  const list = await resendGet(`/emails/receiving/${emailId}/attachments`);
+  const attachments: any[] = (list?.data || []).filter((a: any) => {
+    const mime = mimeFromName(a.filename || "", a.content_type);
+    if (!READABLE.includes(mime)) return false;
+    // Skip logos and signature images
+    if (mime.startsWith("image/") && (a.content_disposition === "inline" || (a.size && a.size < 20_000))) return false;
+    return true;
+  });
+
+  const results: any[] = [];
+  for (const a of attachments) {
+    const fileResp = await fetch(a.download_url);
+    if (!fileResp.ok) { results.push({ file: a.filename, error: `download ${fileResp.status}` }); continue; }
+    const data = Buffer.from(await fileResp.arrayBuffer());
+    const isStatement = subjectIsStatement || STATEMENT.test(a.filename || "");
+    const r = await ingestInvoiceFile({
+      data, fileName: a.filename || `${emailId}.pdf`, mime: mimeFromName(a.filename || "", a.content_type),
+      source: "email", autoRead: false, uploadedBy: "Email", supplierId, supplierMatchMethod: "email_sender", email: meta,
+      setAside: isStatement ? { status: "ignored", documentType: "statement", note: "Statement (set aside, not read)" } : undefined,
+    });
+    results.push({ file: a.filename, ...r });
+  }
+
+  // No attachment: keep the email itself in case the invoice is written in the body
+  if (!attachments.length) {
+    const html: string | null = email?.html || null;
+    const text: string | null = email?.text || null;
+    if (html || text) {
+      const r = await ingestInvoiceFile({
+        data: Buffer.from(html || text || "", "utf8"), fileName: `${(subject || "email").replace(/[^\w\- ]+/g, "").slice(0, 60) || "email"}.html`,
+        mime: html ? "text/html" : "text/plain", source: "email", autoRead: false, uploadedBy: "Email", supplierId,
+        supplierMatchMethod: "email_sender", email: meta,
+        setAside: subjectIsStatement ? { status: "ignored", documentType: "statement", note: "Statement (set aside, not read)" } : undefined,
+      });
+      results.push({ file: "email body", ...r });
+    }
+  }
+  return results;
+}
+
+export function registerInboundEmailRoutes(app: Express) {
+  app.post("/api/inbound-email/resend", async (req: any, res: any) => {
+    const secret = process.env.RESEND_WEBHOOK_SECRET || "";
+    if (!process.env.RESEND_API_KEY || !secret) return res.status(503).json({ error: "Email intake isn't set up" });
+    if (!verifyResendSignature(req.rawBody || JSON.stringify(req.body), req.headers, secret)) return res.status(401).json({ error: "Bad signature" });
+    const event = req.body || {};
+    // Answer straight away; Resend retries if we're slow
+    res.json({ ok: true });
+    if (event.type !== "email.received") return;
+    const emailId = event.data?.email_id || event.data?.id;
+    if (!emailId) return;
+    try {
+      const r = await handleReceivedEmail(emailId, { from: event.data?.from, subject: event.data?.subject });
+      console.log(`[email] ${emailId}: ${r.length} item(s) saved`);
+    } catch (e: any) {
+      console.error(`[email] ${emailId} failed:`, e?.message || e);
+    }
+  });
+}

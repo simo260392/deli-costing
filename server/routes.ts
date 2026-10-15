@@ -12,6 +12,7 @@ import { periodFor, weekOf, todayPerth } from "../shared/kpiPeriods";
 import { registerStockRoutes } from "./stockRoutes";
 import { registerInvoiceRoutes } from "./invoiceRoutes";
 import { registerXeroRoutes } from "./xeroRoutes";
+import { registerInboundEmailRoutes } from "./inboundEmail";
 
 // Initialise Anthropic client — requires ANTHROPIC_API_KEY env var on Railway
 let anthropic: Anthropic | null = null;
@@ -6997,6 +6998,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
   // ── Supplier invoices v2 (see server/invoiceRoutes.ts) ───────────────────
   registerInvoiceRoutes(app, { recalcAllCosts });
   registerXeroRoutes(app);
+  registerInboundEmailRoutes(app);
 
   // GET /api/suppliers/:id/ordering-info — supplier with all ordering details
   app.get('/api/suppliers/:id/ordering-info', asyncRoute(async (req: any, res: any) => {
