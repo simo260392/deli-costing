@@ -266,7 +266,7 @@ export async function runMatching(invoiceId: number) {
     lines: lines.map((l: any) => ({
       id: l.id, line_type: l.line_type, supplier_code: l.supplier_code, description: l.description, generic_name: l.generic_name, brand: l.brand,
       quantity: toNum(l.quantity), priced_by_weight: !!l.priced_by_weight, unit_size_uom: l.unit_size_uom, base_qty: toNum(l.base_qty),
-      unit_cost: toNum(l.unit_cost), line_total_ex_gst: toNum(l.line_total_ex_gst), needs_pack_size: !!l.needs_pack_size, item_type: l.item_type,
+      unit_cost: toNum(l.unit_cost), line_total_ex_gst: toNum(l.line_total_ex_gst), needs_pack_size: !!l.needs_pack_size, item_type: l.item_type, purchase_unit: l.purchase_unit,
     })),
   });
   for (const l of lines) {

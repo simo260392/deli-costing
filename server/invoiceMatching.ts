@@ -21,7 +21,7 @@ export type HistoryMatch = { description: string; ingredient_id: number };
 export type LineIn = {
   id: number; line_type: string; supplier_code: string | null; description: string; generic_name: string | null; brand: string | null;
   quantity: number | null; priced_by_weight: boolean; unit_size_uom: string | null; base_qty: number | null; unit_cost: number | null;
-  line_total_ex_gst: number | null; needs_pack_size: boolean; item_type: string | null;
+  line_total_ex_gst: number | null; needs_pack_size: boolean; item_type: string | null; purchase_unit?: string | null;
 };
 export type Suggestion = { ingredientId: number; name: string; unit: string; score: number; why: string };
 export type LineMatch = {
@@ -135,10 +135,13 @@ export function matchLines(opts: {
       if (sp.item_type) m.item_type = sp.item_type;
       // Remembered pack size (e.g. Spud Shed bacon = 1kg) when the invoice doesn't say
       if (m.needs_pack_size && sp.priced_by_weight) m.random_weight = true;
-      else if (m.needs_pack_size && sp.base_qty_per_purchase && l.quantity) {
-        m.base_qty = Math.round(l.quantity * sp.base_qty_per_purchase * 10000) / 10000;
+      // A pack size Scott set by hand wins over what the reader guessed (e.g. Spud Shed Turkish rolls = packs of 4)
+      else if (sp.base_qty_per_purchase && l.quantity && !l.priced_by_weight && !sp.priced_by_weight && (m.needs_pack_size || sp.pack_size_confirmed)) {
+        const before = m.base_qty;
+        m.base_qty = Math.round(l.quantity * Number(sp.base_qty_per_purchase) * 10000) / 10000;
         m.unit_cost = l.line_total_ex_gst !== null ? Math.round((l.line_total_ex_gst / m.base_qty) * 10000) / 10000 : null;
         m.needs_pack_size = false;
+        if (before !== m.base_qty) m.warnings.push(`Using your saved pack size: ${Number(sp.base_qty_per_purchase)} ${sp.unit_size_uom || "each"} per ${l.purchase_unit || "pack"}.`);
       }
       if (sp.ingredient_units_per_base) m.ingredient_units_per_base = Number(sp.ingredient_units_per_base);
     }
