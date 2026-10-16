@@ -16,7 +16,7 @@ import crypto from "crypto";
 import supabase from "./supabase";
 import { requireInvoiceAccess, ingestInvoiceFile, matchSupplier, mimeFromName } from "./invoiceRoutes";
 
-const SCOPES = "openid profile email offline_access accounting.invoices.read accounting.attachments.read";
+const SCOPES = "openid profile email offline_access accounting.invoices.read accounting.attachments.read accounting.settings.read";
 const AUTH_URL = "https://login.xero.com/identity/connect/authorize";
 const TOKEN_URL = "https://identity.xero.com/connect/token";
 const API = "https://api.xero.com/api.xro/2.0";
@@ -86,6 +86,98 @@ async function xeroGet(path: string, accept = "application/json", extraHeaders: 
     return resp;
   }
   throw new Error("Xero is rate limiting requests; try again in a minute");
+}
+
+// ─── Cost of goods (KPI) ─────────────────────────────────────────────────────
+// Cost of goods = bill lines (ex GST) coded to the chosen expense accounts, by bill date,
+// less supplier credit notes. Draft bills count too, since Hubdoc and email bills can sit
+// as drafts for a day or two. Setting kpi_cogs_accounts = JSON array of account codes; until
+// it's set, accounts whose names look like food/drinks/coffee/packaging/consumables are used.
+export interface XeroAccount { code: string; name: string; type: string; suggested: boolean }
+const COGS_NAME = /food|drink|beverage|coffee|packag|consumable|cost of (goods|sales)|purchases/i;
+let accountsCache: { at: number; list: XeroAccount[] } | null = null;
+
+export async function xeroConnected(): Promise<boolean> {
+  if (!configured() || !canKeepTokens()) return false;
+  const conn = await getConnection();
+  return !!conn?.refresh_token && !!conn?.tenant_id;
+}
+
+/** Expense / direct cost accounts. Throws "reconnect" when the connection lacks the settings permission. */
+export async function xeroExpenseAccounts(): Promise<XeroAccount[]> {
+  if (accountsCache && Date.now() - accountsCache.at < 30 * 60_000) return accountsCache.list;
+  const resp = await xeroGet(`/Accounts`);
+  if (resp.status === 401 || resp.status === 403) throw Object.assign(new Error("Reconnect Xero so the app can read your account names"), { reconnect: true });
+  if (!resp.ok) throw new Error(`Xero accounts returned ${resp.status}`);
+  const body: any = await resp.json();
+  const list: XeroAccount[] = (body.Accounts || [])
+    .filter((a: any) => a.Status !== "ARCHIVED" && a.Code && (a.Class === "EXPENSE" || a.Type === "DIRECTCOSTS"))
+    .map((a: any) => ({ code: String(a.Code), name: String(a.Name || ""), type: String(a.Type || ""), suggested: COGS_NAME.test(String(a.Name || "")) }))
+    .sort((a: XeroAccount, b: XeroAccount) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+  accountsCache = { at: Date.now(), list };
+  return list;
+}
+
+/** The account codes that count as cost of goods. */
+export async function cogsAccountCodes(): Promise<string[]> {
+  const { data } = await supabase.from("settings").select("value").eq("key", "kpi_cogs_accounts").maybeSingle();
+  try {
+    const saved = JSON.parse(data?.value || "null");
+    if (Array.isArray(saved) && saved.length) return saved.map(String);
+  } catch {}
+  return (await xeroExpenseAccounts()).filter((a) => a.suggested).map((a) => a.code);
+}
+
+const xeroDateTime = (s: string) => { const [y, m, d] = s.split("-").map(Number); return `DateTime(${y},${m},${d})`; };
+/** Xero dates come as "/Date(1697328000000+0000)/" or "2026-10-14T00:00:00". */
+const ymdOf = (v: any): string | null => {
+  const ms = String(v || "").match(/\/Date\((\d+)/)?.[1];
+  if (ms) return new Date(Number(ms)).toISOString().slice(0, 10);
+  const iso = String(v || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+};
+const lineExGst = (doc: any, l: any) => {
+  const amt = Number(l.LineAmount) || 0;
+  return doc.LineAmountTypes === "Inclusive" ? amt - (Number(l.TaxAmount) || 0) : amt;
+};
+
+/** Cost of goods per day (ex GST) between two dates, inclusive. */
+// One at a time: Reports can ask for 13 periods at once and Xero allows 5 calls in parallel
+let cogsQueue: Promise<any> = Promise.resolve();
+export function xeroCostOfGoods(from: string, to: string, codes: string[]): Promise<{ byDay: Record<string, number>; bills: number }> {
+  const run = cogsQueue.then(() => costOfGoodsNow(from, to, codes));
+  cogsQueue = run.catch(() => {});
+  return run;
+}
+async function costOfGoodsNow(from: string, to: string, codes: string[]): Promise<{ byDay: Record<string, number>; bills: number }> {
+  const want = new Set(codes);
+  const byDay: Record<string, number> = {};
+  let bills = 0;
+  const add = (doc: any, sign: number) => {
+    const day = ymdOf(doc.DateString || doc.Date);
+    if (!day) return;
+    let total = 0;
+    for (const l of doc.LineItems || []) if (l.AccountCode && want.has(String(l.AccountCode))) total += lineExGst(doc, l);
+    if (total) { byDay[day] = (byDay[day] || 0) + sign * total; bills++; }
+  };
+  const range = `Date>=${xeroDateTime(from)}&&Date<=${xeroDateTime(to)}`;
+  for (let page = 1; page <= 50; page++) {
+    const where = encodeURIComponent(`Type=="ACCPAY"&&${range}`);
+    const resp = await xeroGet(`/Invoices?where=${where}&Statuses=DRAFT,SUBMITTED,AUTHORISED,PAID&page=${page}`);
+    if (!resp.ok) throw new Error(`Xero bills returned ${resp.status}`);
+    const list: any[] = ((await resp.json()) as any).Invoices || [];
+    for (const b of list) add(b, 1);
+    if (list.length < 100) break;
+  }
+  for (let page = 1; page <= 20; page++) {
+    const where = encodeURIComponent(`Type=="ACCPAYCREDIT"&&${range}&&(Status=="AUTHORISED"||Status=="PAID"||Status=="SUBMITTED"||Status=="DRAFT")`);
+    const resp = await xeroGet(`/CreditNotes?where=${where}&page=${page}`);
+    if (!resp.ok) throw new Error(`Xero credit notes returned ${resp.status}`);
+    const list: any[] = ((await resp.json()) as any).CreditNotes || [];
+    for (const c of list) add(c, -1);
+    if (list.length < 100) break;
+  }
+  return { byDay, bills };
 }
 
 // ─── Sync ────────────────────────────────────────────────────────────────────

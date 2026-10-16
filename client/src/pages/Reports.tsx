@@ -82,13 +82,15 @@ interface KpiFigures {
   productionWages: number; productionPct: number | null;
   driverWages: number; driverPct: number | null;
   pendingWages: number;
+  cogs?: number | null; cogsPct?: number | null;
 }
 interface KpiWeekRow extends KpiFigures { number: number; start: string; end: string; future: boolean }
 interface KpiResponse {
   fyLabel: string; period: number; start: string; end: string;
   isCurrent?: boolean; future?: boolean;
   weeks?: KpiWeekRow[]; totals?: KpiFigures;
-  targets?: { productionPct: number; driverPct: number };
+  targets?: { productionPct: number; driverPct: number; cogsPct?: number };
+  cogs?: { available: boolean; note: string | null; bills: number };
   errors?: string[];
 }
 
@@ -137,6 +139,12 @@ function KpiHistory() {
 
   const loaded = results.map((r) => r.data).filter((d): d is KpiResponse => !!d?.totals);
   const targets = loaded[0]?.targets ?? { productionPct: 30, driverPct: 100 };
+  const cogsTarget = loaded[0]?.targets?.cogsPct ?? 30;
+  const cogsLoaded = loaded.filter((d) => d.cogs?.available && d.totals!.cogs != null);
+  const cogsNote = loaded.find((d) => !d.cogs?.available && d.cogs?.note)?.cogs?.note ?? null;
+  const fyCogs = cogsLoaded.reduce((s, d) => s + (d.totals!.cogs || 0), 0);
+  const fyCogsTurnover = cogsLoaded.reduce((s, d) => s + d.totals!.turnover, 0);
+  const fyCogsPct = fyCogsTurnover > 0 ? (fyCogs / fyCogsTurnover) * 100 : null;
   const allLoaded = loaded.length === periods.length;
   const fyTotals = loaded.reduce(
     (s, d) => ({
@@ -167,14 +175,15 @@ function KpiHistory() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Turnover is Flex sales ex GST, excluding delivery fees. Production wages include super. Target ≤ {targets.productionPct}%.
+          Turnover is Flex sales ex GST, excluding delivery fees. Production wages include super (target ≤ {targets.productionPct}%). Cost of goods is Xero bills on the chosen accounts, ex GST (target ≤ {cogsTarget}%).
         </p>
       </div>
 
       {/* Year to date */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <Stat label={fy === thisFy ? "Turnover, year to date" : "Turnover, full year"} value={money0(fyTotals.turnover)} sub={`${fyTotals.orders.toLocaleString("en-AU")} orders`} loading={!loaded.length} />
         <Stat label="Production wages" value={money0(fyTotals.productionWages)} sub={<PctBadge value={fyProdPct} target={targets.productionPct} />} loading={!loaded.length} />
+        <Stat label="Cost of goods" value={cogsLoaded.length ? money0(fyCogs) : "—"} sub={cogsLoaded.length ? <PctBadge value={fyCogsPct} target={cogsTarget} /> : cogsNote || undefined} loading={!loaded.length} />
         <Stat label="Delivery fees" value={money0(fyTotals.deliveryFees)} sub={`Driver wages ${money0(fyTotals.driverWages)}`} loading={!loaded.length} />
         <Stat label="Driver wages vs fees" value={pct(fyDriverPct)} sub={<PctBadge value={fyDriverPct} target={targets.driverPct} />} loading={!loaded.length} />
       </div>
@@ -183,6 +192,7 @@ function KpiHistory() {
           <RefreshCw size={12} className="animate-spin" /> Loading periods ({loaded.length} of {periods.length}). Older periods load faster once they've been opened once.
         </p>
       )}
+      <CogsAccounts />
       {periods.length === 0 && <p className="text-sm text-muted-foreground">This financial year hasn't started yet.</p>}
 
       {/* Periods */}
@@ -214,16 +224,16 @@ function KpiHistory() {
                   ) : r.isError || !t ? (
                     <p className="flex-1 text-xs text-red-600">Couldn't load this period. Open it to try again.</p>
                   ) : (
-                    <div className="flex-1 grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-1 items-center text-sm tabular-nums">
+                    <div className="flex-1 grid grid-cols-3 md:grid-cols-5 gap-x-4 gap-y-1 items-center text-sm tabular-nums">
                       <div>
                         <p className="font-semibold">{money0(t.turnover)}</p>
                         <div className="hidden md:block h-1.5 mt-1 rounded-full bg-muted overflow-hidden">
                           <div className="h-full rounded-full" style={{ width: `${(t.turnover / maxTurnover) * 100}%`, backgroundColor: NAVY }} />
                         </div>
                       </div>
-                      <div className="text-right md:text-left"><PctBadge value={t.productionPct} target={targets.productionPct} /></div>
+                      <div><p className="text-[10px] text-muted-foreground leading-none mb-0.5">Wages</p><PctBadge value={t.productionPct} target={targets.productionPct} /></div>
+                      <div><p className="text-[10px] text-muted-foreground leading-none mb-0.5">Cost of goods</p>{t.cogs != null ? <PctBadge value={t.cogsPct} target={cogsTarget} /> : <span className="text-xs text-muted-foreground">—</span>}</div>
                       <div className="hidden md:block text-muted-foreground">{t.orders} orders</div>
-                      <div className="hidden md:block text-muted-foreground">Wages {money0(t.productionWages)}</div>
                       <div className="hidden md:block text-muted-foreground">Driver {pct(t.driverPct)}</div>
                     </div>
                   )}
@@ -250,6 +260,8 @@ function KpiHistory() {
                             <th className="py-1.5 pr-3 font-medium text-right">Orders</th>
                             <th className="py-1.5 pr-3 font-medium text-right">Prod. wages</th>
                             <th className="py-1.5 pr-3 font-medium text-right">Prod. %</th>
+                            <th className="py-1.5 pr-3 font-medium text-right">Cost of goods</th>
+                            <th className="py-1.5 pr-3 font-medium text-right">COGS %</th>
                             <th className="py-1.5 pr-3 font-medium text-right">Delivery fees</th>
                             <th className="py-1.5 pr-3 font-medium text-right">Driver wages</th>
                             <th className="py-1.5 font-medium text-right">Driver %</th>
@@ -263,6 +275,8 @@ function KpiHistory() {
                               <td className="py-1.5 pr-3 text-right">{w.future ? "—" : w.orders}</td>
                               <td className="py-1.5 pr-3 text-right">{w.future ? "—" : money0(w.productionWages)}</td>
                               <td className="py-1.5 pr-3 text-right">{w.future ? "—" : <PctBadge value={w.productionPct} target={targets.productionPct} />}</td>
+                              <td className="py-1.5 pr-3 text-right">{w.future || w.cogs == null ? "—" : money0(w.cogs)}</td>
+                              <td className="py-1.5 pr-3 text-right">{w.future || w.cogs == null ? "—" : <PctBadge value={w.cogsPct} target={cogsTarget} />}</td>
                               <td className="py-1.5 pr-3 text-right">{w.future ? "—" : money0(w.deliveryFees)}</td>
                               <td className="py-1.5 pr-3 text-right">{w.future ? "—" : money0(w.driverWages)}</td>
                               <td className="py-1.5 text-right">{w.future ? "—" : pct(w.driverPct)}</td>
@@ -275,6 +289,8 @@ function KpiHistory() {
                               <td className="py-1.5 pr-3 text-right">{t.orders}</td>
                               <td className="py-1.5 pr-3 text-right">{money0(t.productionWages)}</td>
                               <td className="py-1.5 pr-3 text-right"><PctBadge value={t.productionPct} target={targets.productionPct} /></td>
+                              <td className="py-1.5 pr-3 text-right">{t.cogs == null ? "—" : money0(t.cogs)}</td>
+                              <td className="py-1.5 pr-3 text-right">{t.cogs == null ? "—" : <PctBadge value={t.cogsPct} target={cogsTarget} />}</td>
                               <td className="py-1.5 pr-3 text-right">{money0(t.deliveryFees)}</td>
                               <td className="py-1.5 pr-3 text-right">{money0(t.driverWages)}</td>
                               <td className="py-1.5 text-right">{pct(t.driverPct)}</td>
@@ -294,6 +310,81 @@ function KpiHistory() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Which Xero expense accounts count as cost of goods
+interface CogsAccountsResponse {
+  connected: boolean; reconnect?: boolean; error?: string; saved?: boolean;
+  accounts: { code: string; name: string; type: string; suggested: boolean }[];
+  selected: string[];
+}
+function CogsAccounts() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const { data } = useQuery<CogsAccountsResponse>({
+    queryKey: ["/api/kpi/cogs-accounts"],
+    queryFn: () => apiRequest("GET", "/api/kpi/cogs-accounts").then((r) => r.json()),
+  });
+  if (!data) return null;
+  const chosen = picked ?? data.selected;
+  const names = data.accounts.filter((a) => chosen.includes(a.code)).map((a) => a.name);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiRequest("POST", "/api/settings", { key: "kpi_cogs_accounts", value: JSON.stringify(chosen) });
+      setPicked(null);
+      setOpen(false);
+      qc.invalidateQueries({ queryKey: ["/api/kpi/cogs-accounts"] });
+      qc.invalidateQueries({ queryKey: ["/api/kpi/period"] });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="rounded-xl border bg-white dark:bg-card px-3 md:px-4 py-2.5 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-muted-foreground">Cost of goods accounts (Xero)</p>
+          {!data.connected ? (
+            <p className="text-xs">Connect Xero on the Supplier Invoices page to include cost of goods.</p>
+          ) : data.reconnect ? (
+            <p className="text-xs text-amber-700">Reconnect Xero on the Supplier Invoices page (Disconnect, then Connect) so the app can read your account names.</p>
+          ) : data.error ? (
+            <p className="text-xs text-red-600">{data.error}</p>
+          ) : (
+            <p className="text-xs truncate">{names.length ? names.join(", ") : "None chosen yet"}{!data.saved && names.length ? " (suggested)" : ""}</p>
+          )}
+        </div>
+        {data.connected && data.accounts.length > 0 && (
+          <button onClick={() => setOpen(!open)} className="shrink-0 text-xs font-medium text-[#256984] hover:underline" data-testid="button-cogs-accounts">
+            {open ? "Close" : "Change"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <div className="max-h-72 overflow-y-auto grid sm:grid-cols-2 gap-x-4 gap-y-1">
+            {data.accounts.map((a) => (
+              <label key={a.code} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={chosen.includes(a.code)}
+                  onChange={(e) => setPicked(e.target.checked ? [...chosen, a.code] : chosen.filter((c) => c !== a.code))}
+                />
+                <span className="text-muted-foreground tabular-nums w-12 shrink-0">{a.code}</span>
+                <span className="truncate">{a.name}</span>
+              </label>
+            ))}
+          </div>
+          <Button size="sm" onClick={save} disabled={saving || !chosen.length} data-testid="button-save-cogs-accounts">
+            {saving ? "Saving…" : "Save accounts"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
