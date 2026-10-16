@@ -179,7 +179,7 @@ export async function processInvoice(id: number, data: Buffer, mime: string, fil
         unit_size: l.unit_size, unit_size_uom: l.unit_size_uom, priced_by_weight: l.priced_by_weight,
         unit_price_ex_gst: l.unit_price_ex_gst, discount_ex_gst: l.discount_ex_gst, line_total_ex_gst: l.line_total_ex_gst,
         gst_amount: l.gst_amount, gst_applies: l.gst_applies, base_qty: l.base_qty, unit_cost: l.unit_cost,
-        needs_pack_size: l.needs_pack_size, merged_from: l.merged_from, notes: l.notes,
+        needs_pack_size: l.needs_pack_size, merged_from: l.merged_from, notes: l.notes, containers: l.containers ?? null,
         generic_name: l.generic_name, item_type: l.item_type,
         status: l.line_type === "personal" ? "skipped" : "pending",
       }));
