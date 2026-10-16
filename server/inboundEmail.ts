@@ -51,11 +51,27 @@ async function supplierForSender(from: string): Promise<number | null> {
   return matchSupplier({ supplier_name: displayName(from), supplier_abn: null, our_account_number: null }, suppliers || []).supplierId;
 }
 
+/** For a forwarded email ("FW: ..."), the original sender from the forwarded header in the body. */
+export function forwardedSender(html: string | null, text: string | null): string | null {
+  const plain = (text || (html || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|li)>/gi, "\n").replace(/<[^>]+>/g, " "))
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&nbsp;/g, " ");
+  // Outlook: "From: Name <a@b>" / "From: Name [mailto:a@b]"; Gmail: "From: Name <a@b>"
+  const m = plain.match(/(?:^|\n)\s*\*?From:\*?\s*([^\n]{2,200})/i);
+  if (!m) return null;
+  const line = m[1].replace(/\[mailto:([^\]]+)\]/i, "<$1>").trim();
+  return line || null;
+}
+
 export async function handleReceivedEmail(emailId: string, hint: { from?: string; subject?: string }) {
   const email = await resendGet(`/emails/receiving/${emailId}`).catch(() => null);
   const from = email?.from || hint.from || "";
   const subject = email?.subject || hint.subject || "";
-  const supplierId = await supplierForSender(from);
+  let supplierId = await supplierForSender(from);
+  // Forwarded from the markets inbox: work out the supplier from the original sender
+  if (!supplierId) {
+    const original = forwardedSender(email?.html || null, email?.text || null);
+    if (original) supplierId = await supplierForSender(original);
+  }
   const meta = { from, subject, id: emailId };
   const subjectIsStatement = STATEMENT.test(subject);
 
