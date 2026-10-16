@@ -95,19 +95,27 @@ export async function marketPriceReport() {
   const items = (produce || []).map((ing: any) => {
     const mine = live.filter((p: any) => p.ingredient_id === ing.id);
 
-    const offers = mine.map((p: any) => {
-      const rows = histByProduct.get(p.id) || [];
+    // One row per supplier: markets suppliers use a new product code for each lot or day
+    // ("BROCCOLI ICED WEDNESDAY"), so several of their products can map to one ingredient.
+    const bySupplier = new Map<number, any[]>();
+    for (const p of mine) bySupplier.set(p.supplier_id, [...(bySupplier.get(p.supplier_id) || []), p]);
+    const offers = Array.from(bySupplier.entries()).map(([supplierId, prods]) => {
+      const rows = prods.flatMap((p: any) => (histByProduct.get(p.id) || []).map((h: any) => ({ ...h, _p: p })))
+        .sort((a: any, b: any) => String(a.invoice_date || "").localeCompare(String(b.invoice_date || "")));
       const last = rows[rows.length - 1];
-      // The newest invoice wins; the stored last price covers prices entered before invoices were read
-      const unitCost = num(last?.unit_cost) ?? num(p.last_unit_cost);
-      const packPrice = num(last?.price_ex_gst) ?? num(p.last_price_ex_gst);
+      // Without invoices yet, fall back to the most recently priced product
+      const fallback = [...prods].sort((a: any, b: any) => String(b.last_invoice_date || "").localeCompare(String(a.last_invoice_date || "")))
+        .find((p: any) => num(p.last_unit_cost) != null);
+      const prod = last?._p || fallback;
+      const unitCost = last ? num(last.unit_cost) : num(fallback?.last_unit_cost);
+      const packPrice = last ? num(last.price_ex_gst) : num(fallback?.last_price_ex_gst);
       return {
-        supplierId: p.supplier_id,
-        supplier: supplierName.get(p.supplier_id) || "Unknown",
+        supplierId,
+        supplier: supplierName.get(supplierId) || "Unknown",
         unitCost: round(unitCost),
         packPrice: round(packPrice, 2),
-        packUnit: p.purchase_unit || null,
-        lastDate: last?.invoice_date || p.last_invoice_date || null,
+        packUnit: prod?.purchase_unit || null,
+        lastDate: last?.invoice_date || fallback?.last_invoice_date || null,
         avg12: round(avgCost(rows)),
         invoices12: rows.length,
       };
