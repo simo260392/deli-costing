@@ -175,6 +175,7 @@ Rules:
 - Use quantity SUPPLIED/SHIPPED, not ordered.
 - Check every line: quantity × unit_price − discount should equal line_total (within a few cents). If the printed columns don't satisfy this, pick the quantity column that does (e.g. Bidfood "Total Units" × "Unit Price" = value).
 - Weighed items: quantity = kg, unit_price = per kg, priced_by_weight = true.
+- Perth markets invoices (MarketBase / "GR2" invoices) have a "Wt/Ct" column meaning weight OR count, and the price is per kg OR per item to match. Decide per line: heads and single items (lettuce, cabbage, cauliflower, celery, melons, pineapples, bunches) are usually a count, e.g. 24 cos lettuce at $1.40 a head = 2 x 84L crates of 12; bulk produce (pumpkin, potatoes, onions, carrots, tomatoes) is usually kg. For a count: quantity = the count, unit_price = per item, purchase_unit = "each", unit_size = 1, unit_size_uom = "each", priced_by_weight = false. Put the containers and "Wt/Ct read as count" or "Wt/Ct read as kg" in notes.
 - Pack sizes: read them from pack columns or the description ("6 X 2.5KG", "24x375ml", "120x42gr", "12's CTN=6", "PACK of 3", "4 pk", "15doz", "1.5KG", "A10" can = 3kg). Convert g to kg and ml to L.
 - Discounts printed under an item, or a discount line that quotes an item's code, belong to that item: put them in that item's discount and do not create a separate line.
 - Lines for $0.00 are still lines; record them and add a note.

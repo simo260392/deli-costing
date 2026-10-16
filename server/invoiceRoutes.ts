@@ -282,6 +282,8 @@ export async function runMatching(invoiceId: number) {
       suggestions: m.suggestions, warnings: m.warnings, price_change_pct: m.price_change_pct, base_qty: m.base_qty, unit_cost: m.unit_cost,
       needs_pack_size: m.needs_pack_size, item_type: m.item_type, ingredient_units_per_base: m.ingredient_units_per_base, random_weight: m.random_weight,
       ingredient_unit_cost: m.unit_cost !== null && m.ingredient_units_per_base ? Math.round((m.unit_cost / m.ingredient_units_per_base) * 10000) / 10000 : null,
+      // Read as kg but saved as sold per item: store it as a count so approval keeps it that way
+      ...(m.count_override ? { priced_by_weight: false, unit_size: 1, unit_size_uom: "each", purchase_unit: "each", unit_price_ex_gst: m.unit_cost } : {}),
     }).eq("id", l.id);
   }
 }
