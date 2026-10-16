@@ -435,6 +435,7 @@ interface PriceItem {
   season?: { fromData: { label: string; months: number } | null; waGuide: string | null };
   ordering: {
     groups: { unit: string | null; avgQty: number; orders: number; totalQty: number }[];
+    source?: "invoices" | "orders" | null;
     lastOrdered: string | null;
     fromInvoices: { avgQty: number | null; unit: string | null; invoices: number } | null;
   };
@@ -442,6 +443,7 @@ interface PriceItem {
 interface PriceReport { since: string; items: PriceItem[]; generatedAt: string }
 
 const shortSupplier = (s: string) => s.replace(/\s*-\s*Markets$/i, "");
+const plural = (unit: string, n: number) => (n === 1 || /s$|kg$|^each$|^dozen$/i.test(unit) ? unit : unit === "box" ? "boxes" : unit === "bunch" ? "bunches" : `${unit}s`);
 const qtyText = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
 function MarketPrices() {
@@ -561,8 +563,8 @@ function MarketPrices() {
                     <Cell label="Average order">
                       {top ? (
                         <>
-                          <p className="tabular-nums">{qtyText(top.avgQty)} {top.unit || ""}</p>
-                          <p className="text-xs text-muted-foreground">over {top.orders} order{top.orders === 1 ? "" : "s"}</p>
+                          <p className="tabular-nums">{qtyText(top.avgQty)} {top.unit ? plural(top.unit, top.avgQty) : ""}</p>
+                          <p className="text-xs text-muted-foreground">over {top.orders} {i.ordering.source === "invoices" ? "invoice" : "order"}{top.orders === 1 ? "" : "s"}</p>
                         </>
                       ) : i.ordering.fromInvoices?.avgQty != null ? (
                         <>

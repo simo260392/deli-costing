@@ -37,6 +37,7 @@ export interface RawInvoiceLine {
   gst_applies: boolean | null;        // false for GST-free items
   applies_to_code: string | null;     // for a separate discount line: the item code it belongs to
   pack_size_from_description: boolean;
+  containers?: number | null;         // crates / cartons / boxes / trays supplied (markets "Cont Qty")
   notes: string | null;
   generic_name: string | null;        // plain name for matching ("Short cut bacon")
   item_type: "ingredient" | "packaging" | "cleaning" | "other" | null;
@@ -79,6 +80,7 @@ export interface NormalisedLine {
   unit_cost: number | null;           // ex GST per kg / L / each
   needs_pack_size: boolean;           // the document doesn't say how much is in the pack
   merged_from: number[];              // original line numbers combined into this one
+  containers: number | null;          // crates / cartons / boxes / trays supplied
   notes: string | null;
   generic_name: string | null;
   item_type: "ingredient" | "packaging" | "cleaning" | "other" | null;
@@ -126,6 +128,7 @@ const lineSchema = {
     gst_applies: { type: ["boolean", "null"], description: "False for GST-free items (0%, N-T, Z code, GST Free section). True when GST is charged." },
     applies_to_code: { type: ["string", "null"], description: "Only for a separate discount line you could not fold in: the item code it refers to, if printed." },
     pack_size_from_description: { type: "boolean", description: "True if the pack size came from the description text rather than a pack column." },
+    containers: { type: ["number", "null"], description: "How many physical containers were supplied: crates, cartons, boxes, trays, bags or buckets (markets invoices print this as Cont Qty / Cont, e.g. 2 x U84L crates = 2). For a line sold by the carton this equals quantity. Null if not shown." },
     notes: { type: ["string", "null"], description: "Anything odd about this line (zero price, random weight with no kg shown, illegible)." },
     generic_name: { type: ["string", "null"], description: "Plain generic name a kitchen would use, without brand, pack size or supplier abbreviations: 'DRSGNA S/CUT BACON' -> 'Short cut bacon', 'NATURAL SWISS CHSE' -> 'Swiss cheese', 'Paper BioBowl Kraft 16oz/500ml' -> '500ml kraft bowl'. Null for freight/fees." },
     item_type: { type: ["string", "null"], enum: ["ingredient", "packaging", "cleaning", "other", null], description: "ingredient = food or drink; packaging = containers, cups, lids, bags, foil, cling film, napkins, cutlery, gloves; cleaning = chemicals, sponges, paper towel; other = anything else." },
@@ -337,6 +340,7 @@ export function normaliseInvoice(raw: RawInvoice): NormalisedInvoice {
         unit_cost: base && total !== null ? round(total / base) : null,
         needs_pack_size: l.line_type === "product" && base === null,
         merged_from: [l.line_no],
+        containers: num(l.containers),
         notes: l.notes || null,
         generic_name: l.generic_name || null,
         item_type: l.item_type || null,
@@ -361,6 +365,7 @@ export function normaliseInvoice(raw: RawInvoice): NormalisedInvoice {
     existing.unit_price_ex_gst = existing.line_total_ex_gst !== null && existing.quantity ? round(existing.line_total_ex_gst / existing.quantity) : existing.unit_price_ex_gst;
     existing.unit_cost = existing.base_qty && existing.line_total_ex_gst !== null ? round(existing.line_total_ex_gst / existing.base_qty) : null;
     existing.merged_from.push(...l.merged_from);
+    existing.containers = existing.containers !== null && l.containers !== null ? round(existing.containers + l.containers) : null;
     if (l.notes) existing.notes = [existing.notes, l.notes].filter(Boolean).join("; ");
   }
 

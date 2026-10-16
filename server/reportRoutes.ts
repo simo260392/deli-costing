@@ -46,6 +46,34 @@ async function all<T = any>(build: (from: number, to: number) => any): Promise<T
   }
 }
 
+const CONTAINER_UNITS = /^(ctn|carton|box|bx|tray|tr\d*|crate|crt|bkt|bucket|bag|bg|pun|punnet|pkt|sack|bin)s?$/i;
+/** How many crates / cartons / trays a line was. Read from the invoice, or worked out from the reader's notes. */
+export function containersOf(l: { quantity: any; purchase_unit: string | null; priced_by_weight: boolean; containers: any; notes: string | null }): number | null {
+  const given = num(l.containers);
+  if (given != null) return given;
+  const n = String(l.notes || "");
+  const pats = [
+    /(\d+(?:\.\d+)?)\s*x\s*(?:U84L|W84|SW84|84L)\s*crates?/i,          // "2 x U84L crates"
+    /(?:Cont|Container)\s+\w+\s*,?\s*(?:Cont\s*)?qty\s*(\d+(?:\.\d+)?)/i, // "Cont W84 qty 2", "Container W84, qty 1"
+    /(?:Cont\s*)?Qty\s*(\d+(?:\.\d+)?)\s*(?:crates?|containers?|cartons?|boxes?|trays?)?\b/i, // "Cont Qty 1", "Qty 1 container"
+    /(\d+(?:\.\d+)?)\s*crates?\b/i,                                      // "2 crates", "(1 crate)"
+    /(\d+(?:\.\d+)?)\s*(?:foam\s*)?box(?:es)?\b/i,                      // "1 foam box"
+    /(\d+(?:\.\d+)?)\s*CTN1?\b/,                                          // "5 CTN1 x Wt/Ct"
+  ];
+  for (const re of pats) { const m = n.match(re); if (m) return Number(m[1]); }
+  const unit = String(l.purchase_unit || "").trim();
+  if (!l.priced_by_weight && CONTAINER_UNITS.test(unit)) return num(l.quantity);
+  return null;
+}
+const unitLabel = (u: string | null | undefined) => {
+  const x = String(u || "").trim().toLowerCase();
+  if (!x) return null;
+  if (/^(ctn|carton)s?$/.test(x)) return "carton";
+  if (/^(tray|tr\d+)$/.test(x)) return "tray";
+  if (/^(bkt|bucket)$/.test(x)) return "bucket";
+  return x;
+};
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** The cheapest 3-month stretch of the year from our own prices; needs prices in at least 6 different months. */
 function cheapestSeason(rows: any[]): { label: string; months: number } | null {
@@ -86,8 +114,17 @@ export async function marketPriceReport() {
   const productIds = live.map((p: any) => p.id);
 
   const history = productIds.length ? await all((a, b) => supabase.from("supplier_price_history")
-    .select("supplier_product_id, invoice_date, quantity, price_ex_gst, unit_cost")
+    .select("supplier_product_id, invoice_id, invoice_line_id, invoice_date, quantity, price_ex_gst, unit_cost")
     .in("supplier_product_id", productIds).gte("invoice_date", since).order("invoice_date").range(a, b)) : [];
+
+  // The invoice lines behind those prices, to count crates / boxes / trays bought
+  const lineIds = Array.from(new Set(history.map((h: any) => h.invoice_line_id).filter(Boolean)));
+  const invoiceLines = new Map<number, any>();
+  for (let i = 0; i < lineIds.length; i += 300) {
+    const { data } = await supabase.from("supplier_invoice_lines")
+      .select("id, invoice_id, quantity, purchase_unit, priced_by_weight, containers, notes").in("id", lineIds.slice(i, i + 300));
+    for (const l of data || []) invoiceLines.set(l.id, l);
+  }
 
   // Texted market order lines in the last 12 months
   const orders = await all((a, b) => supabase.from("market_orders").select("id, collect_by, status")
@@ -150,28 +187,42 @@ export async function marketPriceReport() {
     const cheapest = offers[0] || null;
     const latest = [...offers].sort((a: any, b: any) => String(b.lastDate || "").localeCompare(String(a.lastDate || "")))[0] || null;
 
-    // Average order size: from texted market orders, grouped by the unit ordered in
+    // Average order, counted the way we order it (small crate, 84L crate, box...).
+    // Invoices are what we actually bought, so they come first; texted market orders
+    // cover produce that hasn't been invoiced yet.
+    const orderUnit = ing.market_order_unit || null;
+    const perInvoice = new Map<number, number>();
+    for (const r of allRows) {
+      const line = invoiceLines.get(r.invoice_line_id);
+      const c = line ? containersOf(line) : null;
+      if (c == null || !r.invoice_id) continue;
+      perInvoice.set(r.invoice_id, (perInvoice.get(r.invoice_id) || 0) + c);
+    }
+    const invoiceUnit = orderUnit || unitLabel(invoiceLines.get(allRows.find((r: any) => invoiceLines.get(r.invoice_line_id))?.invoice_line_id)?.purchase_unit);
     const lines = orderLines.filter((l: any) => l.ingredient_id === ing.id && num(l.qty) != null);
-    const byUnit = new Map<string, { qty: number; orders: Set<number> }>();
-    for (const l of lines) {
-      const u = l.unit || ing.market_order_unit || "";
-      const g = byUnit.get(u) || { qty: 0, orders: new Set<number>() };
-      g.qty += num(l.qty)!;
-      g.orders.add(l.order_id);
-      byUnit.set(u, g);
-    }
-    const orderGroups = Array.from(byUnit.entries())
-      .map(([unit, g]) => ({ unit: unit || null, avgQty: round(g.qty / g.orders.size, 2), orders: g.orders.size, totalQty: round(g.qty, 2) }))
-      .sort((a, b) => b.orders - a.orders);
     const lastOrdered = lines.map((l: any) => collectBy.get(l.order_id)).filter(Boolean).sort().pop() || null;
-
-    // No market orders yet: fall back to invoice quantities
-    let invoiceQty: { avgQty: number | null; unit: string | null; invoices: number } | null = null;
-    if (!orderGroups.length && allRows.length) {
-      const q = allRows.map((r) => num(r.quantity)).filter((n): n is number => n != null);
-      const unit = mine.find((p: any) => (histByProduct.get(p.id) || []).length)?.purchase_unit || null;
-      if (q.length) invoiceQty = { avgQty: round(q.reduce((s, x) => s + x, 0) / q.length, 2), unit, invoices: q.length };
+    let orderGroups: { unit: string | null; avgQty: number | null; orders: number; totalQty: number | null }[] = [];
+    let source: "invoices" | "orders" | null = null;
+    if (perInvoice.size) {
+      const total = Array.from(perInvoice.values()).reduce((s, x) => s + x, 0);
+      orderGroups = [{ unit: invoiceUnit, avgQty: round(total / perInvoice.size, 2), orders: perInvoice.size, totalQty: round(total, 2) }];
+      source = "invoices";
+    } else if (lines.length) {
+      const byUnit = new Map<string, { qty: number; orders: Set<number> }>();
+      for (const l of lines) {
+        const u = l.unit || orderUnit || "";
+        const g = byUnit.get(u) || { qty: 0, orders: new Set<number>() };
+        g.qty += num(l.qty)!;
+        g.orders.add(l.order_id);
+        byUnit.set(u, g);
+      }
+      orderGroups = Array.from(byUnit.entries())
+        .map(([unit, g]) => ({ unit: unit || null, avgQty: round(g.qty / g.orders.size, 2), orders: g.orders.size, totalQty: round(g.qty, 2) }))
+        // The usual order unit first
+        .sort((a, b) => (b.unit === orderUnit ? 1 : 0) - (a.unit === orderUnit ? 1 : 0) || b.orders - a.orders);
+      source = "orders";
     }
+    const invoiceQty = null;
 
     return {
       ingredientId: ing.id,
@@ -188,7 +239,7 @@ export async function marketPriceReport() {
       // Latest price paid compared with the 12-month average (positive = dearer than usual)
       vsAvgPct: latest?.unitCost != null && avg12 ? round(((latest.unitCost - avg12) / avg12) * 100, 1) : null,
       season: { fromData: cheapestSeason(allRows), waGuide: waSeason(ing.name) },
-      ordering: { groups: orderGroups, lastOrdered, fromInvoices: invoiceQty },
+      ordering: { groups: orderGroups, source, lastOrdered, fromInvoices: invoiceQty },
     };
   });
 
