@@ -432,6 +432,7 @@ interface PriceItem {
   cheapest: { supplier: string; unitCost: number } | null;
   latest: { supplier: string; unitCost: number; date: string | null } | null;
   avg12: number | null; invoices12: number; vsAvgPct: number | null;
+  season?: { fromData: { label: string; months: number } | null; waGuide: string | null };
   ordering: {
     groups: { unit: string | null; avgQty: number; orders: number; totalQty: number }[];
     lastOrdered: string | null;
@@ -501,8 +502,8 @@ function MarketPrices() {
       {data && (
         <div className="bg-white dark:bg-card rounded-xl border shadow-sm divide-y">
           {/* Column headings (desktop) */}
-          <div className="hidden md:grid grid-cols-[1.4fr_1.3fr_1.3fr_1fr_1.1fr] gap-3 px-4 py-2 text-xs font-medium text-muted-foreground">
-            <span>Produce</span><span>Cheapest now</span><span>Latest paid</span><span>12-month average</span><span>Average order</span>
+          <div className="hidden md:grid grid-cols-[1.3fr_1.3fr_1.1fr_1.2fr_1fr] gap-3 px-4 py-2 text-xs font-medium text-muted-foreground">
+            <span>Produce</span><span>Latest paid</span><span>12-month average</span><span>Season (cheapest)</span><span>Average order</span>
           </div>
           {items.length === 0 && <p className="p-4 text-sm text-muted-foreground">No produce found.</p>}
           {items.map((i) => {
@@ -515,7 +516,7 @@ function MarketPrices() {
                   className="w-full text-left px-3 md:px-4 py-3 hover:bg-muted/40 transition-colors"
                   data-testid={`row-market-price-${i.ingredientId}`}
                 >
-                  <div className="grid grid-cols-2 md:grid-cols-[1.4fr_1.3fr_1.3fr_1fr_1.1fr] gap-x-3 gap-y-1.5 items-start text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-[1.3fr_1.3fr_1.1fr_1.2fr_1fr] gap-x-3 gap-y-1.5 items-start text-sm">
                     <div className="col-span-2 md:col-span-1 flex items-center gap-2">
                       <ChevronDown size={14} className={cn("shrink-0 text-muted-foreground transition-transform", !isOpen && "-rotate-90")} />
                       <div>
@@ -523,24 +524,18 @@ function MarketPrices() {
                         {i.offers.length > 1 && <p className="text-xs text-muted-foreground">{i.offers.length} suppliers</p>}
                       </div>
                     </div>
-                    <Cell label="Cheapest now">
-                      {i.cheapest ? (
-                        <>
-                          <p className="font-semibold tabular-nums flex items-center gap-1">
-                            {i.offers.length > 1 && <Award size={13} className="text-[#5AB693]" />}
-                            {money2(i.cheapest.unitCost)}<span className="text-xs font-normal text-muted-foreground">{perUnit(i.unit)}</span>
-                          </p>
-                          <p className="text-xs text-muted-foreground">{shortSupplier(i.cheapest.supplier)}</p>
-                        </>
-                      ) : <p className="text-muted-foreground">No price yet</p>}
-                    </Cell>
                     <Cell label="Latest paid">
                       {i.latest ? (
                         <>
-                          <p className="tabular-nums">{money2(i.latest.unitCost)}<span className="text-xs text-muted-foreground">{perUnit(i.unit)}</span></p>
+                          <p className="font-semibold tabular-nums">{money2(i.latest.unitCost)}<span className="text-xs font-normal text-muted-foreground">{perUnit(i.unit)}</span></p>
                           <p className="text-xs text-muted-foreground">{shortSupplier(i.latest.supplier)}{i.latest.date ? ` · ${dateWithYear(i.latest.date)}` : ""}</p>
+                          {i.cheapest && i.offers.length > 1 && i.cheapest.supplier !== i.latest.supplier && i.cheapest.unitCost < (i.latest.unitCost ?? 0) && (
+                            <p className="text-xs text-[#3d9a77] flex items-center gap-1 mt-0.5">
+                              <Award size={11} /> {shortSupplier(i.cheapest.supplier)} {money2(i.cheapest.unitCost)}
+                            </p>
+                          )}
                         </>
-                      ) : <p className="text-muted-foreground">—</p>}
+                      ) : <p className="text-muted-foreground">No price yet</p>}
                     </Cell>
                     <Cell label="12-month average">
                       {i.avg12 != null ? (
@@ -549,6 +544,19 @@ function MarketPrices() {
                           <VsAvg pct={i.vsAvgPct} />
                         </>
                       ) : <p className="text-xs text-muted-foreground pt-0.5">No invoices yet</p>}
+                    </Cell>
+                    <Cell label="Season (cheapest)">
+                      {i.season?.fromData ? (
+                        <>
+                          <p>{i.season.fromData.label}</p>
+                          <p className="text-xs text-muted-foreground">from our prices{i.season.waGuide ? ` · WA: ${i.season.waGuide}` : ""}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-muted-foreground">No data yet</p>
+                          <p className="text-xs">{i.season?.waGuide ? `WA season: ${i.season.waGuide}` : "WA season: not listed"}</p>
+                        </>
+                      )}
                     </Cell>
                     <Cell label="Average order">
                       {top ? (
@@ -633,7 +641,7 @@ function VsAvg({ pct: p }: { pct: number | null }) {
   return (
     <p className={cn("text-xs font-medium flex items-center gap-1", dearer ? "text-red-600" : "text-green-700")}>
       {dearer ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-      Cheapest now is {Math.abs(p).toFixed(0)}% {dearer ? "above" : "below"} average
+      Latest {Math.abs(p).toFixed(0)}% {dearer ? "above" : "below"} average
     </p>
   );
 }
