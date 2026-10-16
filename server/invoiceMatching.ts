@@ -28,6 +28,7 @@ export type LineMatch = {
   supplier_product_id: number | null; ingredient_id: number | null; match_method: string | null; match_confidence: number | null;
   suggestions: Suggestion[]; warnings: string[]; price_change_pct: number | null;
   base_qty: number | null; unit_cost: number | null; needs_pack_size: boolean; item_type: string | null;
+  count_override?: boolean;                // read as kg but this product is saved as sold per item
   ingredient_units_per_base: number | null; // conversion from the line's base unit to the ingredient's unit, when known
   random_weight: boolean;                    // priced per kg but the invoice has no weight: ask for price/kg or weight each time
 };
@@ -121,6 +122,7 @@ export function matchLines(opts: {
       ingredient_units_per_base: null, random_weight: false,
     };
     if (l.line_type !== "product") { result.set(l.id, m); continue; }
+    let countOverride = false;
 
     // 1 & 2: this supplier's own products
     let sp = l.supplier_code ? ours.find((p) => p.supplier_code && p.supplier_code.toLowerCase() === l.supplier_code!.toLowerCase()) : undefined;
@@ -142,6 +144,15 @@ export function matchLines(opts: {
         m.unit_cost = l.line_total_ex_gst !== null ? Math.round((l.line_total_ex_gst / m.base_qty) * 10000) / 10000 : null;
         m.needs_pack_size = false;
         if (before !== m.base_qty) m.warnings.push(`Using your saved pack size: ${Number(sp.base_qty_per_purchase)} ${sp.unit_size_uom || "each"} per ${l.purchase_unit || "pack"}.`);
+      }
+      // Saved as sold per item (e.g. cos lettuce per head) but read as kg: the figure is a count
+      if (l.priced_by_weight && !sp.priced_by_weight && sp.unit_size_uom === "each" && sp.pack_size_confirmed && l.quantity) {
+        countOverride = true;
+        m.count_override = true;
+        m.base_qty = l.quantity;
+        m.unit_cost = l.line_total_ex_gst !== null ? Math.round((l.line_total_ex_gst / l.quantity) * 10000) / 10000 : m.unit_cost;
+        m.needs_pack_size = false;
+        m.warnings.push(`Counted as ${l.quantity} each (not kg), as saved for this product.`);
       }
       if (sp.ingredient_units_per_base) m.ingredient_units_per_base = Number(sp.ingredient_units_per_base);
     }
@@ -188,7 +199,7 @@ export function matchLines(opts: {
     // Units, price change and brand warnings once we know the ingredient
     const ing = m.ingredient_id ? ingById.get(m.ingredient_id) : undefined;
     if (ing) {
-      const lineUom = l.priced_by_weight ? "kg" : (l.unit_size_uom || sp?.unit_size_uom || null);
+      const lineUom = l.priced_by_weight && !countOverride ? "kg" : (l.unit_size_uom || sp?.unit_size_uom || null);
       if (m.ingredient_units_per_base === null) m.ingredient_units_per_base = unitFactor(lineUom, ing);
       if (m.ingredient_units_per_base === null && !m.needs_pack_size) m.warnings.push(`Bought per ${lineUom || "unit"} but the ingredient is measured per ${ing.unit}; set the conversion.`);
       const costInIngUnits = m.unit_cost !== null && m.ingredient_units_per_base ? m.unit_cost / m.ingredient_units_per_base : null;
