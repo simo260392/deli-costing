@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
-  BarChart3, Apple, BookMarked, ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Search, TrendingDown, TrendingUp, Award, AlertTriangle,
+  BarChart3, Apple, ShoppingCart, BookMarked, ChevronDown, ChevronRight, ChevronLeft, RefreshCw, Search, TrendingDown, TrendingUp, Award, AlertTriangle,
 } from "lucide-react";
-import { periodFor, nextPeriod, todayPerth, fyStart } from "@shared/kpiPeriods";
+import { periodFor, nextPeriod, previousPeriod, todayPerth, fyStart } from "@shared/kpiPeriods";
 import RecipeBook from "@/pages/RecipeBook";
 
 const NAVY = "#256984";
@@ -25,7 +25,7 @@ const dateWithYear = (s: string | null | undefined) =>
   !s ? "" : new Date(s.slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "2-digit", timeZone: "UTC" });
 const perUnit = (u: string | null | undefined) => (u ? `/${u}` : "");
 
-type Tab = "kpis" | "market-prices" | "product-info";
+type Tab = "kpis" | "cost-of-goods" | "market-prices" | "product-info";
 
 export default function Reports() {
   const [location, navigate] = useLocation();
@@ -34,6 +34,7 @@ export default function Reports() {
 
   const tabs = [
     { id: "kpis" as Tab, label: "KPIs", icon: BarChart3, show: isAdmin || hasAccess("wages") },
+    { id: "cost-of-goods" as Tab, label: "Cost of goods", icon: ShoppingCart, show: isAdmin || hasAccess("wages") || hasAccess("reports") },
     { id: "market-prices" as Tab, label: "Markets prices", icon: Apple, show: hasAccess("reports") },
     { id: "product-info" as Tab, label: "Product Info PDF", icon: BookMarked, show: hasAccess("recipe-book") },
   ].filter((t) => t.show);
@@ -68,6 +69,7 @@ export default function Reports() {
 
       {!tab && <p className="text-sm text-muted-foreground">You don't have access to any reports yet.</p>}
       {tab === "kpis" && <KpiHistory />}
+      {tab === "cost-of-goods" && <CogsReport />}
       {tab === "market-prices" && <MarketPrices />}
       {tab === "product-info" && <div className="-mx-4 md:-mx-6 -mb-6"><RecipeBook /></div>}
     </div>
@@ -633,5 +635,218 @@ function VsAvg({ pct: p }: { pct: number | null }) {
       {dearer ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
       Cheapest now is {Math.abs(p).toFixed(0)}% {dearer ? "above" : "below"} average
     </p>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Cost of goods by supplier (Xero bills on the cost of goods accounts)
+// ═════════════════════════════════════════════════════════════════════════════
+interface CogsDoc {
+  id: string; kind: "bill" | "credit"; date: string; contact: string; number: string | null; status: string;
+  amount: number; byAccount: Record<string, number>;
+}
+interface CogsReportData {
+  fyLabel: string; period: number; start: string; end: string;
+  weeks: { number: number; start: string; end: string }[];
+  available: boolean; note?: string;
+  accounts?: { code: string; name: string }[];
+  docs?: CogsDoc[];
+}
+
+const cogsQuery = (start: string) => ({
+  queryKey: ["/api/reports/cost-of-goods", start],
+  queryFn: () => apiRequest("GET", `/api/reports/cost-of-goods?date=${start}`).then((r) => r.json() as Promise<CogsReportData>),
+  staleTime: 5 * 60 * 1000,
+});
+
+function CogsReport() {
+  const today = todayPerth();
+  const [anchor, setAnchor] = useState(today);
+  const p = periodFor(anchor);
+  const prev = previousPeriod(p);
+  const isCurrent = today >= p.start && today <= p.end;
+  const [week, setWeek] = useState<number | null>(null); // null = whole period
+  const [open, setOpen] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const { data, isLoading, isError } = useQuery<CogsReportData>(cogsQuery(p.start));
+  const { data: prevData } = useQuery<CogsReportData>({ ...cogsQuery(prev.start), enabled: week === null });
+  const { data: kpi } = useQuery<KpiResponse>({
+    queryKey: ["/api/kpi/period", p.start],
+    queryFn: () => apiRequest("GET", `/api/kpi/period?date=${p.start}`).then((r) => r.json()),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const goTo = (start: string) => { setAnchor(start); setWeek(null); setOpen(null); };
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const fresh = await apiRequest("GET", `/api/reports/cost-of-goods?date=${p.start}&refresh=true`).then((r) => r.json());
+      qc.setQueryData(["/api/reports/cost-of-goods", p.start], fresh);
+    } finally { setRefreshing(false); }
+  };
+
+  const wk = week ? p.weeks.find((w) => w.number === week) : null;
+  const docs = (data?.docs || []).filter((d) => !wk || (d.date >= wk.start && d.date <= wk.end));
+  const total = docs.reduce((s, d) => s + d.amount, 0);
+  const turnover = wk ? kpi?.weeks?.find((w) => w.number === week)?.turnover : kpi?.totals?.turnover;
+  const cogsPct = turnover && turnover > 0 ? (total / turnover) * 100 : null;
+  const target = kpi?.targets?.cogsPct ?? 30;
+
+  const prevBySupplier = new Map<string, number>();
+  for (const d of prevData?.docs || []) prevBySupplier.set(d.contact, (prevBySupplier.get(d.contact) || 0) + d.amount);
+
+  const suppliers = useMemo(() => {
+    const m = new Map<string, { name: string; amount: number; docs: CogsDoc[] }>();
+    for (const d of docs) {
+      const g = m.get(d.contact) || { name: d.contact, amount: 0, docs: [] };
+      g.amount += d.amount; g.docs.push(d); m.set(d.contact, g);
+    }
+    return Array.from(m.values()).sort((a, b) => b.amount - a.amount);
+  }, [docs]);
+  const maxAmount = Math.max(1, ...suppliers.map((s) => s.amount));
+
+  const accountName = new Map((data?.accounts || []).map((a) => [a.code, a.name]));
+  const byAccount = new Map<string, number>();
+  for (const d of docs) for (const [code, amt] of Object.entries(d.byAccount)) byAccount.set(code, (byAccount.get(code) || 0) + amt);
+  const accountRows = Array.from(byAccount.entries()).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="space-y-4">
+      {/* Period picker */}
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{p.fyLabel}</p>
+          <h2 className="text-xl font-bold" style={{ color: NAVY }}>Period {p.period}{!isCurrent && <span className="text-muted-foreground font-medium text-base"> · complete</span>}</h2>
+          <p className="text-sm text-muted-foreground">{dateWithYear(p.start)} – {dateWithYear(p.end)}</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={() => goTo(previousPeriod(p).start)} className="p-2 rounded-lg hover:bg-muted text-muted-foreground" aria-label="Previous period" data-testid="button-cogs-prev"><ChevronLeft size={18} /></button>
+          {!isCurrent && <button onClick={() => goTo(today)} className="text-xs font-medium text-[#256984] px-2 py-1 rounded-lg hover:bg-muted">Current</button>}
+          <button onClick={() => !isCurrent && goTo(nextPeriod(p).start)} disabled={isCurrent} className="p-2 rounded-lg hover:bg-muted text-muted-foreground disabled:opacity-30" aria-label="Next period" data-testid="button-cogs-next"><ChevronRight size={18} /></button>
+        </div>
+      </div>
+
+      {/* Week filter */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {[null, ...p.weeks.map((w) => w.number)].map((n) => {
+          const w = n ? p.weeks.find((x) => x.number === n)! : null;
+          const future = !!w && w.start > today;
+          return (
+            <button
+              key={n ?? "all"}
+              disabled={future}
+              onClick={() => { setWeek(n); setOpen(null); }}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border transition-colors disabled:opacity-40",
+                week === n ? "bg-[#256984] text-white border-[#256984]" : "bg-white dark:bg-card hover:bg-muted",
+              )}
+              data-testid={`button-cogs-week-${n ?? "all"}`}
+            >
+              {w ? `Week ${w.number} · ${shortDate(w.start)}` : "Whole period"}
+            </button>
+          );
+        })}
+      </div>
+
+      {isLoading && <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-14 bg-muted rounded-xl animate-pulse" />)}</div>}
+      {isError && <p className="text-sm text-red-600">Couldn't load cost of goods from Xero. Try again in a minute.</p>}
+      {data && !data.available && (
+        <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">
+          <AlertTriangle size={15} className="shrink-0 mt-0.5" /> {data.note}
+        </div>
+      )}
+
+      {data?.available && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <Stat label={wk ? `Spent in week ${wk.number}` : "Spent this period"} value={money0(total)} sub={`${docs.length} bill${docs.length === 1 ? "" : "s"} · ${suppliers.length} supplier${suppliers.length === 1 ? "" : "s"}`} />
+            <Stat label="Of turnover (ex GST)" value={pct(cogsPct)} sub={turnover != null ? <span><PctBadge value={cogsPct} target={target} /> of {money0(turnover)}</span> : "Loading turnover…"} />
+            {week === null && prevData?.available && (
+              <Stat
+                label={`Period ${prev.period} (last period)`}
+                value={money0((prevData.docs || []).reduce((s, d) => s + d.amount, 0))}
+                sub={isCurrent ? "Full period, for comparison" : undefined}
+              />
+            )}
+          </div>
+
+          {accountRows.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {accountRows.map(([code, amt]) => (
+                <span key={code} className="inline-flex items-center gap-1.5 rounded-full border bg-white dark:bg-card px-3 py-1 text-xs">
+                  <span className="text-muted-foreground">{accountName.get(code) || code}</span>
+                  <span className="font-semibold tabular-nums">{money0(amt)}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="bg-white dark:bg-card rounded-xl border shadow-sm divide-y">
+            <div className="hidden md:grid grid-cols-[1.6fr_1fr_0.7fr_0.8fr] gap-3 px-4 py-2 text-xs font-medium text-muted-foreground">
+              <span>Supplier</span><span>Spent (ex GST)</span><span>Share</span><span>{week === null ? "Last period" : "Bills"}</span>
+            </div>
+            {suppliers.length === 0 && <p className="p-4 text-sm text-muted-foreground">No cost of goods bills in Xero for {wk ? "this week" : "this period"} yet.</p>}
+            {suppliers.map((s) => {
+              const isOpen = open === s.name;
+              const last = prevBySupplier.get(s.name);
+              return (
+                <div key={s.name}>
+                  <button onClick={() => setOpen(isOpen ? null : s.name)} className="w-full text-left px-3 md:px-4 py-3 hover:bg-muted/40 transition-colors" data-testid={`row-cogs-supplier-${s.name}`}>
+                    <div className="grid grid-cols-[1fr_auto] md:grid-cols-[1.6fr_1fr_0.7fr_0.8fr] gap-x-3 gap-y-1 items-center text-sm tabular-nums">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <ChevronDown size={14} className={cn("shrink-0 text-muted-foreground transition-transform", !isOpen && "-rotate-90")} />
+                        <span className="font-semibold truncate">{s.name}</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-right md:text-left">{money2(s.amount)}</p>
+                        <div className="hidden md:block h-1.5 mt-1 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${Math.max(0, (s.amount / maxAmount) * 100)}%`, backgroundColor: NAVY }} />
+                        </div>
+                      </div>
+                      <div className="hidden md:block text-muted-foreground">{total > 0 ? `${((s.amount / total) * 100).toFixed(0)}%` : "—"}</div>
+                      <div className="hidden md:block text-muted-foreground">
+                        {week === null ? (last != null ? money0(last) : "—") : `${s.docs.length}`}
+                      </div>
+                      <p className="md:hidden col-span-2 pl-6 text-xs text-muted-foreground">
+                        {total > 0 ? `${((s.amount / total) * 100).toFixed(0)}% of spend` : ""}
+                        {week === null && last != null ? ` · last period ${money0(last)}` : ""}
+                      </p>
+                    </div>
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 md:px-4 pb-3 md:pl-10">
+                      <table className="w-full text-sm tabular-nums">
+                        <tbody className="divide-y">
+                          {s.docs.map((d) => (
+                            <tr key={d.id}>
+                              <td className="py-1.5 pr-3 whitespace-nowrap">{shortDate(d.date)}</td>
+                              <td className="py-1.5 pr-3">
+                                {d.kind === "credit" ? "Credit note " : ""}{d.number || "No number"}
+                                {d.status === "DRAFT" && <span className="ml-1.5 text-[10px] font-bold uppercase text-amber-600">Draft</span>}
+                                <span className="block text-xs text-muted-foreground">{Object.keys(d.byAccount).map((c) => accountName.get(c) || c).join(", ")}</span>
+                              </td>
+                              <td className={cn("py-1.5 text-right", d.amount < 0 && "text-green-700")}>{money2(d.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+            <p>From Xero: bills (including drafts) less supplier credit notes, by bill date, ex GST, on your cost of goods accounts only.</p>
+            <button onClick={refresh} className="shrink-0 inline-flex items-center gap-1 text-[#256984] hover:underline" data-testid="button-cogs-refresh">
+              <RefreshCw size={11} className={refreshing ? "animate-spin" : ""} /> Refresh
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
