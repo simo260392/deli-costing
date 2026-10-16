@@ -11,7 +11,7 @@ import { storage, supabase } from "./storage";
 import { periodFor, weekOf, todayPerth, addDays as addDaysYmd } from "../shared/kpiPeriods";
 import { registerStockRoutes } from "./stockRoutes";
 import { registerInvoiceRoutes } from "./invoiceRoutes";
-import { registerXeroRoutes } from "./xeroRoutes";
+import { registerXeroRoutes, xeroConnected, xeroExpenseAccounts, cogsAccountCodes, xeroCostOfGoods } from "./xeroRoutes";
 import { registerInboundEmailRoutes } from "./inboundEmail";
 import { registerMarketRoutes } from "./marketRoutes";
 import { registerReportRoutes } from "./reportRoutes";
@@ -5739,6 +5739,18 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     res.json(await computeKpiPeriod(date, req.query.refresh === "true"));
   }));
 
+  // Cost of goods accounts: the expense accounts in Xero, with which ones count
+  app.get("/api/kpi/cogs-accounts", asyncRoute(async (req: any, res) => {
+    if (!req.session?.staffId) return res.status(401).json({ error: "Please log in" });
+    if (!(await xeroConnected())) return res.json({ connected: false, accounts: [], selected: [] });
+    try {
+      const [accounts, selected, saved] = await Promise.all([xeroExpenseAccounts(), cogsAccountCodes(), storage.getSetting("kpi_cogs_accounts")]);
+      res.json({ connected: true, accounts, selected, saved: !!saved });
+    } catch (e: any) {
+      res.json({ connected: true, reconnect: !!e?.reconnect, error: e.message, accounts: [], selected: [] });
+    }
+  }));
+
   async function computeKpiPeriod(date: string, refresh: boolean): Promise<any> {
     const p = periodFor(date);
     const today = todayPerth();
@@ -5759,7 +5771,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
 
     const errors: string[] = [];
     const weekIdx = (d: string) => p.weeks.findIndex((w) => d >= w.start && d <= w.end);
-    const blank = () => ({ turnover: 0, deliveryFees: 0, orders: 0, productionWages: 0, driverWages: 0, pendingWages: 0 });
+    const blank = () => ({ turnover: 0, deliveryFees: 0, orders: 0, productionWages: 0, driverWages: 0, pendingWages: 0, cogs: 0 });
     const weeks = p.weeks.map(blank);
 
     // ── Flex: sales + delivery fees ─────────────────────────────────────────
@@ -5915,14 +5927,32 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       }
     })().catch((e) => { errors.push(`Deputy: ${e.message}`); });
 
-    await Promise.all([flexTask, deputyTask]);
+    // ── Xero: cost of goods (bills coded to the cost-of-goods accounts) ─────
+    let cogsNote: string | null = null, cogsBills = 0, cogsAvailable = false;
+    const cogsTask = (async () => {
+      if (!(await xeroConnected())) { cogsNote = "Connect Xero (Supplier Invoices page) to see cost of goods"; return; }
+      let codes: string[];
+      try { codes = await cogsAccountCodes(); }
+      catch (e: any) { cogsNote = e?.reconnect ? "Reconnect Xero on the Supplier Invoices page so the app can read your account names" : `Xero: ${e.message}`; return; }
+      if (!codes.length) { cogsNote = "Choose your cost of goods accounts in Reports → KPIs"; return; }
+      const r = await xeroCostOfGoods(p.start, p.end, codes);
+      for (const [day, amt] of Object.entries(r.byDay)) {
+        const i = weekIdx(day);
+        if (i >= 0) weeks[i].cogs += amt;
+      }
+      cogsBills = r.bills;
+      cogsAvailable = true;
+    })().catch((e) => { cogsNote = `Xero: ${e.message}`; });
+
+    await Promise.all([flexTask, deputyTask, cogsTask]);
 
     const pctOf = (a: number, b: number) => (b > 0 ? (a / b) * 100 : null);
     const round = (n: number) => Math.round(n * 100) / 100;
     const sum = (k: keyof ReturnType<typeof blank>) => weeks.reduce((s, w) => s + w[k], 0);
-    const [prodTarget, driverTarget] = await Promise.all([
+    const [prodTarget, driverTarget, cogsTarget] = await Promise.all([
       storage.getSetting("kpi_production_wage_target_pct"),
       storage.getSetting("kpi_driver_wage_target_pct"),
+      storage.getSetting("kpi_cogs_target_pct"),
     ]);
     const shape = (w: ReturnType<typeof blank>) => ({
       turnover: round(w.turnover),
@@ -5933,6 +5963,8 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       driverWages: round(w.driverWages),
       driverPct: pctOf(w.driverWages, w.deliveryFees),
       pendingWages: round(w.pendingWages),
+      cogs: cogsAvailable ? round(w.cogs) : null,
+      cogsPct: cogsAvailable ? pctOf(w.cogs, w.turnover) : null,
     });
     const data = {
       fyLabel: p.fyLabel,
@@ -5945,10 +5977,13 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
       totals: shape({
         turnover: sum("turnover"), deliveryFees: sum("deliveryFees"), orders: sum("orders"),
         productionWages: sum("productionWages"), driverWages: sum("driverWages"), pendingWages: sum("pendingWages"),
+        cogs: sum("cogs"),
       }),
+      cogs: { available: cogsAvailable, note: cogsNote, bills: cogsBills },
       targets: {
         productionPct: parseFloat(prodTarget || "30"),
         driverPct: parseFloat(driverTarget || "100"),
+        cogsPct: parseFloat(cogsTarget || "30"),
       },
       excludedStaff: { matched: Array.from(new Set(excludedMatched)), unmatched: excludedUnmatched },
       bookedAhead: { turnover: round(bookedAhead), orders: bookedAheadOrders },
@@ -5959,7 +5994,7 @@ Respond with ONLY the ID number or the word null. Nothing else.`;
     // Don't cache failures; current period refreshes every 10 min, past periods every 6 h
     if (!errors.length) kpiCache.set(cacheKey, { data, expiresAt: Date.now() + (isCurrent ? 10 * 60_000 : 6 * 3_600_000) });
     // Save finished periods once every timesheet is approved (wait 2 days for late approvals)
-    const settled = !isCurrent && !errors.length && data.totals.pendingWages === 0 && addDaysYmd(p.end, 2) < today;
+    const settled = !isCurrent && !errors.length && cogsAvailable && data.totals.pendingWages === 0 && addDaysYmd(p.end, 2) < today;
     if (settled) {
       const { error } = await supabase.from("kpi_period_snapshots").upsert({ period_start: p.start, data, saved_at: new Date().toISOString() });
       if (error) console.error("[kpi] snapshot save failed:", error.message);

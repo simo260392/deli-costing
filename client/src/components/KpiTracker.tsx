@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, RefreshCw, AlertTriangle, TrendingUp, ChefHat, Truck } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, AlertTriangle, TrendingUp, ChefHat, Truck, ShoppingCart } from "lucide-react";
 import { periodFor, previousPeriod, nextPeriod, todayPerth } from "@shared/kpiPeriods";
 
 // ── Types (mirror GET /api/kpi/period) ───────────────────────────────────────
@@ -11,13 +11,15 @@ interface KpiFigures {
   productionWages: number; productionPct: number | null;
   driverWages: number; driverPct: number | null;
   pendingWages: number;
+  cogs?: number | null; cogsPct?: number | null;
 }
 interface KpiWeekRow extends KpiFigures { number: number; start: string; end: string; future: boolean }
 interface KpiResponse {
   fyLabel: string; period: number; start: string; end: string;
   isCurrent: boolean; currentWeek: number | null;
   weeks: KpiWeekRow[]; totals: KpiFigures;
-  targets: { productionPct: number; driverPct: number };
+  targets: { productionPct: number; driverPct: number; cogsPct?: number };
+  cogs?: { available: boolean; note: string | null; bills: number };
   excludedStaff: { matched: string[]; unmatched: string[] };
   bookedAhead?: { turnover: number; orders: number };
   method: { superannuation: string };
@@ -105,6 +107,7 @@ export function KpiTracker() {
 
   const t = data?.totals;
   const targets = data?.targets ?? { productionPct: 30, driverPct: 100 };
+  const cogsTarget = data?.targets?.cogsPct ?? 30;
   const currentWeek = isCurrent ? local.weeks.find((w) => today >= w.start && today <= w.end)?.number ?? null : null;
 
   return (
@@ -171,7 +174,7 @@ export function KpiTracker() {
       ) : null}
 
       {/* Headline tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <Tile
           icon={TrendingUp}
           label="Turnover to date (ex GST, excl. delivery)"
@@ -195,6 +198,14 @@ export function KpiTracker() {
           loading={isLoading}
         />
         <Tile
+          icon={ShoppingCart}
+          label="Cost of goods (Xero bills, ex GST)"
+          value={data?.cogs?.available ? money(t?.cogs) : "—"}
+          badge={data?.cogs?.available ? <PctBadge value={t?.cogsPct ?? null} target={cogsTarget} size="lg" /> : undefined}
+          sub={data?.cogs?.available ? "of turnover (ex GST, excl. delivery)" : data?.cogs?.note || undefined}
+          loading={isLoading}
+        />
+        <Tile
           icon={Truck}
           label="Driver wages (incl. super)"
           value={money(t?.driverWages)}
@@ -214,6 +225,8 @@ export function KpiTracker() {
                 <th className="text-right font-medium px-3 py-2.5">Turnover</th>
                 <th className="text-right font-medium px-3 py-2.5">Prod. wages</th>
                 <th className="text-right font-medium px-3 py-2.5">%</th>
+                <th className="text-right font-medium px-3 py-2.5">Cost of goods</th>
+                <th className="text-right font-medium px-3 py-2.5">%</th>
                 <th className="text-right font-medium px-3 py-2.5">Delivery fees</th>
                 <th className="text-right font-medium px-3 py-2.5">Driver wages</th>
                 <th className="text-right font-medium px-4 py-2.5">%</th>
@@ -232,6 +245,8 @@ export function KpiTracker() {
                     <td className="text-right px-3 py-2.5 text-gray-800">{empty ? "—" : money(w.turnover)}</td>
                     <td className="text-right px-3 py-2.5 text-gray-800">{empty ? "—" : money(w.productionWages)}</td>
                     <td className="text-right px-3 py-2.5">{empty ? <span className="text-gray-300">—</span> : <PctBadge value={w.productionPct} target={targets.productionPct} />}</td>
+                    <td className="text-right px-3 py-2.5 text-gray-800">{empty || w.cogs == null ? "—" : money(w.cogs)}</td>
+                    <td className="text-right px-3 py-2.5">{empty || w.cogs == null ? <span className="text-gray-300">—</span> : <PctBadge value={w.cogsPct} target={cogsTarget} />}</td>
                     <td className="text-right px-3 py-2.5 text-gray-800">{empty ? "—" : money(w.deliveryFees)}</td>
                     <td className="text-right px-3 py-2.5 text-gray-800">{empty ? "—" : money(w.driverWages)}</td>
                     <td className="text-right px-4 py-2.5">{empty ? <span className="text-gray-300">—</span> : <PctBadge value={w.driverPct} target={targets.driverPct} />}</td>
@@ -245,6 +260,8 @@ export function KpiTracker() {
                 <td className="text-right px-3 py-2.5">{isLoading ? "—" : money(t?.turnover)}</td>
                 <td className="text-right px-3 py-2.5">{isLoading ? "—" : money(t?.productionWages)}</td>
                 <td className="text-right px-3 py-2.5">{isLoading ? "—" : <PctBadge value={t?.productionPct ?? null} target={targets.productionPct} />}</td>
+                <td className="text-right px-3 py-2.5">{isLoading || t?.cogs == null ? "—" : money(t?.cogs)}</td>
+                <td className="text-right px-3 py-2.5">{isLoading || t?.cogs == null ? "—" : <PctBadge value={t?.cogsPct ?? null} target={cogsTarget} />}</td>
                 <td className="text-right px-3 py-2.5">{isLoading ? "—" : money(t?.deliveryFees)}</td>
                 <td className="text-right px-3 py-2.5">{isLoading ? "—" : money(t?.driverWages)}</td>
                 <td className="text-right px-4 py-2.5 rounded-br-xl">{isLoading ? "—" : <PctBadge value={t?.driverPct ?? null} target={targets.driverPct} />}</td>
@@ -255,7 +272,8 @@ export function KpiTracker() {
         <div className="flex items-start justify-between gap-3 px-4 py-2.5 border-t border-gray-100 text-[11px] text-gray-400">
           <div className="space-y-0.5">
             <p>
-              Turnover from Flex, ex GST and excluding delivery fees · wages from Deputy plus 12% super.
+              Turnover from Flex, ex GST and excluding delivery fees · wages from Deputy plus 12% super
+              {data?.cogs?.available ? ` · cost of goods from ${data.cogs.bills} Xero bills by bill date` : ""}.
               Production excludes Drivers & Events areas
               {data?.excludedStaff?.matched?.length ? ` and ${data.excludedStaff.matched.join(", ")}` : ""}.
             </p>
