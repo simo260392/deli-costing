@@ -8,6 +8,8 @@
 // another can be compared fairly.
 import type { Express } from "express";
 import supabase from "./supabase";
+import { periodFor } from "../shared/kpiPeriods";
+import { xeroConnected, xeroExpenseAccounts, cogsAccountCodes, xeroCostOfGoods } from "./xeroRoutes";
 
 const asyncRoute = (fn: any) => (req: any, res: any, next: any) =>
   Promise.resolve(fn(req, res, next)).catch((e: any) => {
@@ -24,7 +26,8 @@ async function requireReportsAccess(req: any, res: any, next: any) {
   const { data: level } = await supabase.from("access_levels").select("pages_json").eq("id", staff.access_level_id).single();
   let pages: string[] = [];
   try { pages = JSON.parse(level?.pages_json || "[]"); } catch {}
-  if (!pages.includes("reports")) return res.status(403).json({ error: "You don't have access to reports" });
+  const isAdmin = await supabase.from("access_levels").select("name").eq("id", staff.access_level_id).single().then((r: any) => r.data?.name === "Admin");
+  if (!isAdmin && !pages.includes("reports") && !(req.needsWages && pages.includes("wages"))) return res.status(403).json({ error: "You don't have access to reports" });
   next();
 }
 
@@ -159,7 +162,33 @@ export async function marketPriceReport() {
   return { since, suppliers: suppliers || [], items, generatedAt: new Date().toISOString() };
 }
 
+const cogsReportCache = new Map<string, { at: number; data: any }>();
+
 export function registerReportRoutes(app: Express) {
+  // Cost of goods by supplier for a 4-week period (Xero bills on the cost of goods accounts)
+  app.get("/api/reports/cost-of-goods", (req: any, _res: any, next: any) => { req.needsWages = true; next(); }, requireReportsAccess, asyncRoute(async (req: any, res: any) => {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || "")) ? String(req.query.date) : undefined;
+    const p = periodFor(date);
+    const key = p.start;
+    const hit = cogsReportCache.get(key);
+    if (hit && Date.now() - hit.at < 5 * 60_000 && req.query.refresh !== "true") return res.json(hit.data);
+    const base = { fyLabel: p.fyLabel, period: p.period, start: p.start, end: p.end, weeks: p.weeks };
+    if (!(await xeroConnected())) return res.json({ ...base, available: false, note: "Connect Xero on the Supplier Invoices page to see cost of goods." });
+    let codes: string[] = [], accounts: { code: string; name: string }[] = [];
+    try { [codes, accounts] = await Promise.all([cogsAccountCodes(), xeroExpenseAccounts()]); }
+    catch (e: any) { return res.json({ ...base, available: false, note: e?.reconnect ? "Reconnect Xero on the Supplier Invoices page (Disconnect, then Connect) so the app can read your account names." : `Xero: ${e.message}` }); }
+    if (!codes.length) return res.json({ ...base, available: false, note: "Choose your cost of goods accounts in Reports → KPIs." });
+    const r = await xeroCostOfGoods(p.start, p.end, codes);
+    const data = {
+      ...base, available: true,
+      accounts: accounts.filter((a) => codes.includes(a.code)).map((a) => ({ code: a.code, name: a.name })),
+      docs: r.docs.sort((a, b) => a.date.localeCompare(b.date)),
+      fetchedAt: new Date().toISOString(),
+    };
+    cogsReportCache.set(key, { at: Date.now(), data });
+    res.json(data);
+  }));
+
   app.get("/api/reports/market-prices", requireReportsAccess, asyncRoute(async (_req: any, res: any) => {
     res.json(await marketPriceReport());
   }));

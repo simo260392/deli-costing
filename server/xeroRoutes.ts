@@ -142,23 +142,44 @@ const lineExGst = (doc: any, l: any) => {
 };
 
 /** Cost of goods per day (ex GST) between two dates, inclusive. */
+export interface CogsDoc {
+  id: string; kind: "bill" | "credit"; date: string; contact: string; number: string | null; status: string;
+  amount: number;                         // cost-of-goods part, ex GST (negative for credits)
+  byAccount: Record<string, number>;
+}
+export interface CogsResult { byDay: Record<string, number>; bills: number; docs: CogsDoc[] }
+
 // One at a time: Reports can ask for 13 periods at once and Xero allows 5 calls in parallel
 let cogsQueue: Promise<any> = Promise.resolve();
-export function xeroCostOfGoods(from: string, to: string, codes: string[]): Promise<{ byDay: Record<string, number>; bills: number }> {
+export function xeroCostOfGoods(from: string, to: string, codes: string[]): Promise<CogsResult> {
   const run = cogsQueue.then(() => costOfGoodsNow(from, to, codes));
   cogsQueue = run.catch(() => {});
   return run;
 }
-async function costOfGoodsNow(from: string, to: string, codes: string[]): Promise<{ byDay: Record<string, number>; bills: number }> {
+async function costOfGoodsNow(from: string, to: string, codes: string[]): Promise<CogsResult> {
   const want = new Set(codes);
   const byDay: Record<string, number> = {};
   let bills = 0;
+  const docs: CogsDoc[] = [];
   const add = (doc: any, sign: number) => {
     const day = ymdOf(doc.DateString || doc.Date);
     if (!day) return;
     let total = 0;
-    for (const l of doc.LineItems || []) if (l.AccountCode && want.has(String(l.AccountCode))) total += lineExGst(doc, l);
-    if (total) { byDay[day] = (byDay[day] || 0) + sign * total; bills++; }
+    const byAccount: Record<string, number> = {};
+    for (const l of doc.LineItems || []) {
+      if (!l.AccountCode || !want.has(String(l.AccountCode))) continue;
+      const amt = lineExGst(doc, l);
+      total += amt;
+      byAccount[String(l.AccountCode)] = (byAccount[String(l.AccountCode)] || 0) + sign * amt;
+    }
+    if (!total) return;
+    byDay[day] = (byDay[day] || 0) + sign * total;
+    bills++;
+    docs.push({
+      id: String(doc.InvoiceID || doc.CreditNoteID || ""), kind: sign > 0 ? "bill" : "credit", date: day,
+      contact: String(doc.Contact?.Name || "Unknown"), number: doc.InvoiceNumber || doc.CreditNoteNumber || null,
+      status: String(doc.Status || ""), amount: Math.round(sign * total * 100) / 100, byAccount,
+    });
   };
   const range = `Date>=${xeroDateTime(from)}&&Date<=${xeroDateTime(to)}`;
   for (let page = 1; page <= 50; page++) {
@@ -177,7 +198,7 @@ async function costOfGoodsNow(from: string, to: string, codes: string[]): Promis
     for (const c of list) add(c, -1);
     if (list.length < 100) break;
   }
-  return { byDay, bills };
+  return { byDay, bills, docs };
 }
 
 // ─── Sync ────────────────────────────────────────────────────────────────────
