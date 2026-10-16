@@ -94,7 +94,7 @@ export default function Suppliers() {
   const parsedDelivery = (() => { try { const d = JSON.parse(s.delivery_days || '[]'); return Array.isArray(d) ? d : []; } catch { return []; } })();
   const parsedMethods = (() => { try { const m = JSON.parse(s.how_to_order || '[]'); return Array.isArray(m) ? m : (s.how_to_order ? [s.how_to_order] : []); } catch { return s.how_to_order ? [s.how_to_order] : []; } })();
   setEditing(s);
-  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods, is_market: !!s.is_market } as any);
+  setForm({ ...empty, ...s, min_order_amount: s.min_order_amount ?? '' as any, delivery_days: parsedDelivery, how_to_order: parsedMethods, is_market: !!(s.is_market ?? (s as any).isMarket) } as any);
   setOpen(true);
 };
 
@@ -157,7 +157,7 @@ export default function Suppliers() {
                             <CardTitle className="text-base">{s.name}</CardTitle>
                             <div className="flex items-center gap-2 mt-1">
                               <Badge variant="outline" className="text-xs">{ingCount(s.id)} ingredient price{ingCount(s.id) !== 1 ? "s" : ""}</Badge>
-                              {s.is_market && <Badge variant="secondary" className="text-xs">Markets</Badge>}
+                              {(s.is_market ?? (s as any).isMarket) && <Badge variant="secondary" className="text-xs">Markets</Badge>}
                             </div>
                           </div>
                         </div>
