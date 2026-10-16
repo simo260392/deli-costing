@@ -9,6 +9,7 @@
 import type { Express } from "express";
 import supabase from "./supabase";
 import { periodFor } from "../shared/kpiPeriods";
+import { waSeason } from "../shared/waSeasons";
 import { xeroConnected, xeroExpenseAccounts, cogsAccountCodes, xeroCostOfGoods } from "./xeroRoutes";
 
 const asyncRoute = (fn: any) => (req: any, res: any, next: any) =>
@@ -43,6 +44,28 @@ async function all<T = any>(build: (from: number, to: number) => any): Promise<T
     out.push(...(data || []));
     if (!data || data.length < 1000) return out;
   }
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** The cheapest 3-month stretch of the year from our own prices; needs prices in at least 6 different months. */
+function cheapestSeason(rows: any[]): { label: string; months: number } | null {
+  const byMonth: number[][] = Array.from({ length: 12 }, () => []);
+  for (const r of rows) {
+    const c = num(r.unit_cost);
+    if (c == null || !r.invoice_date) continue;
+    byMonth[Number(String(r.invoice_date).slice(5, 7)) - 1]?.push(c);
+  }
+  const avg = byMonth.map((l) => (l.length ? l.reduce((s, x) => s + x, 0) / l.length : null));
+  const covered = avg.filter((a) => a != null).length;
+  if (covered < 6) return null;
+  let best: { start: number; cost: number } | null = null;
+  for (let m = 0; m < 12; m++) {
+    const w = [avg[m], avg[(m + 1) % 12], avg[(m + 2) % 12]];
+    if (w.some((a) => a == null)) continue;
+    const cost = (w as number[]).reduce((s, x) => s + x, 0) / 3;
+    if (!best || cost < best.cost) best = { start: m, cost };
+  }
+  return best ? { label: `${MONTHS[best.start]}–${MONTHS[(best.start + 2) % 12]}`, months: covered } : null;
 }
 
 export async function marketPriceReport() {
@@ -162,7 +185,9 @@ export async function marketPriceReport() {
       avg12: round(avg12),
       invoices12: allRows.length,
       // Latest cheapest price compared with the 12-month average (positive = dearer than usual)
-      vsAvgPct: cheapest && avg12 ? round(((cheapest.unitCost! - avg12) / avg12) * 100, 1) : null,
+      // Latest price paid compared with the 12-month average (positive = dearer than usual)
+      vsAvgPct: latest?.unitCost != null && avg12 ? round(((latest.unitCost - avg12) / avg12) * 100, 1) : null,
+      season: { fromData: cheapestSeason(allRows), waGuide: waSeason(ing.name) },
       ordering: { groups: orderGroups, lastOrdered, fromInvoices: invoiceQty },
     };
   });
